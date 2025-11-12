@@ -1,0 +1,3 @@
+{"ts": "2025-11-12T07:52:37.548252+00:00", "type": "INTENT", "side": "BUY", "symbol": "AAPL", "qty": 1, "refPrice": 276.96, "entry": "MKT", "tp": 279.73, "sl": 275.58, "parentOrderId": 5}
+{"ts": "2025-11-12T07:52:37.548933+00:00", "type": "ACK", "orderId": 5, "status": "PendingSubmit", "latency_ms_send": 51}
+{"ts": "2025-11-12T07:52:50.207138+00:00", "type": "CANCEL_ALL", "count": 3}

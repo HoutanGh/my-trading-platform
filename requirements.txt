@@ -3,3 +3,8 @@ uvicorn[standard]
 ibapi
 pandas
 numpy
+jsonlib
+DateTime
+pathlib
+loguru
+python-dotenv
