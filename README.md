@@ -5,3 +5,5 @@ orders.py - simple bracket order (micropullback and things like that should be i
 client.py
 app.py - later connect to FASTAPI?
 
+- [ ] change CLI so that it can change things about the order
+    - quantity, ticker, what kinda of order, strategy, LMT, MKT
