@@ -1,9 +1,14 @@
 from datetime import date
-from apps.data.db import get_conn, ensure_schema  # if you put db.py there
+
+from apps.data.db import get_conn
 
 
 def upsert_daily_pnl(account: str, trade_date: date, realized_pnl: float, source: str) -> None:
-    ensure_schema()  # no-op if table already exists
+    """
+    Insert or update a single daily P&L row.
+
+    Callers are responsible for ensuring the schema exists (via ensure_schema()).
+    """
     sql = """
     INSERT INTO daily_pnl (account, trade_date, realized_pnl, source)
     VALUES (%s, %s, %s, %s)
@@ -14,4 +19,3 @@ def upsert_daily_pnl(account: str, trade_date: date, realized_pnl: float, source
         with conn.cursor() as cur:
             cur.execute(sql, (account, trade_date, realized_pnl, source))
         conn.commit()
-

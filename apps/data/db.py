@@ -1,9 +1,10 @@
 import os
 from contextlib import contextmanager
 from typing import Iterator
-
+from dotenv import load_dotenv
 import psycopg
 
+load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
