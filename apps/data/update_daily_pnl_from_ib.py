@@ -10,11 +10,12 @@ load_dotenv()
 
 IB_HOST = os.getenv("IB_HOST", "172.21.224.1")
 IB_PORT = int(os.getenv("IB_PORT", "7497"))
-IB_CLIENT_ID = int(os.getenv("IB_CLIENT_ID", "2001"))
+IB_CLIENT_ID = int(os.getenv("IB_CLIENT_ID", "1001"))
+IB_ACCOUNT = os.getenv("IB_ACCOUNT")
 
 
-def print_positions() -> None:
-    """Connect to IB and print out current positions."""
+def print_positions_and_pnl() -> None:
+    """Connect to IB, print managed accounts, positions, and P&L snapshot."""
     logger.info(
         "Connecting to IB host=%s port=%s clientId=%s", IB_HOST, IB_PORT, IB_CLIENT_ID
     )
@@ -23,11 +24,16 @@ def print_positions() -> None:
     try:
         ib = client.ib
         logger.info("Connected=%s", ib.isConnected())
-        positions = ib.positions()
-        if not positions:
-            logger.info("No positions returned.")
-        else:
-            logger.info("Received %d positions", len(positions))
+
+        accounts = ib.managedAccounts()
+        logger.info("Accounts seen by API: %s", accounts)
+        account = IB_ACCOUNT or (accounts[0] if accounts else None)
+        if not account:
+            raise RuntimeError("No account specified or returned by IB.")
+
+        positions = ib.reqPositions()
+        if positions:
+            logger.info("Positions (%d):", len(positions))
             for pos in positions:
                 contract = pos.contract
                 logger.info(
@@ -38,15 +44,30 @@ def print_positions() -> None:
                     pos.position,
                     pos.avgCost,
                 )
+        else:
+            logger.info("Positions: []")
+
+        logger.info("Subscribing to PnL for account=%s", account)
+        pnl = ib.reqPnL(account)
+        ib.sleep(2.0)
+        logger.info(
+            "Daily=%s Unrealized=%s Realized=%s",
+            pnl.dailyPnL,
+            pnl.unrealizedPnL,
+            pnl.realizedPnL,
+        )
+        try:
+            ib.cancelPnL(pnl)
+        except TypeError:
+            logger.warning("cancelPnL failed due to unhashable key; ignoring.")
     finally:
         client.disconnect()
         logger.info("Disconnected.")
 
 
 def main() -> None:
-    print_positions()
+    print_positions_and_pnl()
 
 
 if __name__ == "__main__":
     main()
-

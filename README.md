@@ -108,4 +108,3 @@ Some natural next steps:
   Keep the current CLI as a thin layer, but later add a FastAPI app or web UI that calls into the same `BrokerService` API.
 
 Throughout, the goal is to keep responsibilities narrow: user interfaces at the top, trading rules in the middle, IB details at the bottom, with journalling running alongside for observability.
-
