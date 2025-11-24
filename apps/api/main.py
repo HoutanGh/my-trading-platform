@@ -7,7 +7,7 @@ from apps.data.db import ensure_schema
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="Trading Platform API")
+    app = FastAPI(title="my-trading-platform API")
 
     # Allow calls from the frontend dev server (and any configured origins).
     app.add_middleware(
