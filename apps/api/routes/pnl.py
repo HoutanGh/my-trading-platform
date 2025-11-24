@@ -1,12 +1,14 @@
+import logging
 from datetime import date
 from typing import Optional
 
 import psycopg
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from apps.api.deps import db_conn
 
 router = APIRouter(prefix="/pnl", tags=["pnl"])
+logger = logging.getLogger(__name__)
 
 
 @router.get("/daily")
@@ -25,6 +27,19 @@ def get_daily_pnl(
     optionally filters by start and end date, and returns objects with
     trade_date and realized_pnl fields.
     """
+    if start_date and end_date and end_date < start_date:
+        raise HTTPException(
+            status_code=400,
+            detail="end_date must be on or after start_date",
+        )
+
+    logger.info(
+        "Fetching daily_pnl account=%s start_date=%s end_date=%s",
+        account,
+        start_date,
+        end_date,
+    )
+
     conditions = ["account = %s"]
     params = [account]
 

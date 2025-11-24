@@ -1,11 +1,22 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
+from apps.api import settings
 from apps.api.routes import pnl
 from apps.data.db import ensure_schema
 
 
 def create_app() -> FastAPI:
     app = FastAPI(title="Trading Platform API")
+
+    # Allow calls from the frontend dev server (and any configured origins).
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.CORS_ORIGINS,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     @app.on_event("startup")
     def _startup() -> None:
