@@ -35,8 +35,8 @@ In short:
 The daily P&L calendar works in three stages:
 
 1. **Store daily realized P&L in Postgres**
-   - Backfill history from IB Flex CSV using `apps/data/load_flex_history.py`.
-   - Optionally update today’s P&L from the IB API using `apps/data/update_daily_pnl_from_ib.py`.
+   - Backfill history from IB Flex CSV using `apps/data/ingest_flex.py`.
+   - Optionally update today’s P&L from the IB API using `apps/data/ingest_ib.py`.
    - All data lands in a `daily_pnl` table.
 2. **Expose P&L over HTTP**
    - A FastAPI app (`apps/api/main.py`) serves a `GET /pnl/daily` endpoint that reads from `daily_pnl`.
@@ -102,16 +102,16 @@ By keeping this logic here, higher layers do not need to worry about how bracket
   - Provides a `get_conn()` context manager for sharing Postgres connections.
   - Exposes `ensure_schema()` which creates the `daily_pnl` table if it does not exist.
 
-- `apps/data/upload_daily_pnl.py`
+- `apps/data/upload.py`
   - Defines `upsert_daily_pnl(account, trade_date, realized_pnl, source)` which inserts or updates a single row in `daily_pnl`.
 
-- `apps/data/load_flex_history.py`
+- `apps/data/ingest_flex.py`
   - Reads an IB Flex CSV (e.g. `data/raw/Daily_PL.csv`).
   - Aggregates `FifoPnlRealized` by `TradeDate` and upserts totals into `daily_pnl` for a given account.
   - Intended usage:
-    - `python -m apps.data.load_flex_history --csv data/raw/Daily_PL.csv --account DU123456`
+    - `python -m apps.data.ingest_flex --csv data/raw/Daily_PL.csv --account DU123456`
 
-- `apps/data/update_daily_pnl_from_ib.py`
+- `apps/data/ingest_ib.py`
   - Connects to IB using the existing `IBClient`.
   - Logs current positions and subscribes to P&L for the configured account.
   - Prints a snapshot of daily / unrealized / realized P&L.
@@ -207,7 +207,7 @@ The API will call `ensure_schema()` on startup to create the `daily_pnl` table i
 
 Export an IB Flex report with `TradeDate` and `FifoPnlRealized` columns to `data/raw/Daily_PL.csv` (or another path), then:
 
-- `python -m apps.data.load_flex_history --csv data/raw/Daily_PL.csv --account DU123456`
+- `python -m apps.data.ingest_flex --csv data/raw/Daily_PL.csv --account DU123456`
 
 This aggregates realized P&L per day and upserts into `daily_pnl`.
 
@@ -219,7 +219,7 @@ Set your IB connection env vars, for example:
 
 Then run:
 
-- `python -m apps.data.update_daily_pnl_from_ib`
+- `python -m apps.data.ingest_ib`
 
 This connects to IB using the existing client and logs a snapshot of positions and P&L. You can evolve this script to upsert today’s realized P&L into `daily_pnl` using `upsert_daily_pnl`.
 

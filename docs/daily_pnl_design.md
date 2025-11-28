@@ -84,7 +84,7 @@ Input: Flex CSV similar to `data/raw/Daily_PL.csv` with columns:
 - `Symbol` (optional but useful for per-symbol table)
 - Possibly `AccountId` (if present; otherwise pass account externally).
 
-Python script location (planned): `apps/data/load_flex_history.py`
+Python script location (planned): `apps/data/ingest_flex.py`
 
 Responsibilities:
 
@@ -108,7 +108,7 @@ Intended usage:
 
 - Ensure `DATABASE_URL` and `IB_ACCOUNT` are set.
 - Run:
-  - `python -m apps.data.load_flex_history --csv data/raw/Daily_PL.csv --account DU123456`
+  - `python -m apps.data.ingest_flex --csv data/raw/Daily_PL.csv --account DU123456`
 
 You can re-run this any time after dropping tables to rebuild the cache.
 
@@ -124,7 +124,7 @@ We reuse your existing IB adapter:
   - `IB_ACCOUNT`
   - Loaded via `.env` + `python-dotenv`.
 
-Planned script: `apps/data/update_daily_pnl_from_ib.py`
+Planned script: `apps/data/ingest_ib.py`
 
 Flow:
 
@@ -146,7 +146,7 @@ Intended usage:
 
 - Ensure `DATABASE_URL`, `IB_HOST`, `IB_PORT`, `IB_CLIENT_ID`, `IB_ACCOUNT` are set.
 - Run manually or via cron at end of day:
-  - `python -m apps.data.update_daily_pnl_from_ib`
+  - `python -m apps.data.ingest_ib`
 
 This gives you an up-to-date row for “today” from the API, which can complement or cross-check Flex data later.
 
@@ -211,9 +211,8 @@ When you pick this up again, key choices to confirm:
 3. **Implementation order**
    - Likely:
      1. Implement `apps/data/db.py` (connection + `ensure_schema` for `daily_pnl`).
-     2. Implement `apps/data/load_flex_history.py` for historical backfill.
-     3. Implement `apps/data/update_daily_pnl_from_ib.py` using `IBClient` to update today’s P&L.
+     2. Implement `apps/data/ingest_flex.py` for historical backfill.
+     3. Implement `apps/data/ingest_ib.py` using `IBClient` to update today’s P&L.
      4. Add a tiny notebook or FastAPI endpoint to query `daily_pnl` for charts.
 
 Once you’re ready, we can turn this design into code, step by step, without duplicating existing logic. 
-

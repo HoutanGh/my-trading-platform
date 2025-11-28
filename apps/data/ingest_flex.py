@@ -1,11 +1,11 @@
-# apps/data/load_flex_history.py
+# apps/data/ingest_flex.py
 import argparse
 from pathlib import Path
 
 import pandas as pd
 
 from apps.data.db import ensure_schema
-from apps.data.upload_daily_pnl import upsert_daily_pnl
+from apps.data.upload import upsert_daily_pnl
 
 
 def load_flex_history(csv_path: Path, account: str, source: str = "flex") -> None:
