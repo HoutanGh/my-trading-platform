@@ -1,6 +1,7 @@
 import time
 from typing import Optional
 
+from ib_insync import MarketOrder
 from loguru import logger
 
 from apps.ib.client import IBClient
@@ -68,6 +69,40 @@ class BrokerService:
         logger.info(
             f"BUY {symbol} x{qty} @ {entry_price or 'MKT'} ⇒ TP {tp_price} SL {sl_price} (orderId={parent_order_id})"
         )
+
+    def place_breakout_market_buy(self, symbol: str, qty: int) -> int:
+        """Submit a simple market BUY for breakout MVP (no TP/SL)."""
+        contract = self.client.qualify_stock(symbol)
+        order = MarketOrder("BUY", qty)
+
+        t0 = time.time()
+        trade = self.client.place_order(contract, order)
+        order_id = self.client.wait_for_order_id(trade)
+
+        write_event(
+            {
+                "type": "INTENT",
+                "side": "BUY_BREAKOUT_MKT",
+                "symbol": symbol,
+                "qty": qty,
+                "entry": "MKT",
+                "orderId": order_id,
+            }
+        )
+
+        ack = self.client.wait_for_order_status(trade) or "submitted"
+        t1 = time.time()
+        write_event(
+            {
+                "type": "ACK",
+                "orderId": order_id,
+                "status": ack,
+                "latency_ms_send": int((t1 - t0) * 1000),
+            }
+        )
+
+        logger.info(f"BUY breakout {symbol} x{qty} @ MKT (orderId={order_id})")
+        return order_id
 
     def cancel_all_orders(self, count: Optional[int] = None) -> int:
         """Cancel all open trades (if requested) and journal the event."""
