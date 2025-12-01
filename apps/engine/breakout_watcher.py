@@ -4,6 +4,7 @@ from loguru import logger
 
 from apps.ib.client import IBClient
 from apps.broker.service import BrokerService
+from apps.strategies.breakout import BreakoutState, evaluate_breakout
 
 
 def run_breakout_watcher(
@@ -17,10 +18,9 @@ def run_breakout_watcher(
     max_bars: Optional[int] = None,
 ) -> None:
     """
-    Breakout watcher for the MVP.
-    - Subscribes to 1-minute bars and applies a simple rule:
-      break candle: first bar with high >= level
-      confirm candle: next bar with open >= level
+    Breakout watcher (engine layer).
+    - Subscribes to 1-minute bars for a symbol.
+    - Feeds each bar into the pure breakout logic.
     - On confirmation, places a market BUY via BrokerService and exits (single-fire).
     """
     contract = client.qualify_stock(symbol)
@@ -36,8 +36,8 @@ def run_breakout_watcher(
         keepUpToDate=True,
     )
 
+    state = BreakoutState()
     last_count = len(bars)
-    break_seen = False
     try:
         while True:
             client.ib.sleep(1.0)
@@ -51,14 +51,9 @@ def run_breakout_watcher(
                     f"[breakout watcher] {symbol} bar: time={bar.date} o={bar.open} h={bar.high} l={bar.low} c={bar.close} v={bar.volume}"
                 )
 
-                if not break_seen:
-                    if bar.high >= level:
-                        break_seen = True
-                        logger.info(f"[breakout watcher] break candle detected at {bar.date} (high={bar.high} >= {level})")
-                    continue
+                state, action = evaluate_breakout(state, bar, level)
 
-                # We have seen a break; this is the next bar (confirm candidate)
-                if bar.open >= level:
+                if action == "enter":
                     logger.info(f"[breakout watcher] confirm candle at {bar.date} (open={bar.open} >= {level}); sending market BUY")
                     buy_qty = qty if qty is not None else 0
                     if buy_qty <= 0:
@@ -69,7 +64,8 @@ def run_breakout_watcher(
                     except Exception as exc:
                         logger.error(f"[breakout watcher] error placing order: {exc}")
                     return
-                else:
+
+                if action == "stop":
                     logger.info(
                         f"[breakout watcher] confirm failed at {bar.date} (open={bar.open} < {level}); stopping without trade"
                     )

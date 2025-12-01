@@ -1,1 +1,1 @@
-# Package for trading strategies.
+# Strategies package (pure trading logic).

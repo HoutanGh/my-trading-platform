@@ -1,3 +1,4 @@
+import asyncio
 import time
 from typing import Optional
 
@@ -32,6 +33,14 @@ class IBClient:
         [qualified] = self.ib.qualifyContracts(contract)
         return qualified
 
+    async def qualify_stock_async(self, symbol: str, exchange: str = "SMART", currency: str = "USD"):
+        """Async contract qualification to avoid blocking inside an active event loop."""
+        contract = Stock(symbol, exchange, currency)
+        contracts = await self.ib.qualifyContractsAsync(contract)
+        if not contracts:
+            raise RuntimeError(f"Could not qualify contract for {symbol}")
+        return contracts[0]
+
     def get_reference_price(
         self,
         contract: Contract,
@@ -54,6 +63,70 @@ class IBClient:
         finally:
             self.ib.cancelMktData(contract)
 
+    async def get_reference_price_async(self, contract: Contract) -> float:
+        """
+        Async snapshot price using reqTickersAsync with fallbacks:
+        1) Real-time snapshot
+        2) Delayed snapshot (if allowed)
+        3) Last close via 1-day historical data
+        """
+
+        async def _try_snapshot() -> Optional[float]:
+            tickers = await self.ib.reqTickersAsync(contract)
+            if not tickers:
+                return None
+            ticker = tickers[0]
+            last, bid, ask = ticker.last, ticker.bid, ticker.ask
+            logger.debug(
+                "Snapshot for %s: last=%s bid=%s ask=%s",
+                getattr(contract, "symbol", ""),
+                last,
+                bid,
+                ask,
+            )
+            if last and not (isinstance(last, float) and last != last):
+                if last > 0:
+                    return float(last)
+            if bid and ask and bid > 0 and ask > 0:
+                return float((bid + ask) / 2)
+            return None
+
+        # Try real-time snapshot first
+        try:
+            self.ib.reqMarketDataType(1)
+        except Exception as exc:  # defensive; reqMarketDataType should be cheap
+            logger.debug("reqMarketDataType(1) failed: %s", exc)
+        price = await _try_snapshot()
+        if price is not None:
+            return price
+
+        # Try delayed snapshot if permitted
+        try:
+            self.ib.reqMarketDataType(3)
+            price = await _try_snapshot()
+            if price is not None:
+                return price
+        except Exception as exc:
+            logger.debug("Delayed market data snapshot failed: %s", exc)
+
+        # Fall back to last close from a 1-day historical bar
+        try:
+            bars = await self.ib.reqHistoricalDataAsync(
+                contract,
+                endDateTime="",
+                durationStr="1 D",
+                barSizeSetting="1 day",
+                whatToShow="TRADES",
+                useRTH=False,
+                formatDate=1,
+            )
+            if bars:
+                return float(bars[-1].close)
+        except Exception as exc:
+            logger.debug("Historical price fallback failed: %s", exc)
+
+        raise RuntimeError("No reference price (check market data permissions or symbol)")
+
     def place_order(self, contract: Contract, order: Order) -> Trade:
         return self.ib.placeOrder(contract, order)
 
@@ -75,6 +148,25 @@ class IBClient:
             return trade.order.orderId
         raise TimeoutError("Order ID not assigned")
 
+    async def wait_for_order_id_async(
+        self,
+        trade: Trade,
+        *,
+        timeout: float = 2.0,
+        poll_interval: float = 0.05,
+    ) -> int:
+        """Async wait for order id without blocking the running event loop."""
+        if trade.order.orderId:
+            return trade.order.orderId
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if trade.order.orderId:
+                return trade.order.orderId
+            await asyncio.sleep(poll_interval)
+        if trade.order.orderId:
+            return trade.order.orderId
+        raise TimeoutError("Order ID not assigned")
+
     def wait_for_order_status(
         self,
         trade: Trade,
@@ -86,6 +178,21 @@ class IBClient:
         status = trade.orderStatus.status
         while not status and time.time() < deadline:
             self.ib.sleep(poll_interval)
+            status = trade.orderStatus.status
+        return status
+
+    async def wait_for_order_status_async(
+        self,
+        trade: Trade,
+        *,
+        timeout: float = 3.0,
+        poll_interval: float = 0.1,
+    ) -> Optional[str]:
+        """Async wait for order status without blocking the running event loop."""
+        deadline = time.time() + timeout
+        status = trade.orderStatus.status
+        while not status and time.time() < deadline:
+            await asyncio.sleep(poll_interval)
             status = trade.orderStatus.status
         return status
 
