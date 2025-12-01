@@ -1,1 +1,3 @@
 - could you not generalise breakout_watcher.py, maybe the pure logic has inputs that help the strings make sense in the function
+- cli needs option to inform you if it is prepost, market or closed market
+- service has things that should be in orders, pretty sure service is not meant to have any ib_insync code
