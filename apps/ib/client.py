@@ -2,13 +2,22 @@ import asyncio
 import time
 from typing import Optional
 
-from ib_insync import Contract, IB, Order, Stock, Ticker, Trade
+from ib_insync import AccountValue, Contract, IB, Order, Position, Stock, Ticker, Trade
 from loguru import logger
 
 
 class IBClient:
     def __init__(self, ib: Optional[IB] = None):
         self.ib = ib or IB()
+
+    def default_account(self, preferred: Optional[str] = None) -> Optional[str]:
+        """Return preferred account if available, else first managed account."""
+        accounts = list(self.ib.managedAccounts())
+        if preferred and preferred in accounts:
+            return preferred
+        if accounts:
+            return accounts[0]
+        return preferred
 
     def connect(
         self,
@@ -195,6 +204,27 @@ class IBClient:
             await asyncio.sleep(poll_interval)
             status = trade.orderStatus.status
         return status
+
+    async def get_positions_async(self, account: Optional[str] = None) -> list[Position]:
+        """Async positions snapshot (optionally filtered by account)."""
+        positions = await self.ib.reqPositionsAsync()
+        if account is None:
+            return positions
+        return [p for p in positions if getattr(p, "account", None) == account]
+
+    async def get_account_summary_async(
+        self,
+        account: Optional[str] = None,
+        tags: str = "BuyingPower,AvailableFunds,NetLiquidation,TotalCashValue,UnrealizedPnL,RealizedPnL",
+    ) -> dict[str, str]:
+        """Async account summary filtered to a single account (if provided)."""
+        values: list[AccountValue] = await self.ib.reqAccountSummaryAsync("All", tags)
+        result: dict[str, str] = {}
+        for val in values:
+            if account is not None and val.account != account:
+                continue
+            result[val.tag] = f"{val.value} {val.currency}".strip()
+        return result
 
     def cancel_all(self) -> int:
         trades = list(self.ib.openTrades())

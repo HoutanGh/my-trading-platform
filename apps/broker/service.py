@@ -162,6 +162,40 @@ class BrokerService:
         logger.info(f"BUY breakout {symbol} x{qty} @ MKT (orderId={order_id})")
         return order_id
 
+    async def place_breakout_market_buy_async(self, symbol: str, qty: int) -> int:
+        """Async market BUY for breakout when running under asyncio."""
+        contract = await self.client.qualify_stock_async(symbol)
+        order = MarketOrder("BUY", qty)
+
+        t0 = time.time()
+        trade = self.client.place_order(contract, order)
+        order_id = await self.client.wait_for_order_id_async(trade)
+
+        write_event(
+            {
+                "type": "INTENT",
+                "side": "BUY_BREAKOUT_MKT",
+                "symbol": symbol,
+                "qty": qty,
+                "entry": "MKT",
+                "orderId": order_id,
+            }
+        )
+
+        ack = await self.client.wait_for_order_status_async(trade) or "submitted"
+        t1 = time.time()
+        write_event(
+            {
+                "type": "ACK",
+                "orderId": order_id,
+                "status": ack,
+                "latency_ms_send": int((t1 - t0) * 1000),
+            }
+        )
+
+        logger.info(f"BUY breakout {symbol} x{qty} @ MKT (orderId={order_id})")
+        return order_id
+
     def cancel_all_orders(self, count: Optional[int] = None) -> int:
         """Cancel all open trades (if requested) and journal the event."""
         if count is None:

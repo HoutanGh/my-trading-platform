@@ -1,3 +1,4 @@
+import asyncio
 from typing import Optional
 
 from loguru import logger
@@ -7,7 +8,7 @@ from apps.broker.service import BrokerService
 from apps.strategies.breakout import BreakoutState, evaluate_breakout
 
 
-def run_breakout_watcher(
+async def run_breakout_watcher_async(
     symbol: str,
     level: float,
     client: IBClient,
@@ -18,15 +19,16 @@ def run_breakout_watcher(
     max_bars: Optional[int] = None,
 ) -> None:
     """
-    Breakout watcher (engine layer).
+    Async breakout watcher (engine layer).
     - Subscribes to 1-minute bars for a symbol.
     - Feeds each bar into the pure breakout logic.
     - On confirmation, places a market BUY via BrokerService and exits (single-fire).
+    - Runs cooperatively on the asyncio event loop (no blocking sleep).
     """
-    contract = client.qualify_stock(symbol)
+    contract = await client.qualify_stock_async(symbol)
     logger.info(f"[breakout watcher] subscribed to {symbol} level={level}")
 
-    bars = client.ib.reqHistoricalData(
+    bars = await client.ib.reqHistoricalDataAsync(
         contract,
         endDateTime="",
         durationStr="2 D",
@@ -38,9 +40,18 @@ def run_breakout_watcher(
 
     state = BreakoutState()
     last_count = len(bars)
+    update_event = asyncio.Event()
+
+    def _on_bar(_bars, has_new_bar: bool):
+        if has_new_bar:
+            update_event.set()
+
+    bars.updateEvent += _on_bar
+
     try:
         while True:
-            client.ib.sleep(1.0)
+            await update_event.wait()
+            update_event.clear()
             if len(bars) == last_count:
                 continue
 
@@ -60,7 +71,7 @@ def run_breakout_watcher(
                         logger.error("[breakout watcher] qty not set or zero; aborting trade")
                         return
                     try:
-                        service.place_breakout_market_buy(symbol, buy_qty)
+                        await service.place_breakout_market_buy_async(symbol, buy_qty)
                     except Exception as exc:
                         logger.error(f"[breakout watcher] error placing order: {exc}")
                     return
@@ -74,7 +85,11 @@ def run_breakout_watcher(
                 if max_bars is not None and last_count >= max_bars:
                     logger.info("[breakout watcher] max_bars reached, stopping.")
                     return
+    except asyncio.CancelledError:
+        logger.info("[breakout watcher] task cancelled for %s", symbol)
+        raise
     finally:
+        bars.updateEvent -= _on_bar
         try:
             client.ib.cancelHistoricalData(bars)
         except Exception as exc:

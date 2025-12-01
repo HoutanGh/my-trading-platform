@@ -9,7 +9,7 @@ from ib_insync import IB
 from loguru import logger
 
 from apps.broker.service import BrokerService
-from apps.engine.breakout_watcher import run_breakout_watcher
+from apps.engine.breakout_watcher import run_breakout_watcher_async
 from apps.ib.client import IBClient
 
 load_dotenv()
@@ -26,11 +26,24 @@ IB_HOST = os.getenv("IB_HOST", "172.21.224.1")
 IB_PORT = int(os.getenv("IB_PORT", "7497"))
 IB_CLIENT_ID = int(os.getenv("IB_CLIENT_ID", "1001"))
 PAPER_ONLY = os.getenv("PAPER_ONLY", "1") == "1"
+IB_ACCOUNT = os.getenv("IB_ACCOUNT")
 
 
 def _assert_paper_mode(paper_only: bool, port: int) -> None:
     if paper_only and port != 7497:
         raise SystemExit("PAPER_ONLY=1 but IB_PORT != 7497. Refusing to run.")
+
+
+async def _menu_async(prompt: str, options: dict[str, str]) -> str:
+    return await asyncio.to_thread(_menu, prompt, options)
+
+
+async def _prompt_float_async(prompt: str, *, default: Optional[float] = None) -> float:
+    return await asyncio.to_thread(_prompt_float, prompt, default=default)
+
+
+async def _prompt_int_async(prompt: str, *, default: int) -> int:
+    return await asyncio.to_thread(_prompt_int, prompt, default=default)
 
 def _prompt_float(prompt: str, *, default: Optional[float] = None) -> float:
     while True:
@@ -96,22 +109,69 @@ async def _manual_trading_loop(service: BrokerService, client: IBClient) -> None
             print("Unknown command. Use b/k/q.")
 
 
-def _breakout_live(service: BrokerService, client: IBClient) -> None:
+async def _account_status(client: IBClient) -> None:
+    """Show account balances and positions."""
+    account = client.default_account(IB_ACCOUNT)
+    if not account:
+        print("No account available from IB.")
+        return
+    summary = await client.get_account_summary_async(account)
+    positions = await client.get_positions_async(account)
+
+    print(f"\nAccount: {account}")
+    for key in ["BuyingPower", "AvailableFunds", "NetLiquidation", "TotalCashValue", "UnrealizedPnL", "RealizedPnL"]:
+        if key in summary:
+            print(f"{key}: {summary[key]}")
+    if positions:
+        print("\nPositions:")
+        for pos in positions:
+            c = pos.contract
+            print(
+                f"- {c.symbol} {c.secType} {pos.position} @ {pos.avgCost}"
+            )
+    else:
+        print("\nPositions: none")
+    print()
+
+
+async def _breakout_live(
+    service: BrokerService,
+    client: IBClient,
+    watcher_tasks: list[asyncio.Task],
+) -> None:
     """Breakout strategy – live/paper via watcher."""
-    symbol = input(f"Symbol [{SYMBOL}]: ").strip().upper() or SYMBOL
-    level = _prompt_float("Breakout level: ")
-    qty = _prompt_int(f"Shares [{QTY}]: ", default=QTY)
-    print(f"Starting breakout watcher for {symbol} at {level} with qty={qty} ...")
-    try:
-        run_breakout_watcher(symbol, level, client, service, qty=qty)
-    except Exception as exc:
-        print(f"Error in breakout watcher: {exc}")
+    symbol = (await asyncio.to_thread(input, f"Symbol [{SYMBOL}]: ")).strip().upper() or SYMBOL
+    level = await _prompt_float_async("Breakout level: ")
+    qty = await _prompt_int_async(f"Shares [{QTY}]: ", default=QTY)
+    logger.info("Starting breakout watcher for %s at level=%s qty=%s", symbol, level, qty)
+
+    task = asyncio.create_task(
+        run_breakout_watcher_async(symbol, level, client, service, qty=qty),
+        name=f"breakout-{symbol}",
+    )
+
+    def _done_callback(t: asyncio.Task) -> None:
+        if t in watcher_tasks:
+            watcher_tasks.remove(t)
+        exc = t.exception()
+        if exc:
+            logger.error("Breakout watcher for %s failed: %s", symbol, exc)
+        else:
+            logger.info("Breakout watcher for %s finished", symbol)
+
+    task.add_done_callback(_done_callback)
+    watcher_tasks.append(task)
+    print(f"Watcher started for {symbol} (level={level}, qty={qty}) – running in background.")
 
 
-def _breakout_menu(service: BrokerService, client: IBClient) -> None:
+async def _breakout_menu(
+    service: BrokerService,
+    client: IBClient,
+    watcher_tasks: list[asyncio.Task],
+) -> None:
     """Menu for breakout strategy: live or backtest (stub)."""
     while True:
-        choice = _menu(
+        choice = await _menu_async(
             "Breakout strategy:",
             {
                 "1": "Live/Paper breakout watcher",
@@ -120,7 +180,7 @@ def _breakout_menu(service: BrokerService, client: IBClient) -> None:
             },
         )
         if choice == "1":
-            _breakout_live(service, client)
+            await _breakout_live(service, client, watcher_tasks)
         elif choice == "2":
             print("Backtest mode not implemented yet.")
         elif choice == "q":
@@ -138,6 +198,7 @@ async def run():
     ib = IB()
     client = IBClient(ib)
     service = BrokerService(client)
+    watcher_tasks: list[asyncio.Task] = []
     try:
         await ib.connectAsync(
             IB_HOST,
@@ -146,23 +207,30 @@ async def run():
             timeout=5,
         )
         while True:
-            choice = _menu(
+            choice = await _menu_async(
                 "Main menu:",
                 {
                     "1": "Manual trading",
                     "2": "Strategies",
+                    "3": "Account status",
                     "q": "Quit",
                 },
             )
             if choice == "1":
                 await _manual_trading_loop(service, client)
             elif choice == "2":
-                _breakout_menu(service, client)
+                await _breakout_menu(service, client, watcher_tasks)
+            elif choice == "3":
+                await _account_status(client)
             elif choice == "q":
                 break
             else:
                 print("Unknown choice.")
     finally:
+        for task in watcher_tasks:
+            task.cancel()
+        if watcher_tasks:
+            await asyncio.gather(*watcher_tasks, return_exceptions=True)
         client.disconnect()
         print("Disconnected. Bye.")
 
