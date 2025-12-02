@@ -215,16 +215,12 @@ class IBClient:
     async def get_account_summary_async(
         self,
         account: Optional[str] = None,
-        tags: str = "BuyingPower,AvailableFunds,NetLiquidation,TotalCashValue,UnrealizedPnL,RealizedPnL",
-    ) -> dict[str, str]:
-        """Async account summary filtered to a single account (if provided)."""
-        values: list[AccountValue] = await self.ib.reqAccountSummaryAsync("All", tags)
-        result: dict[str, str] = {}
-        for val in values:
-            if account is not None and val.account != account:
-                continue
-            result[val.tag] = f"{val.value} {val.currency}".strip()
-        return result
+    ) -> list[AccountValue]:
+        """
+        Async account summary using ib_insync's high-level helper.
+        accountSummaryAsync handles calling reqAccountSummaryAsync internally.
+        """
+        return await self.ib.accountSummaryAsync(account or "")
 
     def cancel_all(self) -> int:
         trades = list(self.ib.openTrades())

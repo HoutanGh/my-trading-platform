@@ -34,6 +34,10 @@ def _assert_paper_mode(paper_only: bool, port: int) -> None:
         raise SystemExit("PAPER_ONLY=1 but IB_PORT != 7497. Refusing to run.")
 
 
+class InputCancelled(Exception):
+    """Signal that the user cancelled the current input flow (e.g. typed 'q')."""
+
+
 async def _menu_async(prompt: str, options: dict[str, str]) -> str:
     return await asyncio.to_thread(_menu, prompt, options)
 
@@ -48,6 +52,8 @@ async def _prompt_int_async(prompt: str, *, default: int) -> int:
 def _prompt_float(prompt: str, *, default: Optional[float] = None) -> float:
     while True:
         raw = input(prompt).strip()
+        if raw.lower() == "q":
+            raise InputCancelled()
         if raw == "" and default is not None:
             return default
         try:
@@ -58,6 +64,8 @@ def _prompt_float(prompt: str, *, default: Optional[float] = None) -> float:
 def _prompt_int(prompt: str, *, default: int) -> int:
     while True:
         raw = input(prompt).strip()
+        if raw.lower() == "q":
+            raise InputCancelled()
         if raw == "":
             return default
         try:
@@ -115,7 +123,12 @@ async def _account_status(client: IBClient) -> None:
     if not account:
         print("No account available from IB.")
         return
-    summary = await client.get_account_summary_async(account)
+    summary_values = await client.get_account_summary_async(account)
+    summary = {
+        val.tag: f"{val.value} {val.currency}".strip()
+        for val in summary_values
+        if not getattr(val, "account", None) or val.account == account
+    }
     positions = await client.get_positions_async(account)
 
     print(f"\nAccount: {account}")
@@ -140,9 +153,16 @@ async def _breakout_live(
     watcher_tasks: list[asyncio.Task],
 ) -> None:
     """Breakout strategy – live/paper via watcher."""
-    symbol = (await asyncio.to_thread(input, f"Symbol [{SYMBOL}]: ")).strip().upper() or SYMBOL
-    level = await _prompt_float_async("Breakout level: ")
-    qty = await _prompt_int_async(f"Shares [{QTY}]: ", default=QTY)
+    try:
+        raw_symbol = (await asyncio.to_thread(input, f"Symbol [{SYMBOL}]: ")).strip()
+        if raw_symbol.lower() == "q":
+            raise InputCancelled()
+        symbol = (raw_symbol or SYMBOL).upper()
+        level = await _prompt_float_async("Breakout level (q=cancel): ")
+        qty = await _prompt_int_async(f"Shares [{QTY}] (q=cancel): ", default=QTY)
+    except InputCancelled:
+        print("Breakout configuration cancelled.\n")
+        return
     logger.info("Starting breakout watcher for %s at level=%s qty=%s", symbol, level, qty)
 
     task = asyncio.create_task(
@@ -176,6 +196,7 @@ async def _breakout_menu(
             {
                 "1": "Live/Paper breakout watcher",
                 "2": "Backtest (coming soon)",
+                "3": "Account status",
                 "q": "Back",
             },
         )
@@ -183,6 +204,8 @@ async def _breakout_menu(
             await _breakout_live(service, client, watcher_tasks)
         elif choice == "2":
             print("Backtest mode not implemented yet.")
+        elif choice == "3":
+            await _account_status(client)
         elif choice == "q":
             return
         else:

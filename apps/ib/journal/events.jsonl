@@ -4,3 +4,6 @@
 {"ts": "2025-11-30T18:27:24.149251+00:00", "type": "INTENT", "side": "BUY", "symbol": "AAPL", "qty": 1, "refPrice": 278.34, "entry": "MKT", "tp": 281.12, "sl": 276.95, "parentOrderId": 14}
 {"ts": "2025-11-30T18:27:24.149507+00:00", "type": "ACK", "orderId": 14, "status": "PendingSubmit", "latency_ms_send": 0}
 {"ts": "2025-11-30T18:33:43.252118+00:00", "type": "CANCEL_ALL", "count": 3}
+{"ts": "2025-12-02T17:46:06.930962+00:00", "type": "INTENT", "side": "BUY_BREAKOUT_MKT", "symbol": "Q", "qty": 1, "entry": "MKT", "orderId": 14}
+{"ts": "2025-12-02T17:46:06.935108+00:00", "type": "ACK", "orderId": 14, "status": "PendingSubmit", "latency_ms_send": 4}
+{"ts": "2025-12-02T18:53:46.230213+00:00", "type": "CANCEL_ALL", "count": 0}
