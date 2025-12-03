@@ -1,6 +1,7 @@
 - [ ] fix the cli flow (a lot of errors)
     - [ ] note down the flow
     - [ ] note down where there isn't error handnling
+- [ ] note down the flow for the csv ingestion
 
 - [ ] service has things that should be in orders, pretty sure service is not meant to have any ib_insync code
 - [ ] test if it subscribes to 1min data, just test everything in general
