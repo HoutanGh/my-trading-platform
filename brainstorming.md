@@ -4,6 +4,7 @@
 
 
 #### CLI
+- [ ] 
 - [ ] fix the cli flow (a lot of errors)
     - [ ] note down the flow
     - [ ] note down where there isn't error handling
