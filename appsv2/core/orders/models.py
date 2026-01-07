@@ -1,0 +1,42 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from enum import Enum
+from typing import Optional
+
+
+class OrderSide(str, Enum):
+    BUY = "BUY"
+    SELL = "SELL"
+
+
+class OrderType(str, Enum):
+    MARKET = "MARKET"
+    LIMIT = "LIMIT"
+
+
+@dataclass(frozen=True)
+class OrderSpec:
+    symbol: str
+    qty: int
+    side: OrderSide
+    order_type: OrderType = OrderType.MARKET
+    limit_price: Optional[float] = None
+    tif: str = "DAY"
+    outside_rth: bool = False
+    exchange: str = "SMART"
+    currency: str = "USD"
+    account: Optional[str] = None
+    client_tag: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class OrderAck:
+    order_id: Optional[int]
+    status: Optional[str]
+    submitted_at: datetime
+
+    @classmethod
+    def now(cls, *, order_id: Optional[int], status: Optional[str]) -> "OrderAck":
+        return cls(order_id=order_id, status=status, submitted_at=datetime.now(timezone.utc))

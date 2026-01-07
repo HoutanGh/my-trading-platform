@@ -5,7 +5,7 @@ import shlex
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Optional
 
-from appsv2.broker.ibkr_connection import IBKRConnection
+from appsv2.adapters.broker.ibkr_connection import IBKRConnection
 
 CommandHandler = Callable[[list[str], dict[str, str]], Awaitable[None]]
 

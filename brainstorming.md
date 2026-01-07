@@ -4,12 +4,20 @@
 
 
 #### CLI
-- [ ] 
 - [ ] fix the cli flow (a lot of errors)
     - [ ] note down the flow
     - [ ] note down where there isn't error handling
-    - [ ] workout if there is better way to do or not (there is but maybe do the breakout first) - RPL?
+    - [x] workout if there is better way to do or not (there is but maybe do the breakout first) - RPL?
 - [ ] cli needs option to inform you if it is prepost, market or closed market
+- [ ] have some information in the cli line
+- [ ] short form and long form
+- CLI evolution ideas (still one‑line first)
+
+- buy AAPL qty=5 → market
+- buy AAPL qty=5 limit=189.50 → limit
+- Later: bracket AAPL qty=5 tp=1% sl=0.5%
+- Then even later bracket AAPL qty=5 tp=calculate sl=calculate (different risks)
+    - can see where it calculates by giving you price and date so that you can verify
 
 #### BREAKOUT
 - [ ] change breakout so the candle has to finish about the line and the next tick also

@@ -2,7 +2,10 @@ import asyncio
 
 from dotenv import load_dotenv
 
-from appsv2.broker.ibkr_connection import IBKRConnection, IBKRConnectionConfig
+from appsv2.adapters.broker.ibkr_connection import (
+    IBKRConnection,
+    IBKRConnectionConfig,
+)
 from appsv2.cli.repl import REPL
 
 
