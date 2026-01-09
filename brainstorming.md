@@ -2,6 +2,13 @@
 - CLI Layer initialises the IKBR client and Service but then also calls code to build the orders, which then does separate calls
 - need to think about the layers being completely separate (CLI Layer, IKBR (ib_insync layer), strategy layer?, frontend?)
 
+- so implementing event bus MVP
+    - its synchronous 
+    - in-memory only 
+    - and wont get live order stasuses unless adapter publishes them
+
+### Event Bus
+- asynchronous 
 
 #### CLI
 - [ ] fix the cli flow (a lot of errors)
