@@ -1,11 +1,7 @@
-# My Trading Platform (appsv2 architecture)
+# My Trading Platform (appsv2)
 
-This repo has two tracks:
-
-- appsv2: the new event-driven trading core + adapters + async REPL
-- apps/ + web/: legacy v1 CLI and the daily PnL calendar
-
-This README focuses on appsv2.
+This repo centers on appsv2 (core + adapters + CLI + API) with a separate web UI.
+The legacy `apps/` folder is no longer used by appsv2.
 
 ## appsv2 goals
 
@@ -23,15 +19,29 @@ appsv2/
       ports.py      # OrderPort + EventBus interface
       service.py    # OrderService (validation + intent)
       events.py     # OrderIntent, OrderSent, OrderIdAssigned, OrderStatusChanged
+    pnl/
+      models.py     # DailyPnlRow, PnlIngestResult
+      ports.py      # DailyPnlStore + FlexPnlIngestor interfaces
+      service.py    # PnlService (ingest + query)
+      events.py     # PnlIngestStarted/Finished/Failed
   adapters/
     broker/
       ibkr_connection.py  # connect/disconnect + config
       ibkr_order_port.py  # OrderPort implementation (IBKR)
+    pnl/
+      db.py              # Postgres connection + schema
+      store.py           # daily_pnl upserts + queries
+      flex_ingest.py     # CSV parsing + aggregation
     eventbus/
       in_process.py       # in-process event bus
     logging/
       jsonl_logger.py     # JSONL event logger (subscriber)
+  api/
+    main.py               # FastAPI entrypoint
+    routes/
+      pnl.py              # /pnl/daily endpoint
   cli/
+    __main__.py     # CLI entrypoint + wiring
     repl.py          # async REPL + commands
     event_printer.py # prints events to console
     order_tracker.py # in-memory order status cache
@@ -84,6 +94,7 @@ Commands (current):
 - buy SYMBOL qty=... [limit=...] [tif=DAY] [outside_rth=true|false]
 - sell SYMBOL qty=... [limit=...] [tif=DAY] [outside_rth=true|false]
 - orders [pending]
+- ingest-flex csv=... account=... [source=flex]
 - set key=value [key=value ...]
 - show config
 - disconnect
@@ -103,12 +114,32 @@ set symbol=AAPL qty=5 tif=DAY
 buy AAPL qty=5 limit=189.50
 sell --symbol TSLA -q 2 -l 242.10
 orders --pending
+ingest-flex csv=data/raw/Daily_PL.csv account=DU123456
 ```
 
 Notes:
 
 - orders shows the in-memory tracker fed by events (no broker query yet).
 - buy/sell default symbol/qty/tif/etc from `set` if you omit them.
+- ingest-flex reads a Flex CSV, aggregates daily P&L, and upserts into Postgres.
+
+## PnL ingestion + calendar
+
+High-level flow:
+
+CSV -> CLI ingest-flex -> PnL service -> CSV + DB adapters -> Postgres daily_pnl
+Postgres daily_pnl -> API /pnl/daily -> web calendar
+
+Quick start:
+
+1) Start Postgres and set `DATABASE_URL`.
+2) Ingest a CSV:
+   - `python -m appsv2.cli`
+   - `ingest-flex csv=data/raw/Daily_PL.csv account=DU123456`
+3) Start the API:
+   - `uvicorn appsv2.api.main:app --reload`
+4) Start the web UI:
+   - `cd web && npm run dev`
 
 ## Logging
 
@@ -132,8 +163,8 @@ Each line contains the event type and serialized event payload.
 
 ## Other parts of the repo (legacy)
 
-- apps/: v1 trading CLI + PnL ingestion scripts.
-- web/: React calendar for daily realized PnL.
+- apps/: legacy code, no longer used by appsv2.
+- web/: React calendar for daily realized PnL (read-only UI).
 - docs/: design notes.
 
-If you are working on appsv2, the v1 code is useful for reference but not part of the new architecture.
+If you are working on appsv2, the v1 code is reference only and not part of the current architecture.

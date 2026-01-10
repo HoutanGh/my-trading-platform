@@ -6,6 +6,11 @@ from appsv2.core.orders.events import (
     OrderSent,
     OrderStatusChanged,
 )
+from appsv2.core.pnl.events import (
+    PnlIngestFailed,
+    PnlIngestFinished,
+    PnlIngestStarted,
+)
 
 
 def print_event(event: object) -> None:
@@ -35,6 +40,28 @@ def print_event(event: object) -> None:
             event.timestamp,
             "OrderStatus",
             f"{event.spec.symbol} order_id={event.order_id} status={event.status}",
+        )
+        return
+    if isinstance(event, PnlIngestStarted):
+        _print_line(
+            event.timestamp,
+            "PnlIngestStarted",
+            f"{event.account} csv={event.csv_path}",
+        )
+        return
+    if isinstance(event, PnlIngestFinished):
+        result = event.result
+        _print_line(
+            event.timestamp,
+            "PnlIngestFinished",
+            f"{result.account} days={result.days_ingested} rows={result.rows_used}",
+        )
+        return
+    if isinstance(event, PnlIngestFailed):
+        _print_line(
+            event.timestamp,
+            "PnlIngestFailed",
+            f"{event.account} error={event.error}",
         )
         return
     _print_line(None, "Event", repr(event))

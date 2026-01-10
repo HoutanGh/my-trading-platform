@@ -1,218 +1,139 @@
-# Daily P&L Storage and IB Integration (Design Notes)
+# Daily P&L Storage and Calendar (Appsv2)
 
-These notes capture the current design so you can resume later without rereading the whole discussion.
+This document describes the **current** P&L ingestion and calendar architecture in plain language.
+It is written for both non‑technical stakeholders and developers.
 
-## 1. Goals
+## 1. Executive Summary
 
-- Store **daily realized P&L** in local Postgres as a durable-ish cache.
-- Use **IB Flex CSV** to backfill history.
-- Use **ib_insync** (via existing `IBClient`) to update **today’s** P&L.
-- Keep the architecture clean and re-usable for a future FastAPI/React dashboard.
-- Be able to **drop and rebuild** from Flex + IB history if needed.
+- We **import a broker CSV** (Flex report) and store **daily realized P&L** in Postgres.
+- The **CLI** triggers ingestion; the **API** serves read‑only data; the **web UI** shows a calendar.
+- Appsv2 is the single source of truth: no code in `apps/` is used.
 
-## 2. Core Data Model
+## 2. Architecture at a Glance
+
+Simple flow:
+
+CSV file
+  → CLI command (ingest‑flex)
+  → PnL service (appsv2 core)
+  → CSV adapter + DB adapter (appsv2 adapters)
+  → Postgres table `daily_pnl`
+  → API `/pnl/daily`
+  → Web calendar UI
+
+Layering (from inside to outside):
+
+- **Core (appsv2/core)**: the business rules and “what should happen.”
+- **Adapters (appsv2/adapters)**: the “how” (CSV parsing, Postgres writes).
+- **API (appsv2/api)**: HTTP interface for the web.
+- **CLI (appsv2/cli)**: command‑line interface for developers.
+- **Web (web/)**: read‑only UI that calls the API.
+
+## 3. Data Model
 
 ### Table: `daily_pnl`
 
 - `id BIGSERIAL PRIMARY KEY`
 - `account TEXT NOT NULL` – IB account id (e.g. `DU123456`).
-- `trade_date DATE NOT NULL` – P&L date in IB’s sense of the day.
+- `trade_date DATE NOT NULL` – P&L date.
 - `realized_pnl DOUBLE PRECISION NOT NULL` – realized P&L for that day.
-- `source TEXT NOT NULL` – e.g. `'flex'`, `'ib_api'`.
+- `source TEXT NOT NULL` – usually `"flex"`.
 - `created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`
 - `UNIQUE (account, trade_date, source)`
 
 Notes:
+- No `unrealized_pnl` column yet.
+- `source` lets us reconcile multiple sources later if needed.
 
-- No `unrealized_pnl` column for now (can be added later).
-- `source` lets you keep multiple views (Flex vs API) and reconcile later.
-
-### Possible Future Table: `daily_symbol_pnl`
-
-For drill-down when clicking a day:
-
-- `id BIGSERIAL PRIMARY KEY`
-- `account TEXT NOT NULL`
-- `trade_date DATE NOT NULL`
-- `symbol TEXT NOT NULL`
-- `realized_pnl DOUBLE PRECISION NOT NULL`
-- `source TEXT NOT NULL` (likely `'flex'`)
-- `created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`
-- `UNIQUE (account, trade_date, symbol, source)`
-
-Use case: when you click a day in the UI, show per-symbol P&L for that day.
-
-## 3. Postgres Mental Model and Setup
-
-High-level idea:
-
-- Postgres is a server process listening on a port (default `5432`).
-- You connect to it using:
-  - CLI (`psql`).
-  - Python (via a driver like `psycopg`).
-- For this project, it’s a local analytics cache, not production HA.
-
-Minimal setup workflow:
-
-1. **Run Postgres locally**
-   - Example via Docker:
-     - `docker run --name my-postgres -e POSTGRES_PASSWORD=postgres -p 5432:5432 -d postgres:16`
-
-2. **Create a database**
-   - `psql -h localhost -U postgres`
-   - Inside `psql`:
-     - `CREATE DATABASE my_trading_db;`
-     - `\q` to quit.
-
-3. **Define connection string for Python**
-   - Environment variable:
-     - `export DATABASE_URL="postgresql://postgres:postgres@localhost:5432/my_trading_db"`
-
-4. **Schema creation**
-   - A small Python helper (e.g. `apps/data/db.py`) can:
-     - Read `DATABASE_URL`.
-     - Connect with `psycopg`.
-     - Run a `CREATE TABLE IF NOT EXISTS daily_pnl (...)` statement.
-   - This avoids manual migrations for now.
-
-## 4. Flex Backfill Flow (Historical Realized P&L)
+## 4. Flex CSV Ingestion (Current)
 
 Input: Flex CSV similar to `data/raw/Daily_PL.csv` with columns:
-
 - `TradeDate`
 - `FifoPnlRealized`
-- `Symbol` (optional but useful for per-symbol table)
-- Possibly `AccountId` (if present; otherwise pass account externally).
-
-Python script location (planned): `apps/data/ingest_flex.py`
-
-Responsibilities:
-
-- Read the CSV (via `pandas` or `csv`).
-- Parse:
-  - `TradeDate` → `date`.
-  - `FifoPnlRealized` → `float`.
-- Group by `TradeDate` (and optionally `AccountId` if present).
-- Sum `FifoPnlRealized` to get `realized_pnl` per day.
-- Insert or UPSERT into `daily_pnl` with:
-  - `account` (from `AccountId` or CLI/env).
-  - `trade_date` (from `TradeDate`).
-  - `realized_pnl` (sum for that day).
-  - `source = 'flex'`.
-
-Optionally:
-
-- Also group by `(TradeDate, Symbol)` and write to `daily_symbol_pnl` for drill-down.
-
-Intended usage:
-
-- Ensure `DATABASE_URL` and `IB_ACCOUNT` are set.
-- Run:
-  - `python -m apps.data.ingest_flex --csv data/raw/Daily_PL.csv --account DU123456`
-
-You can re-run this any time after dropping tables to rebuild the cache.
-
-## 5. Daily P&L via ib_insync (Today Only)
-
-We reuse your existing IB adapter:
-
-- `apps/ib/client.py` defines `IBClient` which wraps `ib_insync.IB`.
-- Config (already used in `apps/api/cli.py`):
-  - `IB_HOST`
-  - `IB_PORT`
-  - `IB_CLIENT_ID`
-  - `IB_ACCOUNT`
-  - Loaded via `.env` + `python-dotenv`.
-
-Planned script: `apps/data/ingest_ib.py`
 
 Flow:
+1. CLI runs `ingest-flex` with a CSV path + account.
+2. CSV is parsed with pandas.
+3. Dates + numbers are cleaned.
+4. P&L is summed per trade date.
+5. Each day is upserted into `daily_pnl`.
 
-1. Load env (`.env`).
-2. Create `IBClient` and `connect(readonly=True)` using the same env values as the CLI.
-3. Call `ib.reqPnL(account)`:
-   - Sleep briefly to allow IB to push data.
-   - Read `pnl.realizedPnL` (float; default to `0.0` if `None`).
-4. Get today’s trading date:
-   - `ib.reqCurrentTime().date()` → `trade_date`.
-5. UPSERT into `daily_pnl` with:
-   - `account`
-   - `trade_date`
-   - `realized_pnl` (from `pnl.realizedPnL`)
-   - `source = 'ib_api'`.
-6. Disconnect `IBClient`.
+CLI example:
+- `python -m appsv2.cli`
+- `ingest-flex csv=data/raw/Daily_PL.csv account=DU123456`
 
-Intended usage:
+## 5. API and Web (Read‑Only)
 
-- Ensure `DATABASE_URL`, `IB_HOST`, `IB_PORT`, `IB_CLIENT_ID`, `IB_ACCOUNT` are set.
-- Run manually or via cron at end of day:
-  - `python -m apps.data.ingest_ib`
+- The API exposes **GET `/pnl/daily`** for the calendar.
+- The web app calls the API and renders a monthly view.
 
-This gives you an up-to-date row for “today” from the API, which can complement or cross-check Flex data later.
+Example API call:
+- `/pnl/daily?account=DU123456&start_date=2024-01-01&end_date=2024-01-31`
 
-## 6. Timezone Handling
+## 6. Logging and Events
 
-We keep it simple for now:
+We use the existing event bus for observability.
 
-- `trade_date` is stored as a `DATE` aligned with IB’s notion of the **trading day**.
-- Flex `TradeDate` already reflects IB’s trading date.
-- The API version uses `ib.reqCurrentTime().date()` as `trade_date`.
+Core events:
+- `PnlIngestStarted`
+- `PnlIngestFinished`
+- `PnlIngestFailed`
 
-In the dashboard:
+Outputs:
+- Console output in the CLI.
+- JSONL logs in `appsv2/journal/events.jsonl` (via `JsonlEventLogger`).
+- Adapter logs include CSV stats (rows read, days aggregated).
 
-- Show `trade_date` as a simple `YYYY-MM-DD` date (no timezone confusion).
-- If you later store timestamps for detailed trades, store as `TIMESTAMPTZ` in UTC and convert to local time at the API/UI layer.
+This gives both high‑level “what happened” and low‑level “why it happened.”
 
-## 7. psycopg vs ORM (Choice)
+## 7. File Map (Current)
 
-Definitions:
+Core:
+- `appsv2/core/pnl/models.py` – shared data shapes (e.g., `DailyPnlRow`).
+- `appsv2/core/pnl/events.py` – ingest lifecycle events.
+- `appsv2/core/pnl/ports.py` – interfaces the core expects.
+- `appsv2/core/pnl/service.py` – orchestration (ingest + query).
 
-- **psycopg-only**:
-  - A lightweight driver to talk to Postgres.
-  - You write SQL manually: `INSERT`, `SELECT`, etc.
-  - Simple and explicit; good for a small analytics cache.
+Adapters:
+- `appsv2/adapters/pnl/db.py` – DB connection + `ensure_schema()`.
+- `appsv2/adapters/pnl/store.py` – upsert + query helpers.
+- `appsv2/adapters/pnl/flex_ingest.py` – CSV parsing + aggregation.
 
-- **ORM** (e.g. SQLAlchemy/SQLModel):
-  - You define Python classes (`DailyPnl`) and let the library generate SQL.
-  - Helpful for big schemas and complex relationships, but more concepts to learn.
+API:
+- `appsv2/api/main.py` – FastAPI entrypoint + CORS.
+- `appsv2/api/routes/pnl.py` – `/pnl/daily` endpoint.
+- `appsv2/api/deps.py` – service wiring for routes.
 
-For this project:
+CLI:
+- `appsv2/cli/repl.py` – `ingest-flex` command.
+- `appsv2/cli/__main__.py` – wires services + event bus.
 
-- Start with **psycopg-only**:
-  - Small number of tables.
-  - Rebuildable cache.
-  - Less complexity while you get comfortable with Postgres.
-- If the schema grows significantly and you want deeper abstractions, we can later introduce an ORM without changing the underlying tables.
+Web:
+- `web/src/App.tsx` – calendar UI that calls `/pnl/daily`.
 
-## 8. Click-to-Drill-Down Design (UI/Analytics)
+## 8. Setup (Quick Start)
 
-Summary-level (per day):
+1) Postgres
+- Run a local Postgres instance and create a database.
+- Set `DATABASE_URL`.
 
-- Query:
-  - `SELECT trade_date, realized_pnl FROM daily_pnl WHERE account = ? ORDER BY trade_date;`
-- Each row becomes a clickable item (e.g. in React).
+2) Ingest CSV
+- Run the appsv2 CLI and ingest a Flex CSV:
+  - `python -m appsv2.cli`
+  - `ingest-flex csv=data/raw/Daily_PL.csv account=DU123456`
 
-Detail-level (per symbol on that day):
+3) API
+- Start FastAPI:
+  - `uvicorn appsv2.api.main:app --reload`
 
-- With `daily_symbol_pnl`:
-  - `SELECT symbol, realized_pnl FROM daily_symbol_pnl WHERE account = ? AND trade_date = ? ORDER BY realized_pnl DESC;`
-- Future extensions:
-  - A more granular table (`trade_pnl`) that stores individual Flex rows for deeper analysis.
+4) Web
+- Start Vite:
+  - `cd web && npm run dev`
 
-## 9. Next Decisions Before Coding
+## 9. Planned Extensions (Not Implemented)
 
-When you pick this up again, key choices to confirm:
+- Per‑symbol daily P&L table (`daily_symbol_pnl`).
+- IB API ingestion for “today only.”
+- Richer analytics (trade‑level drill‑down).
 
-1. **Tables for phase 1**
-   - Definitely `daily_pnl` as described.
-   - Decide whether to also build `daily_symbol_pnl` now or later.
-2. **Postgres runtime**
-   - Confirm whether you want to use Docker or a local service.
-3. **Implementation order**
-   - Likely:
-     1. Implement `apps/data/db.py` (connection + `ensure_schema` for `daily_pnl`).
-     2. Implement `apps/data/ingest_flex.py` for historical backfill.
-     3. Implement `apps/data/ingest_ib.py` using `IBClient` to update today’s P&L.
-     4. Add a tiny notebook or FastAPI endpoint to query `daily_pnl` for charts.
-
-Once you’re ready, we can turn this design into code, step by step, without duplicating existing logic. 
+This design keeps appsv2 as the single source of truth while allowing the UI to stay simple and read‑only.

@@ -10,10 +10,13 @@ from appsv2.adapters.broker.ibkr_connection import (
 from appsv2.adapters.broker.ibkr_order_port import IBKROrderPort
 from appsv2.adapters.eventbus.in_process import InProcessEventBus
 from appsv2.adapters.logging.jsonl_logger import JsonlEventLogger
+from appsv2.adapters.pnl.flex_ingest import FlexCsvPnlIngestor
+from appsv2.adapters.pnl.store import PostgresDailyPnlStore
 from appsv2.cli.event_printer import print_event
 from appsv2.cli.order_tracker import OrderTracker
 from appsv2.cli.repl import REPL
 from appsv2.core.orders.service import OrderService
+from appsv2.core.pnl.service import PnlService
 
 
 def main() -> None:
@@ -29,7 +32,15 @@ def main() -> None:
     order_service = OrderService(order_port, event_bus=bus)
     order_tracker = OrderTracker()
     bus.subscribe(object, order_tracker.handle_event)
-    repl = REPL(connection, order_service, order_tracker)
+    pnl_store = PostgresDailyPnlStore()
+    pnl_ingestor = FlexCsvPnlIngestor(pnl_store)
+    pnl_service = PnlService(pnl_ingestor, pnl_store, event_bus=bus)
+    repl = REPL(
+        connection,
+        order_service,
+        order_tracker,
+        pnl_service=pnl_service,
+    )
     asyncio.run(repl.run())
 
 

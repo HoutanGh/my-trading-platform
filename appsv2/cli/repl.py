@@ -3,12 +3,14 @@ from __future__ import annotations
 import asyncio
 import shlex
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
 from appsv2.adapters.broker.ibkr_connection import IBKRConnection
 from appsv2.cli.order_tracker import OrderTracker
 from appsv2.core.orders.models import OrderSide, OrderSpec, OrderType
 from appsv2.core.orders.service import OrderService, OrderValidationError
+from appsv2.core.pnl.service import PnlService
 
 CommandHandler = Callable[[list[str], dict[str, str]], Awaitable[None]]
 
@@ -28,12 +30,14 @@ class REPL:
         connection: IBKRConnection,
         order_service: Optional[OrderService] = None,
         order_tracker: Optional[OrderTracker] = None,
+        pnl_service: Optional[PnlService] = None,
         *,
         prompt: str = "appsv2> ",
     ) -> None:
         self._connection = connection
         self._order_service = order_service
         self._order_tracker = order_tracker
+        self._pnl_service = pnl_service
         self._prompt = prompt
         self._config: dict[str, str] = {}
         self._commands: dict[str, CommandSpec] = {}
@@ -112,6 +116,15 @@ class REPL:
                 handler=self._cmd_orders,
                 help="Show tracked order statuses from events.",
                 usage="orders [pending]",
+            )
+        )
+        self._register(
+            CommandSpec(
+                name="ingest-flex",
+                handler=self._cmd_ingest_flex,
+                help="Ingest a Flex CSV into daily P&L.",
+                usage="ingest-flex csv=... account=... [source=flex]",
+                aliases=("ingest",),
             )
         )
         self._register(
@@ -264,6 +277,34 @@ class REPL:
             return
         for line in lines:
             print(line)
+
+    async def _cmd_ingest_flex(self, args: list[str], kwargs: dict[str, str]) -> None:
+        if not self._pnl_service:
+            print("PnL service not configured.")
+            return
+        csv_value = kwargs.get("csv") or (args[0] if args else None)
+        account = kwargs.get("account") or _config_get(self._config, "account")
+        source = kwargs.get("source") or "flex"
+        if not csv_value or not account:
+            print("Usage: ingest-flex csv=... account=... [source=flex]")
+            return
+        csv_path = Path(csv_value).expanduser()
+        try:
+            result = await asyncio.to_thread(
+                self._pnl_service.ingest_flex,
+                csv_path,
+                account,
+                source,
+            )
+        except Exception as exc:
+            print(f"Ingest failed: {exc}")
+            return
+        print(
+            "Ingested "
+            f"{result.days_ingested} days "
+            f"(rows read={result.rows_read}, used={result.rows_used}) "
+            f"from {result.csv_path}"
+        )
 
     async def _cmd_set(self, _args: list[str], kwargs: dict[str, str]) -> None:
         if not kwargs:
