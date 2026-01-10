@@ -7,14 +7,20 @@ from typing import Optional
 from ib_insync import IB, LimitOrder, MarketOrder, Stock, Trade
 
 from appsv2.adapters.broker.ibkr_connection import IBKRConnection
+from appsv2.core.orders.events import (
+    OrderIdAssigned,
+    OrderSent,
+    OrderStatusChanged,
+)
 from appsv2.core.orders.models import OrderAck, OrderSpec, OrderType
-from appsv2.core.orders.ports import OrderPort
+from appsv2.core.orders.ports import EventBus, OrderPort
 
 
 class IBKROrderPort(OrderPort):
-    def __init__(self, connection: IBKRConnection) -> None:
+    def __init__(self, connection: IBKRConnection, event_bus: EventBus | None = None) -> None:
         self._connection = connection
         self._ib: IB = connection.ib
+        self._event_bus = event_bus
 
     async def submit_order(self, spec: OrderSpec) -> OrderAck:
         if not self._ib.isConnected():
@@ -40,8 +46,16 @@ class IBKROrderPort(OrderPort):
             order.orderRef = spec.client_tag
 
         trade = self._ib.placeOrder(qualified, order)
+        if self._event_bus:
+            self._event_bus.publish(OrderSent.now(spec))
         order_id = await _wait_for_order_id(trade)
+        if self._event_bus:
+            self._event_bus.publish(OrderIdAssigned.now(spec, order_id))
         status = await _wait_for_order_status(trade)
+        if self._event_bus:
+            self._event_bus.publish(
+                OrderStatusChanged.now(spec, order_id=order_id, status=status)
+            )
         return OrderAck.now(order_id=order_id, status=status)
 
 

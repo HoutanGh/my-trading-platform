@@ -1,5 +1,11 @@
+from appsv2.core.orders.events import (
+    OrderIdAssigned,
+    OrderIntent,
+    OrderSent,
+    OrderStatusChanged,
+)
 from appsv2.core.orders.models import OrderAck, OrderSpec, OrderSide, OrderType
-from appsv2.core.orders.ports import OrderPort
+from appsv2.core.orders.ports import EventBus, OrderPort
 from appsv2.core.orders.service import OrderService, OrderValidationError
 
 __all__ = [
@@ -7,7 +13,12 @@ __all__ = [
     "OrderSpec",
     "OrderSide",
     "OrderType",
+    "OrderIntent",
+    "OrderSent",
+    "OrderIdAssigned",
+    "OrderStatusChanged",
     "OrderPort",
+    "EventBus",
     "OrderService",
     "OrderValidationError",
 ]

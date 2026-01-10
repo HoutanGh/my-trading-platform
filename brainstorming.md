@@ -27,8 +27,10 @@
     - can see where it calculates by giving you price and date so that you can verify
 
 #### BREAKOUT
-- [ ] change breakout so the candle has to finish about the line and the next tick also
+- [ ] change breakout so the candle has to finish above the line and the next tick also
 - [ ] test if it subscribes to 1min data, just test everything in general
+
+
 - [ ] service has things that should be in orders, pretty sure service is not meant to have any ib_insync code
 - [ ] could you not generalise breakout_watcher.py, maybe the pure logic has inputs that help the strings make sense in the function
 

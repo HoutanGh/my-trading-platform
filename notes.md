@@ -7,6 +7,20 @@
 - CLI is subscribed to events -> prints them
 
 
+
+
 ### Events
 - one part of the program can announce something happened without directly calling another part 
 - e.g core announced event and CLI registers call back 
+
+- Events and EventBus interface live in core/
+- in-process eventbus implementation lives in adapters/
+- core + adapter publish events
+- CLI subscribes and prints
+- CLI wiring happenings in '__main__.py'
+
+- 'events.py'
+    - defines order related types
+- 'bus.py' 
+    - defines the EventBus interface
+- 'ikbr_order_port.py'

@@ -3,8 +3,9 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Optional, Type, TypeVar
 
+from appsv2.core.orders.events import OrderIntent
 from appsv2.core.orders.models import OrderAck, OrderSide, OrderSpec, OrderType
-from appsv2.core.orders.ports import OrderPort
+from appsv2.core.orders.ports import EventBus, OrderPort
 
 _EnumT = TypeVar("_EnumT", bound=object)
 
@@ -14,12 +15,15 @@ class OrderValidationError(ValueError):
 
 
 class OrderService:
-    def __init__(self, order_port: OrderPort) -> None:
+    def __init__(self, order_port: OrderPort, event_bus: Optional[EventBus] = None) -> None:
         self._order_port = order_port
+        self._event_bus = event_bus
 
     async def submit_order(self, spec: OrderSpec) -> OrderAck:
         normalized = self._normalize_spec(spec)
         self._validate(normalized)
+        if self._event_bus:
+            self._event_bus.publish(OrderIntent.now(normalized))
         return await self._order_port.submit_order(normalized)
 
     def _normalize_spec(self, spec: OrderSpec) -> OrderSpec:
