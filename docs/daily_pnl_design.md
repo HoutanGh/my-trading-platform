@@ -1,7 +1,6 @@
 # Daily P&L Storage and Calendar (Appsv2)
 
-This document describes the **current** P&L ingestion and calendar architecture in plain language.
-It is written for both non‑technical stakeholders and developers.
+This document describes the **current** P&L ingestion and calendar architecture.
 
 ## 1. Executive Summary
 
