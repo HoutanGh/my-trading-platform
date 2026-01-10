@@ -24,3 +24,10 @@
 - 'bus.py' 
     - defines the EventBus interface
 - 'ikbr_order_port.py'
+
+### PnL Ingestion
+#### core/pnl
+- 'ports.py' defines the interfaces the core expects without caring about the CSV/DB
+- 'service.py' orchestration entrypoint 
+    - need to say if i want event publishing - ask what the benefits are
+    
