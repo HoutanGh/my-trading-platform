@@ -1,1 +1,1 @@
-"""Route package initializer."""
+"""API routes for apps."""

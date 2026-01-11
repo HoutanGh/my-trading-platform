@@ -1,6 +1,6 @@
-# Breakout Automation - Production Architecture (appsv2)
+# Breakout Automation - Production Architecture (apps)
 
-This document describes the production-ready architecture for the breakout automation as implemented in appsv2. It focuses on system responsibilities, data flow, and operational behavior.
+This document describes the production-ready architecture for the breakout automation as implemented in apps. It focuses on system responsibilities, data flow, and operational behavior.
 
 ---
 
@@ -19,7 +19,7 @@ This document describes the production-ready architecture for the breakout autom
 
 ## 2. User workflow (CLI)
 
-Operator runs the appsv2 CLI and starts a breakout watcher:
+Operator runs the apps CLI and starts a breakout watcher:
 
 - Example (market entry):
   - `breakout AAPL level=190 qty=1`
@@ -35,41 +35,41 @@ Stop or check status:
 ## 3. Components and responsibilities
 
 ### CLI and orchestration
-- `appsv2/cli/__main__.py`
+- `apps/cli/__main__.py`
   - Wires the event bus, IBKR connection, order service, bar stream adapter, and REPL.
-- `appsv2/cli/repl.py`
+- `apps/cli/repl.py`
   - Parses `breakout` commands, validates input, and starts/stops watcher tasks.
 
 ### Strategy (unique logic)
-- `appsv2/core/strategies/breakout/logic.py`
+- `apps/core/strategies/breakout/logic.py`
   - Pure breakout rule and state machine. This is the only strategy-specific logic.
-- `appsv2/core/strategies/breakout/runner.py`
+- `apps/core/strategies/breakout/runner.py`
   - Runs the strategy against the live bar stream and submits orders.
-- `appsv2/core/strategies/breakout/events.py`
+- `apps/core/strategies/breakout/events.py`
   - Emits lifecycle events: started, break detected, confirmed, rejected, stopped.
 
 ### Market data (reusable)
-- `appsv2/core/market_data/models.py`
+- `apps/core/market_data/models.py`
   - Defines the `Bar` model.
-- `appsv2/core/market_data/ports.py`
+- `apps/core/market_data/ports.py`
   - Defines the `BarStreamPort` interface.
-- `appsv2/adapters/market_data/ibkr_bars.py`
+- `apps/adapters/market_data/ibkr_bars.py`
   - IBKR implementation of the bar stream (1-minute bars, live updates).
 
 ### Orders (reusable)
-- `appsv2/core/orders/service.py`
+- `apps/core/orders/service.py`
   - Validates and submits orders; emits order lifecycle events.
-- `appsv2/core/orders/models.py`
+- `apps/core/orders/models.py`
   - `OrderSpec` for standard orders and `BracketOrderSpec` for TP/SL.
-- `appsv2/adapters/broker/ibkr_order_port.py`
+- `apps/adapters/broker/ibkr_order_port.py`
   - Converts order specs to IBKR orders (including bracket/OCA logic).
 
 ### Events and logging (reusable)
-- `appsv2/adapters/eventbus/in_process.py`
+- `apps/adapters/eventbus/in_process.py`
   - In-process event bus for pub/sub.
-- `appsv2/cli/event_printer.py`
+- `apps/cli/event_printer.py`
   - Prints events to the console.
-- `appsv2/adapters/logging/jsonl_logger.py`
+- `apps/adapters/logging/jsonl_logger.py`
   - Writes event payloads to JSONL for audit.
 
 ---
@@ -106,7 +106,7 @@ Events emitted:
 
 Logging:
 - Console output via `event_printer`.
-- JSONL audit log via `jsonl_logger` (path controlled by `APPV2_EVENT_LOG_PATH`).
+- JSONL audit log via `jsonl_logger` (path controlled by `APPS_EVENT_LOG_PATH`).
 
 ---
 

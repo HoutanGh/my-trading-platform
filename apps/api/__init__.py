@@ -1,1 +1,1 @@
-"""API package initializer."""
+"""FastAPI application for apps."""

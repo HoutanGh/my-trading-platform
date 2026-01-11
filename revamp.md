@@ -1,5 +1,5 @@
 #### V2 scaffolding
-- [ ] Create `appsv2/` layout (`cli`, `core/{orders,risk,portfolio,strategies}`, `broker`, `events`, `logging`, `persistence`).
+- [ ] Create `apps/` layout (`cli`, `core/{orders,risk,portfolio,strategies}`, `broker`, `events`, `logging`, `persistence`).
 - [ ] Add a simple in-process event bus (publish/subscribe).
 - [ ] Define core contracts: `OrderSpec` and ports for orders/market data/account.
 

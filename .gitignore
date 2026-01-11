@@ -15,4 +15,4 @@ dist/
 # System
 .DS_Store
 *.log
-appsv2/journal/
+apps/journal/

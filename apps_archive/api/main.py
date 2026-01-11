@@ -1,9 +1,9 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from apps.adapters.pnl.db import ensure_schema
 from apps.api import settings
 from apps.api.routes import pnl
+from apps.data.db import ensure_schema
 
 
 def create_app() -> FastAPI:
@@ -27,7 +27,9 @@ def create_app() -> FastAPI:
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
+    # Register route groups
     app.include_router(pnl.router)
+
     return app
 
 

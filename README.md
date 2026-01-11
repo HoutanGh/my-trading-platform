@@ -1,19 +1,19 @@
-# My Trading Platform (appsv2)
+# My Trading Platform (apps)
 
-This repo centers on appsv2 (core + adapters + CLI + API) with a separate web UI.
-It includes a production-ready breakout automation flow in appsv2.
-The legacy `apps/` folder is no longer used by appsv2.
+This repo centers on apps (core + adapters + CLI + API) with a separate web UI.
+It includes a production-ready breakout automation flow in apps.
+The legacy `apps_archive/` folder is no longer used by the `apps/` package.
 
-## appsv2 goals
+## apps goals
 
 - Keep core trading logic independent of IBKR and the CLI.
 - Use a small in-process event bus so the CLI can react to events without tight coupling.
 - Make the CLI a thin, async REPL that stays responsive while work happens in the background.
 
-## Directory map (appsv2)
+## Directory map (apps)
 
 ```
-appsv2/
+apps/
   core/
     market_data/
       models.py     # Bar model
@@ -104,12 +104,12 @@ CLI -> OrderService -> OrderPort(IBKR) -> IBKR
 - OrderStatusChanged: status snapshot/update from broker.
 - BreakoutStarted/BreakoutBreakDetected/BreakoutConfirmed/BreakoutStopped: breakout lifecycle milestones.
 
-## CLI usage (appsv2)
+## CLI usage (apps)
 
 Launch:
 
 ```
-python -m appsv2.cli
+python -m apps.cli
 ```
 
 Commands (current):
@@ -161,10 +161,10 @@ Quick start:
 
 1) Start Postgres and set `DATABASE_URL`.
 2) Ingest a CSV:
-   - `python -m appsv2.cli`
+   - `python -m apps.cli`
    - `ingest-flex csv=data/raw/Daily_PL.csv account=DU123456`
 3) Start the API:
-   - `uvicorn appsv2.api.main:app --reload`
+   - `uvicorn apps.api.main:app --reload`
 4) Start the web UI:
    - `cd web && npm run dev`
 
@@ -172,7 +172,7 @@ Quick start:
 
 Events are logged to JSONL by default:
 
-- APPV2_EVENT_LOG_PATH (default: appsv2/journal/events.jsonl)
+- APPS_EVENT_LOG_PATH (default: apps/journal/events.jsonl; legacy: APPV2_EVENT_LOG_PATH)
 
 Each line contains the event type and serialized event payload.
 
@@ -191,8 +191,8 @@ Each line contains the event type and serialized event payload.
 
 ## Other parts of the repo (legacy)
 
-- apps/: legacy code, no longer used by appsv2.
+- apps_archive/: legacy code, no longer used by the `apps/` package.
 - web/: React calendar for daily realized PnL (read-only UI).
 - docs/: design notes.
 
-If you are working on appsv2, the v1 code is reference only and not part of the current architecture.
+If you are working on apps, the v1 code in `apps_archive/` is reference only and not part of the current architecture.
