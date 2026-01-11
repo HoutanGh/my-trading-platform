@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import time
+import uuid
 from typing import Optional
 
-from ib_insync import IB, LimitOrder, MarketOrder, Stock, Trade
+from ib_insync import IB, LimitOrder, MarketOrder, Stock, StopOrder, Trade
 
 from appsv2.adapters.broker.ibkr_connection import IBKRConnection
 from appsv2.core.orders.events import (
@@ -12,7 +13,7 @@ from appsv2.core.orders.events import (
     OrderSent,
     OrderStatusChanged,
 )
-from appsv2.core.orders.models import OrderAck, OrderSpec, OrderType
+from appsv2.core.orders.models import BracketOrderSpec, OrderAck, OrderSide, OrderSpec, OrderType
 from appsv2.core.orders.ports import EventBus, OrderPort
 
 
@@ -58,6 +59,68 @@ class IBKROrderPort(OrderPort):
             )
         return OrderAck.now(order_id=order_id, status=status)
 
+    async def submit_bracket_order(self, spec: BracketOrderSpec) -> OrderAck:
+        if not self._ib.isConnected():
+            raise RuntimeError("IBKR is not connected")
+
+        contract = Stock(spec.symbol, spec.exchange, spec.currency)
+        contracts = await self._ib.qualifyContractsAsync(contract)
+        if not contracts:
+            raise RuntimeError(f"Could not qualify contract for {spec.symbol}")
+        qualified = contracts[0]
+
+        if spec.entry_type == OrderType.MARKET:
+            parent = MarketOrder(spec.side.value, spec.qty, tif=spec.tif)
+        elif spec.entry_type == OrderType.LIMIT:
+            parent = LimitOrder(spec.side.value, spec.qty, spec.entry_price, tif=spec.tif)
+        else:
+            raise RuntimeError(f"Unsupported entry type: {spec.entry_type}")
+
+        parent.transmit = False
+        parent.outsideRth = spec.outside_rth
+        if spec.account:
+            parent.account = spec.account
+        if spec.client_tag:
+            parent.orderRef = spec.client_tag
+
+        child_side = "SELL" if spec.side == OrderSide.BUY else "BUY"
+        oca_group = f"BRKT-{uuid.uuid4().hex[:10]}"
+        take_profit = LimitOrder(child_side, spec.qty, spec.take_profit, tif=spec.tif)
+        take_profit.ocaGroup = oca_group
+        take_profit.transmit = False
+        take_profit.outsideRth = spec.outside_rth
+        if spec.account:
+            take_profit.account = spec.account
+        if spec.client_tag:
+            take_profit.orderRef = spec.client_tag
+
+        stop_loss = StopOrder(child_side, spec.qty, spec.stop_loss, tif=spec.tif)
+        stop_loss.ocaGroup = oca_group
+        stop_loss.transmit = True
+        stop_loss.outsideRth = spec.outside_rth
+        if spec.account:
+            stop_loss.account = spec.account
+        if spec.client_tag:
+            stop_loss.orderRef = spec.client_tag
+
+        parent_spec = _entry_spec_from_bracket(spec)
+        trade = self._ib.placeOrder(qualified, parent)
+        if self._event_bus:
+            self._event_bus.publish(OrderSent.now(parent_spec))
+        order_id = await _wait_for_order_id(trade)
+        take_profit.parentId = order_id
+        stop_loss.parentId = order_id
+        self._ib.placeOrder(qualified, take_profit)
+        self._ib.placeOrder(qualified, stop_loss)
+        if self._event_bus:
+            self._event_bus.publish(OrderIdAssigned.now(parent_spec, order_id))
+        status = await _wait_for_order_status(trade)
+        if self._event_bus:
+            self._event_bus.publish(
+                OrderStatusChanged.now(parent_spec, order_id=order_id, status=status)
+            )
+        return OrderAck.now(order_id=order_id, status=status)
+
 
 async def _wait_for_order_id(
     trade: Trade,
@@ -87,3 +150,19 @@ async def _wait_for_order_status(
         await asyncio.sleep(poll_interval)
         status = trade.orderStatus.status
     return status or None
+
+
+def _entry_spec_from_bracket(spec: BracketOrderSpec) -> OrderSpec:
+    return OrderSpec(
+        symbol=spec.symbol,
+        qty=spec.qty,
+        side=spec.side,
+        order_type=spec.entry_type,
+        limit_price=spec.entry_price,
+        tif=spec.tif,
+        outside_rth=spec.outside_rth,
+        exchange=spec.exchange,
+        currency=spec.currency,
+        account=spec.account,
+        client_tag=spec.client_tag,
+    )

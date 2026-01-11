@@ -30,4 +30,22 @@
 - 'ports.py' defines the interfaces the core expects without caring about the CSV/DB
 - 'service.py' orchestration entrypoint 
     - need to say if i want event publishing - ask what the benefits are
-    
+
+
+### Breakout
+- reusable aspects
+    - connecting to ikbr
+    - subscribing to time data
+- the only thing that is unique is the breakout strategy
+
+#### what's left
+- have a take proft and stop loss
+    - if volatile larger stop loss
+        - general volatility of stock (float)
+        - and recent volatility that is the reason i am trading it
+    - calculate take profit based the next highest price that has the most dense trades
+        - to verify this, provide date so i can see if it is right
+
+    - then i can test this
+    - provide profit made
+    - provide status of order 

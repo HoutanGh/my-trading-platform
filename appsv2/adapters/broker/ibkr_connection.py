@@ -36,6 +36,7 @@ class IBKRConnection:
     def __init__(self, config: IBKRConnectionConfig, ib: Optional[IB] = None) -> None:
         self._config = config
         self._ib = ib or IB()
+        self._install_error_filter()
 
     @property
     def ib(self) -> IB:
@@ -81,6 +82,7 @@ class IBKRConnection:
             timeout=new_timeout,
             readonly=new_readonly,
         )
+        self._install_error_filter()
 
         self._config = IBKRConnectionConfig(
             host=new_host,
@@ -107,3 +109,50 @@ class IBKRConnection:
             "readonly": self._config.readonly,
             "paper_only": self._config.paper_only,
         }
+
+    def _install_error_filter(self) -> None:
+        wrappers = []
+        wrapper = getattr(self._ib, "wrapper", None)
+        if wrapper is not None:
+            wrappers.append(wrapper)
+        client = getattr(self._ib, "client", None)
+        client_wrapper = getattr(client, "wrapper", None) if client else None
+        if client_wrapper is not None and client_wrapper not in wrappers:
+            wrappers.append(client_wrapper)
+
+        for wrapper in wrappers:
+            current_error = getattr(wrapper, "error", None)
+            if not callable(current_error):
+                continue
+            if getattr(current_error, "_appsv2_filtered", False):
+                continue
+
+            def _filtered_error(*args, _original=current_error, **kwargs) -> None:
+                if _should_suppress_error(args, kwargs):
+                    return
+                _original(*args, **kwargs)
+
+            _filtered_error._appsv2_filtered = True  # type: ignore[attr-defined]
+            wrapper.error = _filtered_error
+
+
+def _should_suppress_error(args: tuple[object, ...], kwargs: dict[str, object]) -> bool:
+    error_code = None
+    error_string = None
+    if len(args) >= 3:
+        error_code = args[1]
+        error_string = args[2]
+    else:
+        error_code = kwargs.get("errorCode")
+        error_string = kwargs.get("errorString") or kwargs.get("errorMsg")
+
+    try:
+        code = int(error_code) if error_code is not None else None
+    except (TypeError, ValueError):
+        code = None
+
+    if code != 162:
+        return False
+    if not error_string:
+        return True
+    return "query cancelled" in str(error_string).lower()

@@ -8,9 +8,13 @@ from typing import Awaitable, Callable, Optional
 
 from appsv2.adapters.broker.ibkr_connection import IBKRConnection
 from appsv2.cli.order_tracker import OrderTracker
+from appsv2.core.market_data.ports import BarStreamPort
 from appsv2.core.orders.models import OrderSide, OrderSpec, OrderType
+from appsv2.core.orders.ports import EventBus
 from appsv2.core.orders.service import OrderService, OrderValidationError
 from appsv2.core.pnl.service import PnlService
+from appsv2.core.strategies.breakout.logic import BreakoutRuleConfig
+from appsv2.core.strategies.breakout.runner import BreakoutRunConfig, run_breakout
 
 CommandHandler = Callable[[list[str], dict[str, str]], Awaitable[None]]
 
@@ -31,6 +35,8 @@ class REPL:
         order_service: Optional[OrderService] = None,
         order_tracker: Optional[OrderTracker] = None,
         pnl_service: Optional[PnlService] = None,
+        bar_stream: Optional[BarStreamPort] = None,
+        event_bus: Optional[EventBus] = None,
         *,
         prompt: str = "appsv2> ",
     ) -> None:
@@ -38,11 +44,14 @@ class REPL:
         self._order_service = order_service
         self._order_tracker = order_tracker
         self._pnl_service = pnl_service
+        self._bar_stream = bar_stream
+        self._event_bus = event_bus
         self._prompt = prompt
         self._config: dict[str, str] = {}
         self._commands: dict[str, CommandSpec] = {}
         self._aliases: dict[str, str] = {}
         self._should_exit = False
+        self._breakout_tasks: dict[str, tuple[BreakoutRunConfig, asyncio.Task]] = {}
         self._register_commands()
 
     async def run(self) -> None:
@@ -67,6 +76,7 @@ class REPL:
                 await spec.handler(args, kwargs)
             except Exception as exc:
                 print(f"Error: {exc}")
+        await self._stop_breakouts()
 
     def _register_commands(self) -> None:
         self._register(
@@ -108,6 +118,18 @@ class REPL:
                 handler=self._cmd_sell,
                 help="Submit a basic sell order (market or limit).",
                 usage="sell SYMBOL qty=... [limit=...] [tif=DAY] [outside_rth=true|false] [account=...] [client_tag=...]",
+            )
+        )
+        self._register(
+            CommandSpec(
+                name="breakout",
+                handler=self._cmd_breakout,
+                help="Start or stop a breakout watcher.",
+                usage=(
+                    "breakout SYMBOL level=... qty=... [tp=...] [sl=...] [rth=true|false] [bar=1 min] "
+                    "[max_bars=...] [tif=DAY] [outside_rth=true|false] [account=...] [client_tag=...] "
+                    "| breakout status | breakout stop [SYMBOL]"
+                ),
             )
         )
         self._register(
@@ -266,6 +288,119 @@ class REPL:
     async def _cmd_sell(self, args: list[str], kwargs: dict[str, str]) -> None:
         await self._submit_order(OrderSide.SELL, args, kwargs)
 
+    async def _cmd_breakout(self, args: list[str], kwargs: dict[str, str]) -> None:
+        if not self._bar_stream or not self._order_service:
+            print("Breakout not configured.")
+            return
+        if not self._connection.status().get("connected"):
+            print("Not connected. Use `connect` before starting a breakout watcher.")
+            return
+        if args:
+            action = args[0].lower()
+            if action in {"status", "list"}:
+                self._print_breakout_status()
+                return
+            if action == "stop":
+                symbol = args[1] if len(args) > 1 else kwargs.get("symbol")
+                await self._stop_breakouts(symbol=symbol)
+                return
+
+        symbol = args[0] if args else kwargs.get("symbol") or _config_get(self._config, "symbol")
+        if not symbol:
+            print(self._commands["breakout"].usage)
+            return
+        level_raw = kwargs.get("level") or _config_get(self._config, "level")
+        qty_raw = kwargs.get("qty") or _config_get(self._config, "qty")
+        if level_raw is None or qty_raw is None:
+            print(self._commands["breakout"].usage)
+            return
+        try:
+            level = float(level_raw)
+        except ValueError:
+            print("level must be a number")
+            return
+        try:
+            qty = int(qty_raw)
+        except ValueError:
+            print("qty must be an integer")
+            return
+
+        tp_raw = kwargs.get("tp") or _config_get(self._config, "tp")
+        sl_raw = kwargs.get("sl") or _config_get(self._config, "sl")
+        take_profit = None
+        stop_loss = None
+        if tp_raw is not None or sl_raw is not None:
+            if tp_raw is None or sl_raw is None:
+                print("tp and sl must be provided together")
+                return
+            try:
+                take_profit = float(tp_raw)
+            except ValueError:
+                print("tp must be a number")
+                return
+            try:
+                stop_loss = float(sl_raw)
+            except ValueError:
+                print("sl must be a number")
+                return
+
+        bar_size = (
+            kwargs.get("bar")
+            or kwargs.get("bar_size")
+            or _config_get(self._config, "bar_size")
+            or "1 min"
+        )
+        use_rth_value = kwargs.get("rth") or kwargs.get("use_rth") or _config_get(self._config, "use_rth")
+        use_rth = _parse_bool(use_rth_value) if use_rth_value is not None else False
+        outside_rth_value = kwargs.get("outside_rth") or _config_get(self._config, "outside_rth")
+        outside_rth = _parse_bool(outside_rth_value) if outside_rth_value is not None else False
+        tif = kwargs.get("tif") or _config_get(self._config, "tif") or "DAY"
+        account = kwargs.get("account") or _config_get(self._config, "account")
+        client_tag = kwargs.get("client_tag") or _config_get(self._config, "client_tag")
+
+        max_bars_raw = kwargs.get("max_bars") or _config_get(self._config, "max_bars")
+        max_bars = None
+        if max_bars_raw is not None:
+            try:
+                max_bars = int(max_bars_raw)
+            except ValueError:
+                print("max_bars must be an integer")
+                return
+
+        symbol = symbol.strip().upper()
+        task_name = f"breakout:{symbol}:{level}"
+        if task_name in self._breakout_tasks:
+            print(f"Breakout watcher already running: {task_name}")
+            return
+
+        run_config = BreakoutRunConfig(
+            symbol=symbol,
+            qty=qty,
+            rule=BreakoutRuleConfig(level=level),
+            take_profit=take_profit,
+            stop_loss=stop_loss,
+            use_rth=use_rth,
+            bar_size=bar_size,
+            max_bars=max_bars,
+            tif=tif,
+            outside_rth=outside_rth,
+            account=account,
+            client_tag=client_tag,
+        )
+
+        task = asyncio.create_task(
+            run_breakout(
+                run_config,
+                bar_stream=self._bar_stream,
+                order_service=self._order_service,
+                event_bus=self._event_bus,
+            ),
+            name=task_name,
+        )
+        self._breakout_tasks[task_name] = (run_config, task)
+        task.add_done_callback(lambda t: self._on_breakout_done(task_name, t))
+        print(f"Breakout watcher started: {task_name}")
+
     async def _cmd_orders(self, _args: list[str], _kwargs: dict[str, str]) -> None:
         if not self._order_tracker:
             print("Order tracker not configured.")
@@ -277,6 +412,48 @@ class REPL:
             return
         for line in lines:
             print(line)
+
+    def _print_breakout_status(self) -> None:
+        if not self._breakout_tasks:
+            print("No breakout watchers running.")
+            return
+        for name, (config, task) in sorted(self._breakout_tasks.items()):
+            state = "running" if not task.done() else "done"
+            print(
+                f"{name} symbol={config.symbol} level={config.rule.level} "
+                f"qty={config.qty} state={state}"
+            )
+
+    async def _stop_breakouts(self, symbol: Optional[str] = None) -> None:
+        if not self._breakout_tasks:
+            return
+        symbol_filter = symbol.strip().upper() if symbol else None
+        targets = []
+        for name, (config, task) in self._breakout_tasks.items():
+            if symbol_filter and config.symbol != symbol_filter:
+                continue
+            targets.append((name, task))
+        if not targets:
+            if symbol_filter:
+                print(f"No breakout watchers found for {symbol_filter}.")
+            return
+        for _name, task in targets:
+            task.cancel()
+        await asyncio.gather(*(task for _, task in targets), return_exceptions=True)
+        for name, _task in targets:
+            self._breakout_tasks.pop(name, None)
+        print(f"Stopped {len(targets)} breakout watcher(s).")
+
+    def _on_breakout_done(self, task_name: str, task: asyncio.Task) -> None:
+        self._breakout_tasks.pop(task_name, None)
+        if task.cancelled():
+            print(f"Breakout watcher cancelled: {task_name}")
+            return
+        exc = task.exception()
+        if exc:
+            print(f"Breakout watcher failed: {task_name} error={exc}")
+            return
+        print(f"Breakout watcher finished: {task_name}")
 
     async def _cmd_ingest_flex(self, args: list[str], kwargs: dict[str, str]) -> None:
         if not self._pnl_service:
@@ -337,6 +514,7 @@ class REPL:
         )
 
     async def _cmd_quit(self, _args: list[str], _kwargs: dict[str, str]) -> None:
+        await self._stop_breakouts()
         self._should_exit = True
 
     async def _submit_order(
@@ -428,6 +606,21 @@ def _flag_aliases(command: str) -> dict[str, str]:
             "c": "client_id",
             "r": "readonly",
             "t": "timeout",
+        }
+    if command == "breakout":
+        return {
+            "s": "symbol",
+            "l": "level",
+            "q": "qty",
+            "p": "tp",
+            "x": "sl",
+            "r": "rth",
+            "b": "bar",
+            "m": "max_bars",
+            "t": "tif",
+            "o": "outside_rth",
+            "a": "account",
+            "c": "client_tag",
         }
     if command == "orders":
         return {"p": "pending"}

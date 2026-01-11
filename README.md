@@ -1,6 +1,7 @@
 # My Trading Platform (appsv2)
 
 This repo centers on appsv2 (core + adapters + CLI + API) with a separate web UI.
+It includes a production-ready breakout automation flow in appsv2.
 The legacy `apps/` folder is no longer used by appsv2.
 
 ## appsv2 goals
@@ -14,11 +15,19 @@ The legacy `apps/` folder is no longer used by appsv2.
 ```
 appsv2/
   core/
+    market_data/
+      models.py     # Bar model
+      ports.py      # BarStreamPort interface
     orders/
       models.py     # OrderSpec, OrderAck, enums
       ports.py      # OrderPort + EventBus interface
       service.py    # OrderService (validation + intent)
       events.py     # OrderIntent, OrderSent, OrderIdAssigned, OrderStatusChanged
+    strategies/
+      breakout/
+        logic.py    # Breakout rule + state
+        runner.py   # Breakout watcher (bar stream -> order)
+        events.py   # Breakout lifecycle events
     pnl/
       models.py     # DailyPnlRow, PnlIngestResult
       ports.py      # DailyPnlStore + FlexPnlIngestor interfaces
@@ -28,6 +37,8 @@ appsv2/
     broker/
       ibkr_connection.py  # connect/disconnect + config
       ibkr_order_port.py  # OrderPort implementation (IBKR)
+    market_data/
+      ibkr_bars.py         # BarStreamPort implementation (IBKR)
     pnl/
       db.py              # Postgres connection + schema
       store.py           # daily_pnl upserts + queries
@@ -50,8 +61,11 @@ appsv2/
 ## Core concepts
 
 - OrderSpec: broker-agnostic order contract (symbol, qty, side, type, limit, etc).
+- BracketOrderSpec: entry + TP/SL bracket contract.
 - OrderService: validates OrderSpec, publishes OrderIntent, and calls OrderPort.
 - OrderPort: interface for submitting orders (implemented by IBKROrderPort).
+- BarStreamPort: interface for streaming live bars.
+- Breakout runner: ties bar stream to breakout logic and order submission.
 - EventBus: interface for publishing/subscribing to events.
 - Events: simple dataclasses used for runtime observability.
 
@@ -72,12 +86,23 @@ CLI -> OrderService -> OrderPort(IBKR) -> IBKR
                |            +-> events
                +-> events
 
+## Flow (breakout automation)
+
+1) CLI starts a breakout watcher with symbol/level/qty (optional TP/SL).
+2) Bar stream emits 1-minute bars from IBKR.
+3) Breakout logic evaluates each bar for break/confirm.
+4) On confirm:
+   - submit market entry, or
+   - submit bracket order when TP/SL are provided.
+5) Breakout lifecycle events are emitted and the watcher stops.
+
 ## Event meanings (be precise)
 
 - OrderIntent: order validated, about to be sent to broker.
 - OrderSent: placeOrder(...) was called.
 - OrderIdAssigned: broker assigned an order_id.
 - OrderStatusChanged: status snapshot/update from broker.
+- BreakoutStarted/BreakoutBreakDetected/BreakoutConfirmed/BreakoutStopped: breakout lifecycle milestones.
 
 ## CLI usage (appsv2)
 
@@ -93,6 +118,7 @@ Commands (current):
 - status
 - buy SYMBOL qty=... [limit=...] [tif=DAY] [outside_rth=true|false]
 - sell SYMBOL qty=... [limit=...] [tif=DAY] [outside_rth=true|false]
+- breakout SYMBOL level=... qty=... [tp=...] [sl=...] [rth=true|false] [bar=1 min] [max_bars=...]
 - orders [pending]
 - ingest-flex csv=... account=... [source=flex]
 - set key=value [key=value ...]
@@ -113,6 +139,7 @@ connect paper --host 127.0.0.1 --port 7497 -c 1001
 set symbol=AAPL qty=5 tif=DAY
 buy AAPL qty=5 limit=189.50
 sell --symbol TSLA -q 2 -l 242.10
+breakout AAPL level=190 qty=1 tp=195 sl=187
 orders --pending
 ingest-flex csv=data/raw/Daily_PL.csv account=DU123456
 ```
@@ -154,7 +181,8 @@ Each line contains the event type and serialized event payload.
 - IBKR: Interactive Brokers.
 - TIF: Time in force (DAY, GTC).
 - RTH: Regular Trading Hours (outside_rth enables extended hours).
-- OCA: One-Cancels-All (not used in appsv2 yet).
+- OCA: One-Cancels-All (used for bracket TP/SL).
+- Bracket order: entry plus TP/SL exits linked by OCA.
 - Port: interface defined in core (OrderPort, EventBus).
 - Adapter: implementation of a port (IBKR adapter, event bus).
 - Event bus: in-process pub/sub that lets subscribers react to events.

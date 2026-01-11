@@ -32,6 +32,23 @@ class OrderSpec:
 
 
 @dataclass(frozen=True)
+class BracketOrderSpec:
+    symbol: str
+    qty: int
+    side: OrderSide
+    entry_type: OrderType = OrderType.MARKET
+    entry_price: Optional[float] = None
+    take_profit: float = 0.0
+    stop_loss: float = 0.0
+    tif: str = "DAY"
+    outside_rth: bool = False
+    exchange: str = "SMART"
+    currency: str = "USD"
+    account: Optional[str] = None
+    client_tag: Optional[str] = None
+
+
+@dataclass(frozen=True)
 class OrderAck:
     order_id: Optional[int]
     status: Optional[str]
