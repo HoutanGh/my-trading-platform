@@ -45,7 +45,21 @@
         - and recent volatility that is the reason i am trading it
     - calculate take profit based the next highest price that has the most dense trades
         - to verify this, provide date so i can see if it is right
+        - need to get historical data from this 
 
     - then i can test this
     - provide profit made
     - provide status of order 
+
+
+---
+
+## Learning
+
+- dataclasses
+- typing
+- asyncio
+- architecture
+- event-driven design
+
+- [ ] then go through the code and see if you understand
