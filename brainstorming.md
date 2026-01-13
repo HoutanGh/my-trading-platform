@@ -1,3 +1,17 @@
+
+#### BREAKOUT
+- there seemed to be a delay for when the breakout happened and breakout assigning IDs and shit
+- need to if changing code now affects current orders in app
+- need to know the all the stages filled, partially filled etc.
+
+### CLI 
+- [ ] needs to autocomplete in app or maybe it never leaves the cli
+### Ideas
+- stop losses might not be good, research literally using if statements so that can use them in pre and post market
+- also need to understand the exact logic of breakout tbh
+
+
+
 #### Overall
 - CLI Layer initialises the IKBR client and Service but then also calls code to build the orders, which then does separate calls
 - need to think about the layers being completely separate (CLI Layer, IKBR (ib_insync layer), strategy layer?, frontend?)
@@ -26,9 +40,6 @@
 - Then even later bracket AAPL qty=5 tp=calculate sl=calculate (different risks)
     - can see where it calculates by giving you price and date so that you can verify
 
-#### BREAKOUT
-- [ ] change breakout so the candle has to finish above the line and the next tick also
-- [ ] test if it subscribes to 1min data, just test everything in general
 
 
 - [ ] service has things that should be in orders, pretty sure service is not meant to have any ib_insync code
