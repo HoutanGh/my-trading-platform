@@ -58,3 +58,35 @@ class OrderStatusChanged:
         status: Optional[str],
     ) -> "OrderStatusChanged":
         return cls(spec=spec, order_id=order_id, status=status, timestamp=_now())
+
+
+@dataclass(frozen=True)
+class OrderFilled:
+    spec: OrderSpec
+    order_id: Optional[int]
+    status: Optional[str]
+    filled_qty: Optional[float]
+    avg_fill_price: Optional[float]
+    remaining_qty: Optional[float]
+    timestamp: datetime
+
+    @classmethod
+    def now(
+        cls,
+        spec: OrderSpec,
+        *,
+        order_id: Optional[int],
+        status: Optional[str],
+        filled_qty: Optional[float],
+        avg_fill_price: Optional[float],
+        remaining_qty: Optional[float],
+    ) -> "OrderFilled":
+        return cls(
+            spec=spec,
+            order_id=order_id,
+            status=status,
+            filled_qty=filled_qty,
+            avg_fill_price=avg_fill_price,
+            remaining_qty=remaining_qty,
+            timestamp=_now(),
+        )

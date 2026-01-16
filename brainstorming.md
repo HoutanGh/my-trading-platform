@@ -3,6 +3,8 @@
 - there seemed to be a delay for when the breakout happened and breakout assigning IDs and shit
 - need to if changing code now affects current orders in app
 - need to know the all the stages filled, partially filled etc.
+- just need to know positions
+
 
 ### CLI 
 - [ ] needs to autocomplete in app or maybe it never leaves the cli
@@ -25,6 +27,7 @@
 - asynchronous 
 
 #### CLI
+- CLI on the CL not on a new one, tab auto fills
 - [ ] fix the cli flow (a lot of errors)
     - [ ] note down the flow
     - [ ] note down where there isn't error handling
@@ -46,6 +49,6 @@
 - [ ] could you not generalise breakout_watcher.py, maybe the pure logic has inputs that help the strings make sense in the function
 
 #### CALENDAR
-- [ ] note down the flow for the csv ingestion
+- see if i can run npm run dev and other stuff in cli
 
 

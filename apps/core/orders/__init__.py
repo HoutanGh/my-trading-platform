@@ -3,6 +3,7 @@ from apps.core.orders.events import (
     OrderIntent,
     OrderSent,
     OrderStatusChanged,
+    OrderFilled,
 )
 from apps.core.orders.models import (
     BracketOrderSpec,
@@ -24,6 +25,7 @@ __all__ = [
     "OrderSent",
     "OrderIdAssigned",
     "OrderStatusChanged",
+    "OrderFilled",
     "OrderPort",
     "EventBus",
     "OrderService",

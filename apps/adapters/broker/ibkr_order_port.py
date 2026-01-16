@@ -12,6 +12,7 @@ from apps.core.orders.events import (
     OrderIdAssigned,
     OrderSent,
     OrderStatusChanged,
+    OrderFilled,
 )
 from apps.core.orders.models import BracketOrderSpec, OrderAck, OrderSide, OrderSpec, OrderType
 from apps.core.orders.ports import EventBus, OrderPort
@@ -47,6 +48,8 @@ class IBKROrderPort(OrderPort):
             order.orderRef = spec.client_tag
 
         trade = self._ib.placeOrder(qualified, order)
+        if self._event_bus:
+            _attach_trade_handlers(trade, spec, self._event_bus)
         if self._event_bus:
             self._event_bus.publish(OrderSent.now(spec))
         order_id = await _wait_for_order_id(trade)
@@ -105,6 +108,8 @@ class IBKROrderPort(OrderPort):
 
         parent_spec = _entry_spec_from_bracket(spec)
         trade = self._ib.placeOrder(qualified, parent)
+        if self._event_bus:
+            _attach_trade_handlers(trade, parent_spec, self._event_bus)
         if self._event_bus:
             self._event_bus.publish(OrderSent.now(parent_spec))
         order_id = await _wait_for_order_id(trade)
@@ -166,3 +171,65 @@ def _entry_spec_from_bracket(spec: BracketOrderSpec) -> OrderSpec:
         account=spec.account,
         client_tag=spec.client_tag,
     )
+
+
+def _attach_trade_handlers(trade: Trade, spec: OrderSpec, event_bus: EventBus) -> None:
+    last_status: Optional[str] = None
+    last_fill: tuple[Optional[float], Optional[float], Optional[float], Optional[str]] | None = None
+
+    def _publish_status(trade_obj: Trade) -> None:
+        nonlocal last_status
+        status = trade_obj.orderStatus.status
+        if not status or status == last_status:
+            return
+        last_status = status
+        event_bus.publish(
+            OrderStatusChanged.now(
+                spec,
+                order_id=trade_obj.order.orderId,
+                status=status,
+            )
+        )
+
+    def _publish_fill(trade_obj: Trade) -> None:
+        order_status = trade_obj.orderStatus
+        filled_qty = _maybe_float(order_status.filled)
+        avg_fill_price = _maybe_float(order_status.avgFillPrice)
+        remaining_qty = _maybe_float(order_status.remaining)
+        status = order_status.status
+        nonlocal last_fill
+        snapshot = (filled_qty, avg_fill_price, remaining_qty, status)
+        if snapshot == last_fill:
+            return
+        last_fill = snapshot
+        event_bus.publish(
+            OrderFilled.now(
+                spec,
+                order_id=trade_obj.order.orderId,
+                status=status,
+                filled_qty=filled_qty,
+                avg_fill_price=avg_fill_price,
+                remaining_qty=remaining_qty,
+            )
+        )
+
+    status_event = getattr(trade, "statusEvent", None)
+    if status_event is not None:
+        status_event += lambda trade_obj, *_args: _publish_status(trade_obj)
+
+    filled_event = getattr(trade, "filledEvent", None)
+    if filled_event is not None:
+        filled_event += lambda trade_obj, *_args: _publish_fill(trade_obj)
+
+    fill_event = getattr(trade, "fillEvent", None)
+    if fill_event is not None:
+        fill_event += lambda trade_obj, *_args: _publish_fill(trade_obj)
+
+
+def _maybe_float(value: object) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None

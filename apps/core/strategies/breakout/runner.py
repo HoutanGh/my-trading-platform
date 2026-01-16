@@ -74,6 +74,7 @@ async def run_breakout(
             if action == BreakoutAction.ENTER:
                 if event_bus:
                     event_bus.publish(BreakoutConfirmed.now(symbol, bar, config.rule.level))
+                client_tag = config.client_tag or _default_breakout_tag(symbol, config.rule.level)
                 if config.take_profit is not None and config.stop_loss is not None:
                     spec = BracketOrderSpec(
                         symbol=symbol,
@@ -86,7 +87,7 @@ async def run_breakout(
                         tif=config.tif,
                         outside_rth=config.outside_rth,
                         account=config.account,
-                        client_tag=config.client_tag,
+                        client_tag=client_tag,
                     )
                     await order_service.submit_bracket(spec)
                 else:
@@ -98,7 +99,7 @@ async def run_breakout(
                         tif=config.tif,
                         outside_rth=config.outside_rth,
                         account=config.account,
-                        client_tag=config.client_tag,
+                        client_tag=client_tag,
                     )
                     await order_service.submit_order(spec)
                 if event_bus:
@@ -126,3 +127,8 @@ async def run_breakout(
         if event_bus:
             event_bus.publish(BreakoutStopped.now(symbol, reason="cancelled"))
         raise
+
+
+def _default_breakout_tag(symbol: str, level: float) -> str:
+    level_str = f"{level:g}"
+    return f"breakout:{symbol}:{level_str}"

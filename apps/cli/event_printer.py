@@ -5,6 +5,7 @@ from apps.core.orders.events import (
     OrderIntent,
     OrderSent,
     OrderStatusChanged,
+    OrderFilled,
 )
 from apps.core.pnl.events import (
     PnlIngestFailed,
@@ -47,6 +48,17 @@ def print_event(event: object) -> None:
             event.timestamp,
             "OrderStatus",
             f"{event.spec.symbol} order_id={event.order_id} status={event.status}",
+        )
+        return
+    if isinstance(event, OrderFilled):
+        _print_line(
+            event.timestamp,
+            "OrderFilled",
+            (
+                f"{event.spec.symbol} order_id={event.order_id} status={event.status} "
+                f"filled={event.filled_qty} avg_price={event.avg_fill_price} "
+                f"remaining={event.remaining_qty}"
+            ),
         )
         return
     if isinstance(event, PnlIngestStarted):

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import traceback
 from typing import Awaitable, Callable, TypeVar
 
 EventT = TypeVar("EventT")
@@ -43,7 +44,10 @@ class InProcessEventBus:
         try:
             result = handler(event)
         except Exception as exc:
-            print(f"Event handler error: {exc}")
+            _print_exception(
+                f"Event handler error (event={type(event).__name__}, handler={_handler_name(handler)})",
+                exc,
+            )
             return
 
         if inspect.isawaitable(result):
@@ -59,4 +63,16 @@ def _swallow_task_error(task: asyncio.Task) -> None:
     try:
         task.result()
     except Exception as exc:
-        print(f"Event handler task error: {exc}")
+        _print_exception("Event handler task error", exc)
+
+
+def _handler_name(handler: EventHandler) -> str:
+    name = getattr(handler, "__name__", None)
+    if name:
+        return name
+    return handler.__class__.__name__
+
+
+def _print_exception(prefix: str, exc: BaseException) -> None:
+    print(f"{prefix}:")
+    traceback.print_exception(type(exc), exc, exc.__traceback__)

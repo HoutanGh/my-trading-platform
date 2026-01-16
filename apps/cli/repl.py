@@ -2,17 +2,26 @@ from __future__ import annotations
 
 import asyncio
 import shlex
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
+try:
+    import readline
+except ImportError:
+    readline = None
+
 from apps.adapters.broker.ibkr_connection import IBKRConnection
 from apps.cli.order_tracker import OrderTracker
+from apps.cli.position_origin_tracker import PositionOriginTracker
 from apps.core.market_data.ports import BarStreamPort
 from apps.core.orders.models import OrderSide, OrderSpec, OrderType
 from apps.core.orders.ports import EventBus
 from apps.core.orders.service import OrderService, OrderValidationError
 from apps.core.pnl.service import PnlService
+from apps.core.positions.models import PositionSnapshot
+from apps.core.positions.service import PositionsService
 from apps.core.strategies.breakout.logic import BreakoutRuleConfig
 from apps.core.strategies.breakout.runner import BreakoutRunConfig, run_breakout
 
@@ -35,6 +44,8 @@ class REPL:
         order_service: Optional[OrderService] = None,
         order_tracker: Optional[OrderTracker] = None,
         pnl_service: Optional[PnlService] = None,
+        positions_service: Optional[PositionsService] = None,
+        position_origin_tracker: Optional[PositionOriginTracker] = None,
         bar_stream: Optional[BarStreamPort] = None,
         event_bus: Optional[EventBus] = None,
         *,
@@ -44,6 +55,8 @@ class REPL:
         self._order_service = order_service
         self._order_tracker = order_tracker
         self._pnl_service = pnl_service
+        self._positions_service = positions_service
+        self._position_origin_tracker = position_origin_tracker
         self._bar_stream = bar_stream
         self._event_bus = event_bus
         self._prompt = prompt
@@ -52,7 +65,9 @@ class REPL:
         self._aliases: dict[str, str] = {}
         self._should_exit = False
         self._breakout_tasks: dict[str, tuple[BreakoutRunConfig, asyncio.Task]] = {}
+        self._completion_matches: list[str] = []
         self._register_commands()
+        self._setup_readline()
 
     async def run(self) -> None:
         print("Apps CLI (type 'help' to list commands).")
@@ -75,7 +90,7 @@ class REPL:
             try:
                 await spec.handler(args, kwargs)
             except Exception as exc:
-                print(f"Error: {exc}")
+                _print_exception("Command error", exc)
         await self._stop_breakouts()
 
     def _register_commands(self) -> None:
@@ -142,6 +157,15 @@ class REPL:
         )
         self._register(
             CommandSpec(
+                name="positions",
+                handler=self._cmd_positions,
+                help="Show current positions from IBKR.",
+                usage="positions [account=...]",
+                aliases=("pos",),
+            )
+        )
+        self._register(
+            CommandSpec(
                 name="ingest-flex",
                 handler=self._cmd_ingest_flex,
                 help="Ingest a Flex CSV into daily P&L.",
@@ -195,6 +219,98 @@ class REPL:
         self._commands[spec.name] = spec
         for alias in spec.aliases:
             self._aliases[alias] = spec.name
+
+    def _setup_readline(self) -> None:
+        if readline is None:
+            return
+        readline.set_completer(self._complete)
+        readline.parse_and_bind("tab: complete")
+
+    def _complete(self, text: str, state: int) -> Optional[str]:
+        if readline is None:
+            return None
+        if state == 0:
+            self._completion_matches = self._completion_matches_for(text)
+        if state < len(self._completion_matches):
+            return self._completion_matches[state]
+        return None
+
+    def _completion_matches_for(self, text: str) -> list[str]:
+        if readline is None:
+            return []
+        line = readline.get_line_buffer()
+        begidx = readline.get_begidx()
+        if not line[:begidx].strip():
+            return _match_prefix(text, self._command_names())
+        try:
+            parts = shlex.split(line)
+        except ValueError:
+            parts = line.strip().split()
+        if not parts:
+            return _match_prefix(text, self._command_names())
+        cmd_name = parts[0].lower()
+        if cmd_name in {"help", "commands", "?"}:
+            return _match_prefix(text, self._command_names())
+        return _match_prefix(text, self._completion_candidates(cmd_name))
+
+    def _command_names(self) -> list[str]:
+        names = set(self._commands) | set(self._aliases)
+        return sorted(names)
+
+    def _completion_candidates(self, command: str) -> list[str]:
+        spec = self._resolve_command(command)
+        if not spec:
+            return []
+        name = spec.name
+        if name in {"buy", "sell"}:
+            return [
+                "qty=",
+                "limit=",
+                "tif=",
+                "outside_rth=",
+                "account=",
+                "client_tag=",
+                "symbol=",
+            ]
+        if name == "connect":
+            return [
+                "paper",
+                "live",
+                "host=",
+                "port=",
+                "client_id=",
+                "readonly=",
+                "timeout=",
+            ]
+        if name == "breakout":
+            return [
+                "status",
+                "list",
+                "stop",
+                "symbol=",
+                "level=",
+                "qty=",
+                "tp=",
+                "sl=",
+                "rth=",
+                "bar=",
+                "max_bars=",
+                "tif=",
+                "outside_rth=",
+                "account=",
+                "client_tag=",
+            ]
+        if name == "orders":
+            return ["pending"]
+        if name == "positions":
+            return ["account="]
+        if name == "ingest-flex":
+            return ["csv=", "account=", "source="]
+        if name == "show":
+            return ["config"]
+        if name == "set":
+            return [f"{key}=" for key in sorted(self._config)]
+        return []
 
     def _resolve_command(self, name: str) -> Optional[CommandSpec]:
         if name in self._commands:
@@ -281,6 +397,7 @@ class REPL:
             "Connected: "
             f"{cfg.host}:{cfg.port} client_id={cfg.client_id} readonly={cfg.readonly}"
         )
+        await self._seed_position_origins()
 
     async def _cmd_buy(self, args: list[str], kwargs: dict[str, str]) -> None:
         await self._submit_order(OrderSide.BUY, args, kwargs)
@@ -413,6 +530,45 @@ class REPL:
         for line in lines:
             print(line)
 
+    async def _seed_position_origins(self) -> None:
+        if not self._position_origin_tracker:
+            return
+        if not self._connection.status().get("connected"):
+            return
+        timeout = self._connection.config.timeout
+        try:
+            count = await self._position_origin_tracker.seed_from_ibkr(
+                self._connection.ib,
+                timeout=timeout,
+            )
+        except Exception as exc:
+            _print_exception("Position tag seed from IBKR failed", exc)
+            count = 0
+        if count:
+            print(f"Position tags loaded from IBKR executions: {count}")
+            return
+        fallback = self._position_origin_tracker.seed_from_jsonl()
+        if fallback:
+            print(f"Position tags loaded from event log: {fallback}")
+
+    async def _cmd_positions(self, _args: list[str], _kwargs: dict[str, str]) -> None:
+        if not self._positions_service:
+            print("Positions service not configured.")
+            return
+        if not self._connection.status().get("connected"):
+            print("Not connected. Use `connect` before requesting positions.")
+            return
+        account = _kwargs.get("account") or _config_get(self._config, "account")
+        positions = await self._positions_service.list_positions(account=account)
+        if not positions:
+            print("No positions found.")
+            return
+        tag_lookup = None
+        if self._position_origin_tracker:
+            tag_lookup = self._position_origin_tracker.tag_for
+        for line in _format_positions_table(positions, tag_lookup=tag_lookup):
+            print(line)
+
     def _print_breakout_status(self) -> None:
         if not self._breakout_tasks:
             print("No breakout watchers running.")
@@ -451,7 +607,7 @@ class REPL:
             return
         exc = task.exception()
         if exc:
-            print(f"Breakout watcher failed: {task_name} error={exc}")
+            _print_exception(f"Breakout watcher failed: {task_name}", exc)
             return
         print(f"Breakout watcher finished: {task_name}")
 
@@ -624,6 +780,8 @@ def _flag_aliases(command: str) -> dict[str, str]:
         }
     if command == "orders":
         return {"p": "pending"}
+    if command == "positions":
+        return {"a": "account"}
     return {}
 
 
@@ -680,3 +838,78 @@ def _is_pending_only(args: list[str], kwargs: dict[str, str]) -> bool:
         if arg.lower() in {"pending", "--pending"}:
             return True
     return False
+
+
+def _format_positions_table(
+    positions: list[PositionSnapshot],
+    *,
+    tag_lookup: Optional[Callable[[Optional[str], str], Optional[str]]] = None,
+) -> list[str]:
+    headers = [
+        "account",
+        "symbol",
+        "type",
+        "qty",
+        "avg_cost",
+        "mkt_price",
+        "mkt_value",
+        "unrl_pnl",
+        "rlzd_pnl",
+        "ccy",
+        "exch",
+    ]
+    if tag_lookup:
+        headers.append("tag")
+    rows: list[list[str]] = []
+    for pos in sorted(positions, key=lambda item: (item.account, item.symbol, item.sec_type)):
+        tag = tag_lookup(pos.account, pos.symbol) if tag_lookup else None
+        row = [
+            pos.account or "-",
+            pos.symbol or "-",
+            pos.sec_type or "-",
+            _format_number(pos.qty),
+            _format_number(pos.avg_cost),
+            _format_number(pos.market_price),
+            _format_number(pos.market_value),
+            _format_number(pos.unrealized_pnl),
+            _format_number(pos.realized_pnl),
+            pos.currency or "-",
+            pos.exchange or "-",
+        ]
+        if tag_lookup:
+            row.append(tag or "-")
+        rows.append(row)
+    widths = [len(label) for label in headers]
+    for row in rows:
+        for idx, value in enumerate(row):
+            widths[idx] = max(widths[idx], len(value))
+    header = " | ".join(label.ljust(widths[idx]) for idx, label in enumerate(headers))
+    divider = "-+-".join("-" * width for width in widths)
+    lines = [header, divider]
+    for row in rows:
+        lines.append(" | ".join(value.ljust(widths[idx]) for idx, value in enumerate(row)))
+    return lines
+
+
+def _format_number(value: Optional[float], *, precision: int = 4) -> str:
+    if value is None:
+        return "-"
+    try:
+        formatted = f"{float(value):.{precision}f}"
+    except (TypeError, ValueError):
+        return "-"
+    formatted = formatted.rstrip("0").rstrip(".")
+    return formatted if formatted else "0"
+
+
+def _match_prefix(text: str, options: list[str]) -> list[str]:
+    if not options:
+        return []
+    if not text:
+        return sorted(set(options))
+    return sorted({option for option in options if option.startswith(text)})
+
+
+def _print_exception(prefix: str, exc: BaseException) -> None:
+    print(f"{prefix}:")
+    traceback.print_exception(type(exc), exc, exc.__traceback__)
