@@ -1,15 +1,16 @@
-## 16/01/26
+## 17/01/26
 
+- [ ] need to catch errors
+    - [ ] IKBR not connected yet and trying buy/sell stuff etc. 
 ### BREAKOUT
-- [ ] debug breakout
+- [x] debug breakout
     - need positions from IKBR, verify with Trader Workstation
     - better information in logs 
 - [ ] need to properly understand the strategy to understand behaviour
     - does it start after mid tick is finished, or begins on the tick of the breakout
 
 ### CLI
-- [ ] CLI tabbing
-- [ ] CLI on the same line
+- [x] CLI tabbing
 
 ### CALENDAR
 
