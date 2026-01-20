@@ -143,6 +143,7 @@ class REPL:
                 usage=(
                     "breakout SYMBOL level=... qty=... [tp=...] [sl=...] [rth=true|false] [bar=1 min] "
                     "[max_bars=...] [tif=DAY] [outside_rth=true|false] [account=...] [client_tag=...] "
+                    "| breakout SYMBOL LEVEL QTY [TP] [SL] "
                     "| breakout status | breakout stop [SYMBOL]"
                 ),
             )
@@ -426,8 +427,16 @@ class REPL:
         if not symbol:
             print(self._commands["breakout"].usage)
             return
-        level_raw = kwargs.get("level") or _config_get(self._config, "level")
-        qty_raw = kwargs.get("qty") or _config_get(self._config, "qty")
+        positional_level = args[1] if len(args) > 1 else None
+        positional_qty = args[2] if len(args) > 2 else None
+        positional_tp = args[3] if len(args) > 3 else None
+        positional_sl = args[4] if len(args) > 4 else None
+        if len(args) > 5:
+            print(self._commands["breakout"].usage)
+            return
+
+        level_raw = kwargs.get("level") or positional_level or _config_get(self._config, "level")
+        qty_raw = kwargs.get("qty") or positional_qty or _config_get(self._config, "qty")
         if level_raw is None or qty_raw is None:
             print(self._commands["breakout"].usage)
             return
@@ -442,8 +451,8 @@ class REPL:
             print("qty must be an integer")
             return
 
-        tp_raw = kwargs.get("tp") or _config_get(self._config, "tp")
-        sl_raw = kwargs.get("sl") or _config_get(self._config, "sl")
+        tp_raw = kwargs.get("tp") or positional_tp or _config_get(self._config, "tp")
+        sl_raw = kwargs.get("sl") or positional_sl or _config_get(self._config, "sl")
         take_profit = None
         stop_loss = None
         if tp_raw is not None or sl_raw is not None:
