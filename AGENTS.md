@@ -10,7 +10,7 @@ Help me ship this trading platform safely with small, correct changes and clear 
 - Don’t guess silently: state assumptions and add TODOs if needed.
 - Every change must include verification steps (tests/commands or manual steps).
 
-## Required response format
+## Required response format (do not use this if I am just having a discussion)
 1) What you did (plain English)
 2) Why
 3) How to verify (commands/steps)

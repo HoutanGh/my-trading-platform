@@ -31,14 +31,9 @@ def evaluate_breakout(
 ) -> Tuple[BreakoutState, Optional[BreakoutAction]]:
     """
     Pure breakout rule evaluation.
-    - First bar with high >= level sets break_seen.
-    - Next bar with open >= level triggers ENTER, otherwise STOP.
+    - First bar with close >= level triggers ENTER.
+    - Otherwise keep waiting.
     """
-    if not state.break_seen:
-        if bar.high >= config.level:
-            return BreakoutState(break_seen=True, break_bar_time=bar.timestamp), None
-        return state, None
-
-    if bar.open >= config.level:
-        return state, BreakoutAction.ENTER
-    return state, BreakoutAction.STOP
+    if bar.close >= config.level:
+        return BreakoutState(break_seen=True, break_bar_time=bar.timestamp), BreakoutAction.ENTER
+    return state, None
