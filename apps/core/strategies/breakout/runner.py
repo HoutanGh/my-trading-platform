@@ -73,7 +73,15 @@ async def run_breakout(
 
             if action == BreakoutAction.ENTER:
                 if event_bus:
-                    event_bus.publish(BreakoutConfirmed.now(symbol, bar, config.rule.level))
+                    event_bus.publish(
+                        BreakoutConfirmed.now(
+                            symbol,
+                            bar,
+                            config.rule.level,
+                            take_profit=config.take_profit,
+                            stop_loss=config.stop_loss,
+                        )
+                    )
                 client_tag = config.client_tag or _default_breakout_tag(symbol, config.rule.level)
                 if config.take_profit is not None and config.stop_loss is not None:
                     spec = BracketOrderSpec(

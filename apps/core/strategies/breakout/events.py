@@ -41,10 +41,27 @@ class BreakoutConfirmed:
     bar: Bar
     level: float
     timestamp: datetime
+    take_profit: Optional[float] = None
+    stop_loss: Optional[float] = None
 
     @classmethod
-    def now(cls, symbol: str, bar: Bar, level: float) -> "BreakoutConfirmed":
-        return cls(symbol=symbol, bar=bar, level=level, timestamp=_now())
+    def now(
+        cls,
+        symbol: str,
+        bar: Bar,
+        level: float,
+        *,
+        take_profit: Optional[float] = None,
+        stop_loss: Optional[float] = None,
+    ) -> "BreakoutConfirmed":
+        return cls(
+            symbol=symbol,
+            bar=bar,
+            level=level,
+            timestamp=_now(),
+            take_profit=take_profit,
+            stop_loss=stop_loss,
+        )
 
 
 @dataclass(frozen=True)

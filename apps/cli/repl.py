@@ -564,9 +564,15 @@ class REPL:
             print("No positions found.")
             return
         tag_lookup = None
+        exit_lookup = None
         if self._position_origin_tracker:
             tag_lookup = self._position_origin_tracker.tag_for
-        for line in _format_positions_table(positions, tag_lookup=tag_lookup):
+            exit_lookup = self._position_origin_tracker.exit_levels_for
+        for line in _format_positions_table(
+            positions,
+            tag_lookup=tag_lookup,
+            exit_lookup=exit_lookup,
+        ):
             print(line)
 
     def _print_breakout_status(self) -> None:
@@ -844,6 +850,7 @@ def _format_positions_table(
     positions: list[PositionSnapshot],
     *,
     tag_lookup: Optional[Callable[[Optional[str], str], Optional[str]]] = None,
+    exit_lookup: Optional[Callable[[Optional[str], str], tuple[Optional[float], Optional[float]]]] = None,
 ) -> list[str]:
     headers = [
         "account",
@@ -858,11 +865,17 @@ def _format_positions_table(
         "ccy",
         "exch",
     ]
+    if exit_lookup:
+        headers.extend(["tp", "sl"])
     if tag_lookup:
         headers.append("tag")
     rows: list[list[str]] = []
     for pos in sorted(positions, key=lambda item: (item.account, item.symbol, item.sec_type)):
         tag = tag_lookup(pos.account, pos.symbol) if tag_lookup else None
+        tp_value = None
+        sl_value = None
+        if exit_lookup:
+            tp_value, sl_value = exit_lookup(pos.account, pos.symbol)
         row = [
             pos.account or "-",
             pos.symbol or "-",
@@ -876,6 +889,8 @@ def _format_positions_table(
             pos.currency or "-",
             pos.exchange or "-",
         ]
+        if exit_lookup:
+            row.extend([_format_number(tp_value), _format_number(sl_value)])
         if tag_lookup:
             row.append(tag or "-")
         rows.append(row)

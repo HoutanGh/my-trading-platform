@@ -98,10 +98,16 @@ def print_event(event: object) -> None:
         )
         return
     if isinstance(event, BreakoutConfirmed):
+        extras = []
+        if event.take_profit is not None:
+            extras.append(f"tp={event.take_profit}")
+        if event.stop_loss is not None:
+            extras.append(f"sl={event.stop_loss}")
+        suffix = f" {' '.join(extras)}" if extras else ""
         _print_line(
             event.timestamp,
             "BreakoutConfirmed",
-            f"{event.symbol} level={event.level} bar={event.bar.timestamp.isoformat()}",
+            f"{event.symbol} level={event.level} bar={event.bar.timestamp.isoformat()}{suffix}",
         )
         return
     if isinstance(event, BreakoutRejected):

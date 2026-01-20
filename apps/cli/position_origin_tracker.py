@@ -6,16 +6,21 @@ import os
 from typing import Optional
 
 from apps.core.orders.events import OrderFilled
+from apps.core.strategies.breakout.events import BreakoutConfirmed
 
 
 class PositionOriginTracker:
     def __init__(self, *, log_path: Optional[str] = None) -> None:
         self._tags_by_account_symbol: dict[tuple[str, str], str] = {}
         self._tags_by_symbol: dict[str, str] = {}
+        self._exits_by_account_symbol: dict[tuple[str, str], tuple[Optional[float], Optional[float]]] = {}
+        self._exits_by_symbol: dict[str, tuple[Optional[float], Optional[float]]] = {}
         self._log_path = log_path
 
     def handle_event(self, event: object) -> None:
         if not isinstance(event, OrderFilled):
+            if isinstance(event, BreakoutConfirmed):
+                self._record_exits(event.symbol, event.take_profit, event.stop_loss)
             return
         self._record_tag(event.spec.account, event.spec.symbol, event.spec.client_tag)
 
@@ -26,6 +31,18 @@ class PositionOriginTracker:
             if tag:
                 return tag
         return self._tags_by_symbol.get(sym)
+
+    def exit_levels_for(
+        self,
+        account: Optional[str],
+        symbol: str,
+    ) -> tuple[Optional[float], Optional[float]]:
+        sym = symbol.strip().upper()
+        if account:
+            levels = self._exits_by_account_symbol.get((account, sym))
+            if levels:
+                return levels
+        return self._exits_by_symbol.get(sym, (None, None))
 
     async def seed_from_ibkr(self, ib, *, timeout: float) -> int:
         fills = await asyncio.wait_for(ib.reqExecutionsAsync(), timeout=timeout)
@@ -81,6 +98,13 @@ class PositionOriginTracker:
                             spec.get("client_tag"),
                         ):
                             added += 1
+                elif event_type == "BreakoutConfirmed":
+                    self._record_exits(
+                        event.get("symbol", ""),
+                        event.get("take_profit"),
+                        event.get("stop_loss"),
+                        account=event.get("account"),
+                    )
         return added
 
     def _record_tag(self, account: Optional[str], symbol: str, tag: Optional[str]) -> bool:
@@ -97,6 +121,31 @@ class PositionOriginTracker:
                 changed = True
         if self._tags_by_symbol.get(sym) != tag:
             self._tags_by_symbol[sym] = tag
+            changed = True
+        return changed
+
+    def _record_exits(
+        self,
+        symbol: str,
+        take_profit: Optional[float],
+        stop_loss: Optional[float],
+        *,
+        account: Optional[str] = None,
+    ) -> bool:
+        if take_profit is None and stop_loss is None:
+            return False
+        sym = symbol.strip().upper()
+        if not sym:
+            return False
+        levels = (take_profit, stop_loss)
+        changed = False
+        acct = (account or "").strip()
+        if acct:
+            if self._exits_by_account_symbol.get((acct, sym)) != levels:
+                self._exits_by_account_symbol[(acct, sym)] = levels
+                changed = True
+        if self._exits_by_symbol.get(sym) != levels:
+            self._exits_by_symbol[sym] = levels
             changed = True
         return changed
 
