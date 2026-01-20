@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from apps.core.orders.events import (
+    BracketChildOrderFilled,
+    BracketChildOrderStatusChanged,
     OrderIdAssigned,
     OrderIntent,
     OrderSent,
@@ -57,6 +59,29 @@ def print_event(event: object) -> None:
             (
                 f"{event.spec.symbol} order_id={event.order_id} status={event.status} "
                 f"filled={event.filled_qty} avg_price={event.avg_fill_price} "
+                f"remaining={event.remaining_qty}"
+            ),
+        )
+        return
+    if isinstance(event, BracketChildOrderStatusChanged):
+        _print_line(
+            event.timestamp,
+            "BracketChildStatus",
+            (
+                f"{event.symbol} kind={event.kind} side={event.side.value} qty={event.qty} "
+                f"price={event.price} order_id={event.order_id} parent={event.parent_order_id} "
+                f"status={event.status}"
+            ),
+        )
+        return
+    if isinstance(event, BracketChildOrderFilled):
+        _print_line(
+            event.timestamp,
+            "BracketChildFilled",
+            (
+                f"{event.symbol} kind={event.kind} side={event.side.value} qty={event.qty} "
+                f"price={event.price} order_id={event.order_id} parent={event.parent_order_id} "
+                f"status={event.status} filled={event.filled_qty} avg_price={event.avg_fill_price} "
                 f"remaining={event.remaining_qty}"
             ),
         )

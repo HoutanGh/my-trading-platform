@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 
-from apps.core.orders.models import OrderSpec
+from apps.core.orders.models import OrderSide, OrderSpec
 
 
 def _now() -> datetime:
@@ -88,5 +88,96 @@ class OrderFilled:
             filled_qty=filled_qty,
             avg_fill_price=avg_fill_price,
             remaining_qty=remaining_qty,
+            timestamp=_now(),
+        )
+
+
+@dataclass(frozen=True)
+class BracketChildOrderStatusChanged:
+    kind: str
+    symbol: str
+    side: OrderSide
+    qty: int
+    price: float
+    order_id: Optional[int]
+    parent_order_id: Optional[int]
+    status: Optional[str]
+    client_tag: Optional[str]
+    timestamp: datetime
+
+    @classmethod
+    def now(
+        cls,
+        *,
+        kind: str,
+        symbol: str,
+        side: OrderSide,
+        qty: int,
+        price: float,
+        order_id: Optional[int],
+        parent_order_id: Optional[int],
+        status: Optional[str],
+        client_tag: Optional[str],
+    ) -> "BracketChildOrderStatusChanged":
+        return cls(
+            kind=kind,
+            symbol=symbol,
+            side=side,
+            qty=qty,
+            price=price,
+            order_id=order_id,
+            parent_order_id=parent_order_id,
+            status=status,
+            client_tag=client_tag,
+            timestamp=_now(),
+        )
+
+
+@dataclass(frozen=True)
+class BracketChildOrderFilled:
+    kind: str
+    symbol: str
+    side: OrderSide
+    qty: int
+    price: float
+    order_id: Optional[int]
+    parent_order_id: Optional[int]
+    status: Optional[str]
+    filled_qty: Optional[float]
+    avg_fill_price: Optional[float]
+    remaining_qty: Optional[float]
+    client_tag: Optional[str]
+    timestamp: datetime
+
+    @classmethod
+    def now(
+        cls,
+        *,
+        kind: str,
+        symbol: str,
+        side: OrderSide,
+        qty: int,
+        price: float,
+        order_id: Optional[int],
+        parent_order_id: Optional[int],
+        status: Optional[str],
+        filled_qty: Optional[float],
+        avg_fill_price: Optional[float],
+        remaining_qty: Optional[float],
+        client_tag: Optional[str],
+    ) -> "BracketChildOrderFilled":
+        return cls(
+            kind=kind,
+            symbol=symbol,
+            side=side,
+            qty=qty,
+            price=price,
+            order_id=order_id,
+            parent_order_id=parent_order_id,
+            status=status,
+            filled_qty=filled_qty,
+            avg_fill_price=avg_fill_price,
+            remaining_qty=remaining_qty,
+            client_tag=client_tag,
             timestamp=_now(),
         )

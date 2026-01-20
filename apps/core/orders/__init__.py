@@ -1,4 +1,6 @@
 from apps.core.orders.events import (
+    BracketChildOrderFilled,
+    BracketChildOrderStatusChanged,
     OrderIdAssigned,
     OrderIntent,
     OrderSent,
@@ -26,6 +28,8 @@ __all__ = [
     "OrderIdAssigned",
     "OrderStatusChanged",
     "OrderFilled",
+    "BracketChildOrderStatusChanged",
+    "BracketChildOrderFilled",
     "OrderPort",
     "EventBus",
     "OrderService",
