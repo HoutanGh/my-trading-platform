@@ -13,13 +13,15 @@
 - [x] cli option where u can just use all the values rather than including the keys
 - [ ] need to be able to change tp and sl for orders
 - [x] have tp and sl in the positions table
-- [ ] even tho qty is 0 on positions, they are still in table, understand why and then remove
-- understand conditions
+- [x] even tho qty is 0 on positions, they are still in table, understand why and then remove
+- [ ] IMPROVEMENT: if the price hits significantly higher than the bar then buy and not wait for next bar (but this probs needs 1s bars or something)
+- [ ] understand conditions
     - can i do more than one breakout watcher - yes
     - need notification of selling and buying somehow
     - just ask what things need to be added to make is clearer
     - breakout status - positions table already kinda has it
         - good to have tp and sl in the table
+    - how does it work when i enter on the 
         
     - useful information in the table
 
