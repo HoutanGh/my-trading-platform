@@ -124,7 +124,10 @@ class REPL:
                 name="buy",
                 handler=self._cmd_buy,
                 help="Submit a basic buy order (market or limit).",
-                usage="buy SYMBOL qty=... [limit=...] [tif=DAY] [outside_rth=true|false] [account=...] [client_tag=...]",
+                usage=(
+                    "buy SYMBOL qty=... [limit=...] [tif=DAY] [outside_rth=true|false] [account=...] [client_tag=...] "
+                    "| buy SYMBOL QTY [limit=...]"
+                ),
             )
         )
         self._register(
@@ -132,7 +135,10 @@ class REPL:
                 name="sell",
                 handler=self._cmd_sell,
                 help="Submit a basic sell order (market or limit).",
-                usage="sell SYMBOL qty=... [limit=...] [tif=DAY] [outside_rth=true|false] [account=...] [client_tag=...]",
+                usage=(
+                    "sell SYMBOL qty=... [limit=...] [tif=DAY] [outside_rth=true|false] [account=...] [client_tag=...] "
+                    "| sell SYMBOL QTY [limit=...]"
+                ),
             )
         )
         self._register(
@@ -697,6 +703,13 @@ class REPL:
         if not self._order_service:
             print("Order service not configured.")
             return
+        if len(args) > 2:
+            print(
+                "Usage: buy|sell SYMBOL qty=... [limit=...] [tif=DAY] "
+                "[outside_rth=true|false] [account=...] [client_tag=...] "
+                "| buy|sell SYMBOL QTY [limit=...]"
+            )
+            return
         symbol = args[0].strip().upper() if args else None
         if not symbol:
             symbol = (
@@ -708,14 +721,17 @@ class REPL:
         if not symbol:
             print(
                 "Usage: buy|sell SYMBOL qty=... [limit=...] [tif=DAY] "
-                "[outside_rth=true|false] [account=...] [client_tag=...]"
+                "[outside_rth=true|false] [account=...] [client_tag=...] "
+                "| buy|sell SYMBOL QTY [limit=...]"
             )
             return
-        qty_raw = kwargs.get("qty") or _config_get(self._config, "qty")
+        positional_qty = args[1] if len(args) > 1 else None
+        qty_raw = kwargs.get("qty") or positional_qty or _config_get(self._config, "qty")
         if qty_raw is None:
             print(
                 "Usage: buy|sell SYMBOL qty=... [limit=...] [tif=DAY] "
-                "[outside_rth=true|false] [account=...] [client_tag=...]"
+                "[outside_rth=true|false] [account=...] [client_tag=...] "
+                "| buy|sell SYMBOL QTY [limit=...]"
             )
             return
         try:

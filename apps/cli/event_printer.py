@@ -1,58 +1,51 @@
 from __future__ import annotations
 
-from apps.core.orders.events import (
-    BracketChildOrderFilled,
-    BracketChildOrderStatusChanged,
-    OrderIdAssigned,
-    OrderIntent,
-    OrderSent,
-    OrderStatusChanged,
-    OrderFilled,
-)
-from apps.core.pnl.events import (
-    PnlIngestFailed,
-    PnlIngestFinished,
-    PnlIngestStarted,
-)
+from typing import Optional
+
+from apps.core.orders.events import BracketChildOrderFilled, OrderFilled
 from apps.core.strategies.breakout.events import (
     BreakoutBreakDetected,
     BreakoutConfirmed,
-    BreakoutRejected,
     BreakoutStarted,
-    BreakoutStopped,
 )
 
 
-def print_event(event: object) -> None:
-    if isinstance(event, OrderIntent):
+_PROMPT_PREFIX: Optional[str] = None
+
+
+def print_event(event: object) -> bool:
+    if isinstance(event, BreakoutStarted):
         _print_line(
             event.timestamp,
-            "OrderIntent",
-            f"{event.spec.side.value} {event.spec.symbol} qty={event.spec.qty}",
+            "BreakoutStarted",
+            f"{event.symbol} level={event.rule.level}",
         )
-        return
-    if isinstance(event, OrderSent):
+        return True
+    if isinstance(event, BreakoutBreakDetected):
+        bar_time = _format_time(event.bar.timestamp)
         _print_line(
             event.timestamp,
-            "OrderSent",
-            f"{event.spec.side.value} {event.spec.symbol} qty={event.spec.qty}",
+            "BreakoutBreak",
+            f"{event.symbol} level={event.level} bar={bar_time}",
         )
-        return
-    if isinstance(event, OrderIdAssigned):
+        return True
+    if isinstance(event, BreakoutConfirmed):
+        extras = []
+        if event.take_profit is not None:
+            extras.append(f"tp={event.take_profit}")
+        if event.stop_loss is not None:
+            extras.append(f"sl={event.stop_loss}")
+        suffix = f" {' '.join(extras)}" if extras else ""
+        bar_time = _format_time(event.bar.timestamp)
         _print_line(
             event.timestamp,
-            "OrderIdAssigned",
-            f"{event.spec.symbol} order_id={event.order_id}",
+            "BreakoutConfirmed",
+            f"{event.symbol} level={event.level} bar={bar_time}{suffix}",
         )
-        return
-    if isinstance(event, OrderStatusChanged):
-        _print_line(
-            event.timestamp,
-            "OrderStatus",
-            f"{event.spec.symbol} order_id={event.order_id} status={event.status}",
-        )
-        return
+        return True
     if isinstance(event, OrderFilled):
+        if not _is_fill_event(event.status, event.filled_qty):
+            return False
         _print_line(
             event.timestamp,
             "OrderFilled",
@@ -62,108 +55,56 @@ def print_event(event: object) -> None:
                 f"remaining={event.remaining_qty}"
             ),
         )
-        return
-    if isinstance(event, BracketChildOrderStatusChanged):
-        _print_line(
-            event.timestamp,
-            "BracketChildStatus",
-            (
-                f"{event.symbol} kind={event.kind} side={event.side.value} qty={event.qty} "
-                f"price={event.price} order_id={event.order_id} parent={event.parent_order_id} "
-                f"status={event.status}"
-            ),
-        )
-        return
+        return True
     if isinstance(event, BracketChildOrderFilled):
+        if not _is_fill_event(event.status, event.filled_qty):
+            return False
+        label = "TakeProfitFilled" if event.kind == "take_profit" else "StopLossFilled"
+        fill_price = event.avg_fill_price if event.avg_fill_price is not None else event.price
         _print_line(
             event.timestamp,
-            "BracketChildFilled",
+            label,
             (
-                f"{event.symbol} kind={event.kind} side={event.side.value} qty={event.qty} "
-                f"price={event.price} order_id={event.order_id} parent={event.parent_order_id} "
-                f"status={event.status} filled={event.filled_qty} avg_price={event.avg_fill_price} "
-                f"remaining={event.remaining_qty}"
+                f"{event.symbol} qty={event.filled_qty or event.qty} "
+                f"price={fill_price}"
             ),
         )
-        return
-    if isinstance(event, PnlIngestStarted):
-        _print_line(
-            event.timestamp,
-            "PnlIngestStarted",
-            f"{event.account} csv={event.csv_path}",
-        )
-        return
-    if isinstance(event, PnlIngestFinished):
-        result = event.result
-        _print_line(
-            event.timestamp,
-            "PnlIngestFinished",
-            f"{result.account} days={result.days_ingested} rows={result.rows_used}",
-        )
-        return
-    if isinstance(event, PnlIngestFailed):
-        _print_line(
-            event.timestamp,
-            "PnlIngestFailed",
-            f"{event.account} error={event.error}",
-        )
-        return
-    if isinstance(event, BreakoutStarted):
-        _print_line(
-            event.timestamp,
-            "BreakoutStarted",
-            f"{event.symbol} level={event.rule.level}",
-        )
-        return
-    if isinstance(event, BreakoutBreakDetected):
-        _print_line(
-            event.timestamp,
-            "BreakoutBreak",
-            f"{event.symbol} level={event.level} bar={event.bar.timestamp.isoformat()}",
-        )
-        return
-    if isinstance(event, BreakoutConfirmed):
-        extras = []
-        if event.take_profit is not None:
-            extras.append(f"tp={event.take_profit}")
-        if event.stop_loss is not None:
-            extras.append(f"sl={event.stop_loss}")
-        suffix = f" {' '.join(extras)}" if extras else ""
-        _print_line(
-            event.timestamp,
-            "BreakoutConfirmed",
-            f"{event.symbol} level={event.level} bar={event.bar.timestamp.isoformat()}{suffix}",
-        )
-        return
-    if isinstance(event, BreakoutRejected):
-        _print_line(
-            event.timestamp,
-            "BreakoutRejected",
-            f"{event.symbol} level={event.level} reason={event.reason}",
-        )
-        return
-    if isinstance(event, BreakoutStopped):
-        reason = event.reason or "-"
-        _print_line(
-            event.timestamp,
-            "BreakoutStopped",
-            f"{event.symbol} reason={reason}",
-        )
-        return
-    _print_line(None, "Event", repr(event))
+        return True
+    return False
 
 
 def _print_line(timestamp, label: str, message: str) -> None:
+    prefix = f"{_PROMPT_PREFIX} " if _PROMPT_PREFIX else ""
     if timestamp:
-        ts = timestamp.isoformat()
-        print(f"[{ts}] {label}: {message}")
+        ts = _format_time(timestamp)
+        print(f"{prefix}[{ts}] {label}: {message}")
     else:
-        print(f"{label}: {message}")
+        print(f"{prefix}{label}: {message}")
+
+
+def _format_time(timestamp) -> str:
+    return timestamp.strftime("%H:%M:%S")
+
+
+def _is_fill_event(status: Optional[str], filled_qty: Optional[float]) -> bool:
+    if filled_qty is not None and filled_qty > 0:
+        return True
+    if not status:
+        return False
+    normalized = str(status).strip().lower()
+    return normalized in {"filled", "partiallyfilled", "partially_filled"}
 
 
 def make_prompting_event_printer(prompt: str):
+    _set_prompt_prefix(prompt)
+
     def _handler(event: object) -> None:
-        print_event(event)
-        print(prompt, end="", flush=True)
+        if print_event(event):
+            print(prompt, end="", flush=True)
 
     return _handler
+
+
+def _set_prompt_prefix(prompt: str) -> None:
+    global _PROMPT_PREFIX
+    _PROMPT_PREFIX = prompt.strip()

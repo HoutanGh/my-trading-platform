@@ -50,10 +50,15 @@ class IBKRBarStream(BarStreamPort):
             nonlocal last_count
             if not has_new_bar:
                 return
-            new_bars = _bars[last_count:]
-            last_count = len(_bars)
-            for item in new_bars:
+            # When a new bar is appended, the previous bar is now closed.
+            if last_count == 0:
+                last_count = len(_bars)
+                return
+            start_index = max(last_count - 1, 0)
+            end_index = max(len(_bars) - 1, start_index)
+            for item in _bars[start_index:end_index]:
                 queue.put_nowait(item)
+            last_count = len(_bars)
 
         bars.updateEvent += _on_bar
 
