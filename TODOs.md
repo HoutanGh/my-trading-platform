@@ -15,6 +15,9 @@
 - [x] have tp and sl in the positions table
 - [x] even tho qty is 0 on positions, they are still in table, understand why and then remove
 - [ ] IMPROVEMENT: if the price hits significantly higher than the bar then buy and not wait for next bar (but this probs needs 1s bars or something)
+    - understand effort  for 1s bars
+- [ ] how branching works
+    - how to run this while also developing it
 - [ ] understand conditions
     - can i do more than one breakout watcher - yes
     - need notification of selling and buying somehow
