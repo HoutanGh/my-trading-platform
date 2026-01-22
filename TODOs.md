@@ -1,9 +1,15 @@
-## 17/01/26
+### 23/01/26
+- [ ] work out exact strategy to use for the 1s time
+    - what file structure looks like
+- [x] get all the files that are needed for 
 
-- [ ] need to catch errors
-    - [ ] IKBR not connected yet and trying buy/sell stuff etc. 
+- [ ] error: when i lose connection to broker
+- [ ] need to see status of breakouts - if there are any
+---
 
 ### BREAKOUT
+- [ ] need to catch errors
+    - [ ] IKBR not connected yet and trying buy/sell stuff etc. 
 - [x] debug breakout
     - need positions from IKBR, verify with Trader Workstation
     - better information in logs 
@@ -15,6 +21,8 @@
 - [x] have tp and sl in the positions table
 - [x] even tho qty is 0 on positions, they are still in table, understand why and then remove
 - [ ] IMPROVEMENT: if the price hits significantly higher than the bar then buy and not wait for next bar (but this probs needs 1s bars or something)
+- [ ] IMPROVEMENT: multiple tps at different percentages, maybe specified with dashes separating the prices, stop loss updates to the latest tp that got hit?
+    - only need condition if outside RTH then need if statements and making sure they happen quickly as a replacement for stop losses - maybe this is preferred so level3 does not expose
     - understand effort  for 1s bars
 - [ ] how branching works
     - how to run this while also developing it
@@ -27,6 +35,14 @@
     - how does it work when i enter on the 
         
     - useful information in the table
+- [ ] get all the files related to the breakout automation
+- [ ] need to know p&l locally (not really tbf)
+- [ ] get this cli on my phone
+- [ ] default version that puts in closest value to the amount of money i want to put in for quick stuff
+- [ ] need to be able to change everything about orders
+    - levels, etc
+    - cancelling
+
 
 ### CLI
 - [x] CLI tabbing

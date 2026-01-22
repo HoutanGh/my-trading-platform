@@ -3,6 +3,43 @@
 This document describes the production-ready architecture for the breakout automation as implemented in apps. It focuses on system responsibilities, data flow, and operational behavior.
 
 ---
+.
+├── README.md
+├── docs/
+│   └── breakout_automation.md
+└── apps/
+    ├── cli/
+    │   ├── __main__.py
+    │   ├── repl.py
+    │   ├── event_printer.py
+    │   ├── order_tracker.py
+    │   └── position_origin_tracker.py
+    ├── core/
+    │   ├── market_data/
+    │   │   ├── models.py
+    │   │   └── ports.py
+    │   ├── orders/
+    │   │   ├── events.py
+    │   │   ├── models.py
+    │   │   ├── ports.py
+    │   │   └── service.py
+    │   └── strategies/
+    │       └── breakout/
+    │           ├── __init__.py
+    │           ├── events.py
+    │           ├── logic.py
+    │           └── runner.py
+    └── adapters/
+        ├── broker/
+        │   ├── ibkr_connection.py
+        │   └── ibkr_order_port.py
+        ├── eventbus/
+        │   └── in_process.py
+        ├── logging/
+        │   └── jsonl_logger.py
+        └── market_data/
+            └── ibkr_bars.py
+
 
 ## 1. What the system does
 
