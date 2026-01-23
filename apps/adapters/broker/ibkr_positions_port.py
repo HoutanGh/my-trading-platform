@@ -26,6 +26,7 @@ class IBKRPositionsPort(PositionsPort):
         snapshots: list[PositionSnapshot] = []
         fallback_positions: Optional[list[object]] = None
         timeout = max(self._connection.config.timeout, 1.0)
+        explicit_account = account is not None
         for acct in accounts:
             try:
                 portfolio = await _refresh_account_portfolio(self._ib, acct, timeout=timeout)
@@ -38,13 +39,17 @@ class IBKRPositionsPort(PositionsPort):
                 fallback = [
                     item
                     for item in fallback_positions
-                    if getattr(item, "account", None) in {acct, None}
+                    if _account_matches(getattr(item, "account", None), acct)
                 ]
                 if not fallback:
-                    raise RuntimeError(
+                    message = (
                         "Timed out waiting for IBKR account updates and no positions were returned. "
                         "Verify the account id and IB API account data settings, or increase IB_TIMEOUT."
-                    ) from exc
+                    )
+                    if explicit_account:
+                        raise RuntimeError(message) from exc
+                    print(f"Warning: {message}")
+                    continue
                 print(
                     f"Warning: account updates timed out for {acct}; "
                     "falling back to reqPositions (market/PnL fields may be blank)."
@@ -63,7 +68,7 @@ async def _refresh_account_portfolio(ib: IB, account: str, *, timeout: float) ->
         portfolio = [
             item
             for item in ib.portfolio()
-            if getattr(item, "account", None) in {account, None}
+            if _account_matches(getattr(item, "account", None), account)
         ]
     finally:
         try:
@@ -86,7 +91,7 @@ def _to_snapshot(item: object, account_hint: str) -> Optional[PositionSnapshot]:
     exchange = getattr(contract, "exchange", None) or ""
     currency = getattr(contract, "currency", None) or ""
     con_id = _maybe_int(getattr(contract, "conId", None))
-    account = getattr(item, "account", None) or account_hint
+    account = _normalize_account(getattr(item, "account", None)) or _normalize_account(account_hint) or account_hint
 
     return PositionSnapshot(
         account=str(account),
@@ -113,7 +118,7 @@ def _to_position_snapshot(item: object, account_hint: str) -> Optional[PositionS
     exchange = getattr(contract, "exchange", None) or ""
     currency = getattr(contract, "currency", None) or ""
     con_id = _maybe_int(getattr(contract, "conId", None))
-    account = getattr(item, "account", None) or account_hint
+    account = _normalize_account(getattr(item, "account", None)) or _normalize_account(account_hint) or account_hint
 
     return PositionSnapshot(
         account=str(account),
@@ -143,3 +148,20 @@ def _maybe_int(value: object) -> Optional[int]:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _normalize_account(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    normalized = value.strip()
+    if not normalized:
+        return None
+    return normalized.rstrip(".")
+
+
+def _account_matches(item_account: Optional[str], account_hint: Optional[str]) -> bool:
+    if item_account is None:
+        return True
+    if account_hint is None:
+        return True
+    return _normalize_account(item_account) == _normalize_account(account_hint)

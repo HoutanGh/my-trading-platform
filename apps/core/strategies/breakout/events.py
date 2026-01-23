@@ -43,6 +43,8 @@ class BreakoutConfirmed:
     timestamp: datetime
     take_profit: Optional[float] = None
     stop_loss: Optional[float] = None
+    account: Optional[str] = None
+    client_tag: Optional[str] = None
 
     @classmethod
     def now(
@@ -53,6 +55,8 @@ class BreakoutConfirmed:
         *,
         take_profit: Optional[float] = None,
         stop_loss: Optional[float] = None,
+        account: Optional[str] = None,
+        client_tag: Optional[str] = None,
     ) -> "BreakoutConfirmed":
         return cls(
             symbol=symbol,
@@ -61,6 +65,8 @@ class BreakoutConfirmed:
             timestamp=_now(),
             take_profit=take_profit,
             stop_loss=stop_loss,
+            account=account,
+            client_tag=client_tag,
         )
 
 
@@ -88,7 +94,14 @@ class BreakoutStopped:
     symbol: str
     reason: Optional[str]
     timestamp: datetime
+    client_tag: Optional[str] = None
 
     @classmethod
-    def now(cls, symbol: str, reason: Optional[str] = None) -> "BreakoutStopped":
-        return cls(symbol=symbol, reason=reason, timestamp=_now())
+    def now(
+        cls,
+        symbol: str,
+        reason: Optional[str] = None,
+        *,
+        client_tag: Optional[str] = None,
+    ) -> "BreakoutStopped":
+        return cls(symbol=symbol, reason=reason, timestamp=_now(), client_tag=client_tag)

@@ -15,7 +15,8 @@ except ImportError:
 from apps.adapters.broker.ibkr_connection import IBKRConnection
 from apps.cli.order_tracker import OrderTracker
 from apps.cli.position_origin_tracker import PositionOriginTracker
-from apps.core.market_data.ports import BarStreamPort
+from apps.core.market_data.ports import BarStreamPort, QuotePort
+from apps.core.ops.events import CliErrorLogged
 from apps.core.orders.models import OrderSide, OrderSpec, OrderType
 from apps.core.orders.ports import EventBus
 from apps.core.orders.service import OrderService, OrderValidationError
@@ -47,7 +48,9 @@ class REPL:
         positions_service: Optional[PositionsService] = None,
         position_origin_tracker: Optional[PositionOriginTracker] = None,
         bar_stream: Optional[BarStreamPort] = None,
+        quote_port: Optional[QuotePort] = None,
         event_bus: Optional[EventBus] = None,
+        ops_logger: Optional[Callable[[object], None]] = None,
         *,
         prompt: str = "apps> ",
     ) -> None:
@@ -58,7 +61,9 @@ class REPL:
         self._positions_service = positions_service
         self._position_origin_tracker = position_origin_tracker
         self._bar_stream = bar_stream
+        self._quote_port = quote_port
         self._event_bus = event_bus
+        self._ops_logger = ops_logger
         self._prompt = prompt
         self._config: dict[str, str] = {}
         self._commands: dict[str, CommandSpec] = {}
@@ -90,6 +95,7 @@ class REPL:
             try:
                 await spec.handler(args, kwargs)
             except Exception as exc:
+                self._log_cli_error(exc, cmd_name, line)
                 _print_exception("Command error", exc)
         await self._stop_breakouts()
 
@@ -148,7 +154,7 @@ class REPL:
                 help="Start or stop a breakout watcher.",
                 usage=(
                     "breakout SYMBOL level=... qty=... [tp=...] [sl=...] [rth=true|false] [bar=1 min] "
-                    "[max_bars=...] [tif=DAY] [outside_rth=true|false] [account=...] [client_tag=...] "
+                    "[max_bars=...] [tif=DAY] [outside_rth=true|false] [entry=limit|market] [account=...] [client_tag=...] "
                     "| breakout SYMBOL LEVEL QTY [TP] [SL] "
                     "| breakout status | breakout stop [SYMBOL]"
                 ),
@@ -485,10 +491,25 @@ class REPL:
         use_rth_value = kwargs.get("rth") or kwargs.get("use_rth") or _config_get(self._config, "use_rth")
         use_rth = _parse_bool(use_rth_value) if use_rth_value is not None else False
         outside_rth_value = kwargs.get("outside_rth") or _config_get(self._config, "outside_rth")
-        outside_rth = _parse_bool(outside_rth_value) if outside_rth_value is not None else False
+        if outside_rth_value is None:
+            outside_rth = not use_rth
+        else:
+            outside_rth = _parse_bool(outside_rth_value)
         tif = kwargs.get("tif") or _config_get(self._config, "tif") or "DAY"
         account = kwargs.get("account") or _config_get(self._config, "account")
         client_tag = kwargs.get("client_tag") or _config_get(self._config, "client_tag")
+        entry_raw = (
+            kwargs.get("entry")
+            or kwargs.get("entry_type")
+            or _config_get(self._config, "entry")
+        )
+        entry_type = OrderType.LIMIT
+        if entry_raw is not None:
+            try:
+                entry_type = _parse_entry_type(entry_raw)
+            except ValueError:
+                print("entry must be 'limit' (lmt) or 'market' (mkt)")
+                return
 
         max_bars_raw = kwargs.get("max_bars") or _config_get(self._config, "max_bars")
         max_bars = None
@@ -509,6 +530,7 @@ class REPL:
             symbol=symbol,
             qty=qty,
             rule=BreakoutRuleConfig(level=level),
+            entry_type=entry_type,
             take_profit=take_profit,
             stop_loss=stop_loss,
             use_rth=use_rth,
@@ -525,6 +547,7 @@ class REPL:
                 run_config,
                 bar_stream=self._bar_stream,
                 order_service=self._order_service,
+                quote_port=self._quote_port,
                 event_bus=self._event_bus,
             ),
             name=task_name,
@@ -694,6 +717,26 @@ class REPL:
         await self._stop_breakouts()
         self._should_exit = True
 
+    def _log_cli_error(self, exc: BaseException, command: Optional[str], raw_input: str) -> None:
+        event = CliErrorLogged.now(
+            message=str(exc),
+            error_type=type(exc).__name__,
+            traceback=_format_traceback(exc),
+            command=command,
+            raw_input=raw_input,
+        )
+        if self._ops_logger:
+            try:
+                self._ops_logger(event)
+                return
+            except Exception:
+                pass
+        if self._event_bus:
+            try:
+                self._event_bus.publish(event)
+            except Exception:
+                pass
+
     async def _submit_order(
         self,
         side: OrderSide,
@@ -771,6 +814,15 @@ def _parse_bool(value: str) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
+def _parse_entry_type(value: str) -> OrderType:
+    normalized = value.strip().lower()
+    if normalized in {"market", "mkt"}:
+        return OrderType.MARKET
+    if normalized in {"limit", "lmt"}:
+        return OrderType.LIMIT
+    raise ValueError("invalid entry type")
+
+
 def _config_get(config: dict[str, str], key: str) -> Optional[str]:
     return config.get(key)
 
@@ -806,6 +858,7 @@ def _flag_aliases(command: str) -> dict[str, str]:
             "m": "max_bars",
             "t": "tif",
             "o": "outside_rth",
+            "e": "entry",
             "a": "account",
             "c": "client_tag",
         }
@@ -953,3 +1006,7 @@ def _match_prefix(text: str, options: list[str]) -> list[str]:
 def _print_exception(prefix: str, exc: BaseException) -> None:
     print(f"{prefix}:")
     traceback.print_exception(type(exc), exc, exc.__traceback__)
+
+
+def _format_traceback(exc: BaseException) -> str:
+    return "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))

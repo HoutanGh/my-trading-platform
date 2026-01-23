@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Optional
 
 from apps.core.orders.events import BracketChildOrderFilled, OrderFilled
@@ -7,10 +9,18 @@ from apps.core.strategies.breakout.events import (
     BreakoutBreakDetected,
     BreakoutConfirmed,
     BreakoutStarted,
+    BreakoutStopped,
 )
 
 
 _PROMPT_PREFIX: Optional[str] = None
+_CONFIRMED_BY_TAG: dict[str, "_EntryFillTiming"] = {}
+
+
+@dataclass
+class _EntryFillTiming:
+    confirmed_at: datetime
+    partial_reported: bool = False
 
 
 def print_event(event: object) -> bool:
@@ -30,6 +40,10 @@ def print_event(event: object) -> bool:
         )
         return True
     if isinstance(event, BreakoutConfirmed):
+        if event.client_tag:
+            _CONFIRMED_BY_TAG[event.client_tag] = _EntryFillTiming(
+                confirmed_at=_normalize_timestamp(event.timestamp)
+            )
         extras = []
         if event.take_profit is not None:
             extras.append(f"tp={event.take_profit}")
@@ -43,16 +57,21 @@ def print_event(event: object) -> bool:
             f"{event.symbol} level={event.level} bar={bar_time}{suffix}",
         )
         return True
+    if isinstance(event, BreakoutStopped):
+        if event.client_tag and event.reason != "order_submitted":
+            _CONFIRMED_BY_TAG.pop(event.client_tag, None)
+        return False
     if isinstance(event, OrderFilled):
         if not _is_fill_event(event.status, event.filled_qty):
             return False
+        latency_suffix = _entry_fill_latency_suffix(event)
         _print_line(
             event.timestamp,
             "OrderFilled",
             (
                 f"{event.spec.symbol} order_id={event.order_id} status={event.status} "
                 f"filled={event.filled_qty} avg_price={event.avg_fill_price} "
-                f"remaining={event.remaining_qty}"
+                f"remaining={event.remaining_qty}{latency_suffix}"
             ),
         )
         return True
@@ -83,7 +102,12 @@ def _print_line(timestamp, label: str, message: str) -> None:
 
 
 def _format_time(timestamp) -> str:
-    return timestamp.strftime("%H:%M:%S")
+    if getattr(timestamp, "tzinfo", None) is None:
+        return timestamp.strftime("%H:%M:%S.%f")
+    offset = timestamp.strftime("%z")
+    if offset:
+        offset = f"{offset[:3]}:{offset[3:]}"
+    return f"{timestamp.strftime('%H:%M:%S.%f')}{offset}"
 
 
 def _is_fill_event(status: Optional[str], filled_qty: Optional[float]) -> bool:
@@ -93,6 +117,50 @@ def _is_fill_event(status: Optional[str], filled_qty: Optional[float]) -> bool:
         return False
     normalized = str(status).strip().lower()
     return normalized in {"filled", "partiallyfilled", "partially_filled"}
+
+
+def _entry_fill_latency_suffix(event: OrderFilled) -> str:
+    client_tag = event.spec.client_tag
+    if not client_tag:
+        return ""
+    timing = _CONFIRMED_BY_TAG.get(client_tag)
+    if not timing:
+        return ""
+    extras = []
+    if (event.filled_qty or 0) > 0 and not timing.partial_reported:
+        extras.append(f"partial_latency={_format_latency(timing.confirmed_at, event.timestamp)}")
+        timing.partial_reported = True
+    if _is_full_fill(event):
+        extras.append(f"full_latency={_format_latency(timing.confirmed_at, event.timestamp)}")
+        _CONFIRMED_BY_TAG.pop(client_tag, None)
+    if not extras:
+        return ""
+    return " " + " ".join(extras)
+
+
+def _is_full_fill(event: OrderFilled) -> bool:
+    if event.status:
+        normalized = str(event.status).strip().lower()
+        if normalized == "filled":
+            return True
+    if event.filled_qty is None:
+        return False
+    return event.filled_qty >= event.spec.qty
+
+
+def _format_latency(start: datetime, end: datetime) -> str:
+    start_ts = _normalize_timestamp(start)
+    end_ts = _normalize_timestamp(end)
+    delta = (end_ts - start_ts).total_seconds()
+    if delta < 0:
+        delta = 0.0
+    return f"{delta:.6f}s"
+
+
+def _normalize_timestamp(timestamp: datetime) -> datetime:
+    if timestamp.tzinfo is None:
+        return timestamp.replace(tzinfo=timezone.utc)
+    return timestamp
 
 
 def make_prompting_event_printer(prompt: str):

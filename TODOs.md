@@ -1,13 +1,24 @@
 ### 23/01/26
+- [x] make the default outside_rth = true
+- [x] also need the ib gateway logs
+- [x] improve positions
+- [x] need to see what status of breakouts are 
 - [ ] work out exact strategy to use for the 1s time
     - what file structure looks like
 - [x] get all the files that are needed for 
 
 - [ ] error: when i lose connection to broker
-- [ ] need to see status of breakouts - if there are any
+
 ---
 
 ### BREAKOUT
+- [ ] change the market type to LMT order and at the ask - for instant buy and need to see how long it takes (what is the delay) need it to be instant
+- [ ] need to elaborate on this
+    - Order submission robustness is thin: bracket children are placed even if order_id is still None after timeout; the runner stops right after submit without handling rejects, partial fills, or failed submissions. Improve by retrying or failing fast when no order_id, waiting for an accept/ack, and emitting a stop reason on failures.
+    - Lifecycle and recovery are limited: single‑fire only, no re‑arm, no time/session windows, no reconnect/missed‑bar handling; non‑cancel exceptions bubble up and end the watcher without a structured stop reason. Improve with configurable schedules/timeouts and reconnect/resubscribe behavior plus explicit stop reasons.
+- [ ] need manual stop losses for out of hours breaks
+- [ ] suggestions for tps (defaults)
+- [ ] take into account strong volume (if it has really weak volume then dont do breakout)
 - [ ] need to catch errors
     - [ ] IKBR not connected yet and trying buy/sell stuff etc. 
 - [x] debug breakout

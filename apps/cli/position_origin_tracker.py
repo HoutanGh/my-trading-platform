@@ -20,7 +20,12 @@ class PositionOriginTracker:
     def handle_event(self, event: object) -> None:
         if not isinstance(event, OrderFilled):
             if isinstance(event, BreakoutConfirmed):
-                self._record_exits(event.symbol, event.take_profit, event.stop_loss)
+                self._record_exits(
+                    event.symbol,
+                    event.take_profit,
+                    event.stop_loss,
+                    account=event.account,
+                )
             return
         self._record_tag(event.spec.account, event.spec.symbol, event.spec.client_tag)
 

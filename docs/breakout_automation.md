@@ -1,6 +1,6 @@
 # Breakout Automation - Production Architecture (apps)
 
-This document describes the production-ready architecture for the breakout automation as implemented in apps. It focuses on system responsibilities, data flow, and operational behavior.
+This document describes the production-ready architecture for the breakout automation as implemented in apps. It focuses on system responsibilities, data flow, and operational behavior. It is intended to be high-signal context for future Codex sessions.
 
 ---
 .
@@ -41,14 +41,14 @@ This document describes the production-ready architecture for the breakout autom
             └── ibkr_bars.py
 
 
-## 1. What the system does
+## 1. What the system does (current)
 
 - Accepts a breakout configuration from the CLI (symbol, level, qty, optional TP/SL).
 - Streams 1-minute market data from IBKR.
-- Applies a simple breakout rule (break candle then confirm candle).
-- On confirmation, submits either:
-  - a market entry order, or
-  - a bracket order with TP/SL if provided.
+- Applies a simple breakout rule: **enter when a bar closes at or above the level**.
+- On entry, submits either:
+  - a **limit entry at the ask** by default, or
+  - a bracket order with TP/SL if provided (entry type matches the breakout entry type).
 - Emits events for visibility and audit.
 - Stops after one trade attempt (single-fire).
 
@@ -58,14 +58,20 @@ This document describes the production-ready architecture for the breakout autom
 
 Operator runs the apps CLI and starts a breakout watcher:
 
-- Example (market entry):
+- Example (market entry, key/value):
   - `breakout AAPL level=190 qty=1`
-- Example (market entry + TP/SL bracket):
+- Example (market entry + TP/SL bracket, key/value):
   - `breakout AAPL level=190 qty=1 tp=195 sl=187`
+- Example (positional):
+  - `breakout AAPL 190 1 195 187`
 
 Stop or check status:
 - `breakout status`
 - `breakout stop AAPL`
+
+Quick orders:
+- `buy AAPL 100`
+- `sell AAPL 50`
 
 ---
 
@@ -92,6 +98,7 @@ Stop or check status:
   - Defines the `BarStreamPort` interface.
 - `apps/adapters/market_data/ibkr_bars.py`
   - IBKR implementation of the bar stream (1-minute bars, live updates).
+  - Important: on each new bar, the adapter emits the **previous bar** (the bar that just closed).
 
 ### Orders (reusable)
 - `apps/core/orders/service.py`
@@ -115,8 +122,8 @@ Stop or check status:
 
 1. Operator starts the breakout watcher via CLI.
 2. Runner subscribes to 1-minute bars from IBKR.
-3. Each bar is fed into the breakout logic.
-4. On confirm candle:
+3. Each **closed** bar is fed into the breakout logic.
+4. If bar close >= level:
    - If TP/SL provided: submit bracket order (parent + TP + SL, OCA).
    - Otherwise: submit a single market entry.
 5. Order lifecycle events are emitted and logged.
@@ -126,24 +133,34 @@ Stop or check status:
 
 ## 5. Order behavior
 
-- Market entry is default.
+- Limit entry at the ask is default.
+- Market entry is available via explicit config.
 - If `tp` and `sl` are provided, a bracket order is placed:
-  - Parent: market BUY.
+  - Parent: entry BUY (limit at ask by default, or market if configured).
   - Children: TP limit SELL and SL stop SELL.
   - Children are linked with an OCA group so one cancels the other.
 - IBKR enforces TP/SL even if the app disconnects after submission.
+  
+Notes:
+- Market orders can fill very quickly (especially in paper), which can look "instant" after bar close.
+- Bracket child status/fill events are emitted for visibility.
 
 ---
 
 ## 6. Observability and audit
 
-Events emitted:
+Events emitted (full audit log):
 - Breakout lifecycle: Started, BreakDetected, Confirmed, Rejected, Stopped.
-- Order lifecycle: Intent, Sent, OrderIdAssigned, StatusChanged.
+- Order lifecycle: Intent, Sent, OrderIdAssigned, StatusChanged, Filled.
+- Bracket children: child status/filled events for TP/SL.
 
 Logging:
-- Console output via `event_printer`.
-- JSONL audit log via `jsonl_logger` (path controlled by `APPS_EVENT_LOG_PATH`).
+- Console output via `event_printer` (intentionally filtered to reduce noise, timestamps include timezone offset).
+- JSONL audit log via `jsonl_logger` (path controlled by `APPS_EVENT_LOG_PATH`), which includes **all** events.
+- CLI error log via `APPS_OPS_LOG_PATH` (default `apps/journal/ops.jsonl`).
+- IBKR gateway/API error log via `APPS_IB_GATEWAY_LOG_PATH` (default `apps/journal/ib_gateway.jsonl`).
+- IBKR Gateway/TWS file tail log via `IB_GATEWAY_LOG_PATH` (source) -> `APPS_IB_GATEWAY_RAW_LOG_PATH` (default `apps/journal/ib_gateway_raw.jsonl`).
+  - Optional: `IB_GATEWAY_LOG_POLL_SECS` (default 0.5) and `IB_GATEWAY_LOG_FROM_START=1` to backfill from the beginning.
 
 ---
 
@@ -153,6 +170,7 @@ Logging:
 - Requires active IBKR connection; otherwise the CLI refuses to start a watcher.
 - If the bar stream is canceled or the watcher is stopped, the stream is cleaned up.
 - Paper-only guard is enforced by connection config (paper vs live ports).
+- If the breakout uses limit-at-ask and a valid ask quote is missing or stale, the watcher rejects and stops.
 
 ---
 
@@ -160,7 +178,10 @@ Logging:
 
 CLI fields:
 - Required: `symbol`, `level`, `qty`
-- Optional: `tp`, `sl`, `rth`, `bar`, `max_bars`, `tif`, `outside_rth`, `account`, `client_tag`
+- Optional: `tp`, `sl`, `rth`, `bar`, `max_bars`, `tif`, `outside_rth`, `entry`, `account`, `client_tag`
+
+Defaults:
+- If `rth` is false (default), `outside_rth` defaults to true for breakout orders so pre/postmarket entries are allowed.
 
 Environment (IBKR):
 - `IB_HOST`, `IB_PORT`, `IB_CLIENT_ID`, `PAPER_ONLY`, and related paper/live port settings.
@@ -170,7 +191,7 @@ Environment (IBKR):
 ## 9. Limitations (current)
 
 - No auto re-arm; each watcher is single-fire.
-- Breakout rule is fixed (break candle then confirm candle).
+- Breakout rule is fixed (single bar close >= level triggers entry).
 - No volatility-based sizing or dynamic TP/SL yet.
 
 ---
@@ -182,3 +203,13 @@ Environment (IBKR):
 - Entry types beyond market (limit/stop entry).
 - Strategy re-arming and session scheduling.
 - Real-time PnL tracking and fill-based performance stats.
+
+---
+
+## 11. Gotchas + debugging notes (recent)
+
+- IBKR bar timestamps are **bar start** times. The bar is only emitted to the strategy when it closes.
+- If you start mid-bar, the first bar you see is the **closing bar you were already inside**.
+- If price seems to "buy instantly," it is usually because the **first closed bar** already closed above the level and the entry is a market order.
+- Console output is filtered; if you need order status detail, check `apps/journal/events.jsonl`.
+- TP/SL visibility: CLI `positions` shows configured TP/SL if the breakout watcher included them.

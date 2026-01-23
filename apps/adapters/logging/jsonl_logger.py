@@ -31,7 +31,7 @@ def _serialize(value: Any) -> Any:
     if isinstance(value, Enum):
         return value.value
     if isinstance(value, datetime):
-        return value.isoformat()
+        return _format_datetime(value)
     if isinstance(value, (list, tuple)):
         return [_serialize(item) for item in value]
     if isinstance(value, dict):
@@ -39,3 +39,10 @@ def _serialize(value: Any) -> Any:
     if isinstance(value, (str, int, float, bool)) or value is None:
         return value
     return repr(value)
+
+
+def _format_datetime(value: datetime) -> str:
+    try:
+        return value.isoformat(timespec="microseconds")
+    except TypeError:
+        return value.isoformat()
