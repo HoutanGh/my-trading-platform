@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import shlex
+import sys
 import traceback
+import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
@@ -70,6 +73,7 @@ class REPL:
         self._aliases: dict[str, str] = {}
         self._should_exit = False
         self._breakout_tasks: dict[str, tuple[BreakoutRunConfig, asyncio.Task]] = {}
+        self._pnl_processes: dict[str, asyncio.subprocess.Process] = {}
         self._completion_matches: list[str] = []
         self._register_commands()
         self._setup_readline()
@@ -184,6 +188,30 @@ class REPL:
                 help="Ingest a Flex CSV into daily P&L.",
                 usage="ingest-flex csv=... account=... [source=flex]",
                 aliases=("ingest",),
+            )
+        )
+        self._register(
+            CommandSpec(
+                name="pnl-import",
+                handler=self._cmd_pnl_import,
+                help="Fetch latest Flex CSV (optional) and import daily P&L.",
+                usage="pnl-import [csv=...] [account=...] [source=flex]",
+            )
+        )
+        self._register(
+            CommandSpec(
+                name="pnl-open",
+                handler=self._cmd_pnl_open,
+                help="Start API + web calendar and open the browser.",
+                usage="pnl-open [api_port=8000] [web_port=5173] [account=...]",
+            )
+        )
+        self._register(
+            CommandSpec(
+                name="pnl-launch",
+                handler=self._cmd_pnl_launch,
+                help="Fetch + import latest Flex CSV, then open the calendar UI.",
+                usage="pnl-launch [account=...] [source=flex] [api_port=8000] [web_port=5173]",
             )
         )
         self._register(
@@ -683,6 +711,142 @@ class REPL:
             f"from {result.csv_path}"
         )
 
+    async def _cmd_pnl_import(self, args: list[str], kwargs: dict[str, str]) -> None:
+        await self._pnl_import(args, kwargs)
+
+    async def _pnl_import(self, args: list[str], kwargs: dict[str, str]) -> bool:
+        if not self._pnl_service:
+            print("PnL service not configured.")
+            return False
+        account = (
+            kwargs.get("account")
+            or _config_get(self._config, "account")
+            or os.getenv("PNL_ACCOUNT")
+            or "paper"
+        )
+        source = kwargs.get("source") or "flex"
+        csv_value = kwargs.get("csv") or (args[0] if args else None)
+        csv_path = None
+        if csv_value:
+            csv_path = Path(csv_value).expanduser()
+        else:
+            try:
+                from apps.adapters.pnl.gmail_flex_fetcher import (
+                    GmailFlexConfig,
+                    fetch_latest_flex_report,
+                )
+            except ImportError as exc:
+                print(f"Gmail fetcher not available: {exc}")
+                return False
+            try:
+                config = GmailFlexConfig.from_env()
+                csv_path = await asyncio.to_thread(fetch_latest_flex_report, config)
+            except Exception as exc:
+                print(f"Gmail fetch failed: {exc}")
+                return False
+        try:
+            result = await asyncio.to_thread(
+                self._pnl_service.ingest_flex,
+                csv_path,
+                account,
+                source,
+            )
+        except Exception as exc:
+            print(f"Ingest failed: {exc}")
+            return False
+        print(
+            "Ingested "
+            f"{result.days_ingested} days "
+            f"(rows read={result.rows_read}, used={result.rows_used}) "
+            f"from {result.csv_path}"
+        )
+        return True
+
+    async def _cmd_pnl_open(self, _args: list[str], kwargs: dict[str, str]) -> None:
+        api_port = _parse_port(kwargs.get("api_port"), default=int(os.getenv("API_PORT", "8000")))
+        web_port = _parse_port(kwargs.get("web_port"), default=int(os.getenv("WEB_PORT", "5173")))
+        account = (
+            kwargs.get("account")
+            or _config_get(self._config, "account")
+            or os.getenv("PNL_ACCOUNT")
+            or "paper"
+        )
+        api_proc = await self._ensure_process(
+            name="pnl_api",
+            cmd=[
+                sys.executable,
+                "-m",
+                "uvicorn",
+                "apps.api.main:app",
+                "--reload",
+                "--port",
+                str(api_port),
+            ],
+        )
+        if api_proc is None:
+            return
+        web_env = os.environ.copy()
+        web_env["VITE_API_BASE_URL"] = f"http://localhost:{api_port}"
+        if account:
+            web_env.setdefault("VITE_DEFAULT_ACCOUNT", account)
+        web_proc = await self._ensure_process(
+            name="pnl_web",
+            cmd=[
+                "npm",
+                "run",
+                "dev",
+                "--",
+                "--port",
+                str(web_port),
+            ],
+            cwd=Path("web"),
+            env=web_env,
+        )
+        if web_proc is None:
+            return
+        api_ready = await _wait_for_port("127.0.0.1", api_port, timeout=30.0)
+        web_ready = await _wait_for_port("127.0.0.1", web_port, timeout=60.0)
+        if not api_ready:
+            print("API did not start in time. Check logs.")
+            return
+        if not web_ready:
+            print("Web dev server did not start in time. Check logs.")
+            return
+        url = f"http://localhost:{web_port}"
+        print(f"Opening calendar: {url}")
+        webbrowser.open(url)
+
+    async def _cmd_pnl_launch(self, args: list[str], kwargs: dict[str, str]) -> None:
+        ok = await self._pnl_import(args, kwargs)
+        if not ok:
+            return
+        await self._cmd_pnl_open(args, kwargs)
+
+    async def _ensure_process(
+        self,
+        *,
+        name: str,
+        cmd: list[str],
+        cwd: Optional[Path] = None,
+        env: Optional[dict[str, str]] = None,
+    ) -> Optional[asyncio.subprocess.Process]:
+        existing = self._pnl_processes.get(name)
+        if existing and existing.returncode is None:
+            print(f"{name} already running (pid={existing.pid})")
+            return existing
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                cwd=str(cwd) if cwd else None,
+                env=env,
+            )
+        except FileNotFoundError as exc:
+            print(f"Failed to start {name}: {exc}")
+            return None
+        self._pnl_processes[name] = proc
+        print(f"Started {name} (pid={proc.pid})")
+        return proc
+
     async def _cmd_set(self, _args: list[str], kwargs: dict[str, str]) -> None:
         if not kwargs:
             print("Usage: set key=value [key=value ...]")
@@ -821,6 +985,30 @@ def _parse_entry_type(value: str) -> OrderType:
     if normalized in {"limit", "lmt"}:
         return OrderType.LIMIT
     raise ValueError("invalid entry type")
+
+
+def _parse_port(value: Optional[str], default: int) -> int:
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        print(f"Invalid port value: {value}. Using {default}.")
+        return default
+
+
+async def _wait_for_port(host: str, port: int, *, timeout: float) -> bool:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        try:
+            reader, writer = await asyncio.open_connection(host, port)
+            writer.close()
+            await writer.wait_closed()
+            return True
+        except OSError:
+            await asyncio.sleep(0.5)
+    return False
 
 
 def _config_get(config: dict[str, str], key: str) -> Optional[str]:

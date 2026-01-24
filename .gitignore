@@ -16,3 +16,5 @@ dist/
 .DS_Store
 *.log
 apps/journal/
+data/creds/
+data/raw/ikbr_flex/
