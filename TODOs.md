@@ -1,3 +1,9 @@
+### 24/01/26
+- [ ] understand the e2e calendar
+- [ ] start it
+- [ ] brainstorm how to decrease the time
+
+
 ### 23/01/26
 - [x] make the default outside_rth = true
 - [x] also need the ib gateway logs

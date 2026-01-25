@@ -195,7 +195,7 @@ class REPL:
                 name="pnl-import",
                 handler=self._cmd_pnl_import,
                 help="Fetch latest Flex CSV (optional) and import daily P&L.",
-                usage="pnl-import [csv=...] [account=...] [source=flex]",
+                usage="pnl-import [csv=...] [source=flex]",
             )
         )
         self._register(
@@ -203,7 +203,7 @@ class REPL:
                 name="pnl-open",
                 handler=self._cmd_pnl_open,
                 help="Start API + web calendar and open the browser.",
-                usage="pnl-open [api_port=8000] [web_port=5173] [account=...]",
+                usage="pnl-open [api_port=8000] [web_port=5173]",
             )
         )
         self._register(
@@ -211,7 +211,7 @@ class REPL:
                 name="pnl-launch",
                 handler=self._cmd_pnl_launch,
                 help="Fetch + import latest Flex CSV, then open the calendar UI.",
-                usage="pnl-launch [account=...] [source=flex] [api_port=8000] [web_port=5173]",
+                usage="pnl-launch [source=flex] [api_port=8000] [web_port=5173]",
             )
         )
         self._register(
@@ -718,12 +718,7 @@ class REPL:
         if not self._pnl_service:
             print("PnL service not configured.")
             return False
-        account = (
-            kwargs.get("account")
-            or _config_get(self._config, "account")
-            or os.getenv("PNL_ACCOUNT")
-            or "paper"
-        )
+        account = os.getenv("PNL_ACCOUNT") or "paper"
         source = kwargs.get("source") or "flex"
         csv_value = kwargs.get("csv") or (args[0] if args else None)
         csv_path = None
@@ -765,12 +760,7 @@ class REPL:
     async def _cmd_pnl_open(self, _args: list[str], kwargs: dict[str, str]) -> None:
         api_port = _parse_port(kwargs.get("api_port"), default=int(os.getenv("API_PORT", "8000")))
         web_port = _parse_port(kwargs.get("web_port"), default=int(os.getenv("WEB_PORT", "5173")))
-        account = (
-            kwargs.get("account")
-            or _config_get(self._config, "account")
-            or os.getenv("PNL_ACCOUNT")
-            or "paper"
-        )
+        account = os.getenv("PNL_ACCOUNT") or "paper"
         api_proc = await self._ensure_process(
             name="pnl_api",
             cmd=[

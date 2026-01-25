@@ -19,7 +19,7 @@ type DayCell = {
 }
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000'
-const DEFAULT_ACCOUNT = import.meta.env.VITE_DEFAULT_ACCOUNT ?? 'paper'
+const DEFAULT_ACCOUNT = import.meta.env.VITE_DEFAULT_ACCOUNT ?? 'live'
 
 function toIsoDate(year: number, monthIndex: number, day: number): string {
   // Month index is zero-based; use UTC to avoid timezone drift.

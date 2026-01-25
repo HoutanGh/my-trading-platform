@@ -12,7 +12,8 @@ This document describes the **current** P&L ingestion and calendar architecture.
 ## 2. End‑to‑End Daily P&L Calendar Flow (Detailed)
 
 ### 2.1 Write path: ingestion (what populates the calendar)
-1. Run the CLI command `ingest-flex` with `csv=...` and `account=...`.
+1. Run the CLI command `ingest-flex` with `csv=...` and `account=...`,
+   **or** use the Gmail‑backed wrapper `pnl-import` (see 9.1).
 2. `apps/core/pnl/service.py::PnlService.ingest_flex` publishes `PnlIngestStarted`.
 3. `apps/adapters/pnl/flex_ingest.py::FlexCsvPnlIngestor.ingest`:
    - Ensures the `daily_pnl` table exists.
@@ -132,7 +133,50 @@ Outputs:
 
 This gives both high‑level “what happened” and low‑level “why it happened.”
 
-## 9. Relevant File Tree (Current)
+## 9. Gmail Flex Retrieval + Launcher Flow (Current)
+
+### 9.1 Gmail retrieval (automated)
+The Gmail adapter fetches the **latest** IBKR Flex attachment by:
+1. Using Gmail API OAuth (read‑only scope).
+2. Querying Gmail for messages:
+   - Sender: `donotreply@interactivebrokers.com`
+   - Subject contains: `Activity Flex`
+   - Attachment filename prefix: `flex.1332995.Daily_PL.`
+   - Lookback window: `GMAIL_LOOKBACK_DAYS` (default 30)
+3. Scanning attachments in the matched messages and picking the most recent
+   attachment with a `.csv` or `.zip` filename that matches the prefix.
+4. Saving the CSV to `IBKR_FLEX_SAVE_DIR`.
+   - If the attachment is a ZIP, the CSV is extracted first.
+
+Notes:
+- If no browser is available for OAuth, you may need to open the printed URL
+  manually or use port‑forwarding to complete the OAuth callback.
+- The save directory must be writable by your user.
+
+### 9.2 Launcher commands (CLI)
+
+These are implemented in `apps/cli/repl.py` and intentionally keep core clean:
+- `pnl-import`: Fetches the latest Flex CSV via Gmail (if `csv=` not provided)
+  and imports it using the existing `PnlService.ingest_flex`.
+- `pnl-open`: Starts FastAPI + the React dev server and opens the browser.
+- `pnl-launch`: Runs `pnl-import` then `pnl-open`.
+
+### 9.3 Environment variables (Gmail + launcher)
+
+Required:
+- `GMAIL_CLIENT_SECRET_PATH` – path to OAuth client JSON.
+
+Recommended defaults:
+- `GMAIL_TOKEN_PATH` – token cache (e.g., `data/creds/gmail_token.json`).
+- `GMAIL_SENDER` – `donotreply@interactivebrokers.com`.
+- `GMAIL_SUBJECT_CONTAINS` – `Activity Flex`.
+- `GMAIL_FILENAME_PREFIX` – `flex.1332995.Daily_PL.`
+- `GMAIL_LOOKBACK_DAYS` – `30`.
+- `IBKR_FLEX_SAVE_DIR` – e.g., `data/raw/ikbr_flex` (repo‑relative).
+- `PNL_ACCOUNT` – value used by `pnl-import` and `pnl-open` (no per‑command override).
+- `API_PORT` / `WEB_PORT` – optional overrides.
+
+## 10. Relevant File Tree (Current)
 
 ```
 docs/
@@ -140,6 +184,9 @@ docs/
 data/
   raw/
     Daily_PL.csv
+    ikbr_flex/
+  creds/
+    gmail_token.json
 apps/
   core/
     pnl/
@@ -152,6 +199,7 @@ apps/
       db.py
       store.py
       flex_ingest.py
+      gmail_flex_fetcher.py
     eventbus/
       in_process.py
     logging/
@@ -167,13 +215,15 @@ apps/
     repl.py
   journal/
     events.jsonl
+requirements.txt
+.env
 web/
   src/
     App.tsx
     App.css
 ```
 
-## 10. Setup (Quick Start)
+## 11. Setup (Quick Start)
 
 1) Postgres
 - Run a local Postgres instance and create a database.
@@ -192,7 +242,7 @@ web/
 - Start Vite:
   - `cd web && npm run dev`
 
-## 11. Planned Extensions (Not Implemented)
+## 12. Planned Extensions (Not Implemented)
 
 - Per‑symbol daily P&L table (`daily_symbol_pnl`).
 - IB API ingestion for “today only.”
