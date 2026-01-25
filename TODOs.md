@@ -1,7 +1,10 @@
+### 25/01/26
+- [x] e2e calendar
+
+
 ### 24/01/26
-- [ ] understand the e2e calendar
-- [ ] start it
-- [ ] brainstorm how to decrease the time
+- [x] understand the e2e calendar
+- [x] start it
 
 
 ### 23/01/26
