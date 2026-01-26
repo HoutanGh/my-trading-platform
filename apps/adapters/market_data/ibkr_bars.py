@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
-from typing import AsyncIterator
+from datetime import datetime, timezone
+from typing import AsyncIterator, Callable, Optional
 
 from ib_insync import IB, BarData, Stock
 from ib_insync.util import parseIBDatetime
@@ -10,12 +10,19 @@ from ib_insync.util import parseIBDatetime
 from apps.adapters.broker.ibkr_connection import IBKRConnection
 from apps.core.market_data.models import Bar
 from apps.core.market_data.ports import BarStreamPort
+from apps.core.ops.events import BarStreamGapDetected, BarStreamLagDetected, BarStreamStarted, BarStreamStopped
 
 
 class IBKRBarStream(BarStreamPort):
-    def __init__(self, connection: IBKRConnection) -> None:
+    def __init__(
+        self,
+        connection: IBKRConnection,
+        *,
+        event_logger: Optional[Callable[[object], None]] = None,
+    ) -> None:
         self._connection = connection
         self._ib: IB = connection.ib
+        self._event_logger = event_logger
 
     async def stream_bars(
         self,
@@ -33,10 +40,11 @@ class IBKRBarStream(BarStreamPort):
             raise RuntimeError(f"Could not qualify contract for {symbol}")
         qualified = contracts[0]
 
+        duration = _duration_for_bar_size(bar_size)
         bars = await self._ib.reqHistoricalDataAsync(
             qualified,
             endDateTime="",
-            durationStr="2 D",
+            durationStr=duration,
             barSizeSetting=bar_size,
             whatToShow="TRADES",
             useRTH=use_rth,
@@ -62,16 +70,65 @@ class IBKRBarStream(BarStreamPort):
 
         bars.updateEvent += _on_bar
 
+        expected_interval = _bar_interval_seconds(bar_size)
+        last_bar_ts: Optional[datetime] = None
+        stop_reason: Optional[str] = None
+        self._log_event(BarStreamStarted.now(symbol=symbol.upper(), bar_size=bar_size, use_rth=use_rth))
+
         try:
             while True:
                 ib_bar = await queue.get()
-                yield _to_bar(ib_bar)
+                bar = _to_bar(ib_bar)
+                if expected_interval:
+                    if last_bar_ts is not None:
+                        actual_interval = (_normalize_timestamp(bar.timestamp) - _normalize_timestamp(last_bar_ts)).total_seconds()
+                        if actual_interval > expected_interval * 1.5:
+                            self._log_event(
+                                BarStreamGapDetected.now(
+                                    symbol=symbol.upper(),
+                                    bar_size=bar_size,
+                                    use_rth=use_rth,
+                                    expected_interval_seconds=expected_interval,
+                                    actual_interval_seconds=actual_interval,
+                                    previous_bar_timestamp=_normalize_timestamp(last_bar_ts),
+                                    current_bar_timestamp=_normalize_timestamp(bar.timestamp),
+                                )
+                            )
+                    lag_seconds = (_normalize_timestamp(datetime.now(timezone.utc)) - _normalize_timestamp(bar.timestamp)).total_seconds()
+                    if lag_seconds > expected_interval * 2.5:
+                        self._log_event(
+                            BarStreamLagDetected.now(
+                                symbol=symbol.upper(),
+                                bar_size=bar_size,
+                                use_rth=use_rth,
+                                lag_seconds=lag_seconds,
+                                bar_timestamp=_normalize_timestamp(bar.timestamp),
+                            )
+                        )
+                last_bar_ts = bar.timestamp
+                yield bar
+        except asyncio.CancelledError:
+            stop_reason = "cancelled"
+            raise
         finally:
             bars.updateEvent -= _on_bar
             try:
                 self._ib.cancelHistoricalData(bars)
             except Exception:
                 pass
+            self._log_event(
+                BarStreamStopped.now(
+                    symbol=symbol.upper(),
+                    bar_size=bar_size,
+                    use_rth=use_rth,
+                    reason=stop_reason,
+                    last_bar_timestamp=_normalize_timestamp(last_bar_ts) if last_bar_ts else None,
+                )
+            )
+
+    def _log_event(self, event: object) -> None:
+        if self._event_logger:
+            self._event_logger(event)
 
 
 def _to_bar(ib_bar: BarData) -> Bar:
@@ -86,3 +143,37 @@ def _to_bar(ib_bar: BarData) -> Bar:
         close=float(ib_bar.close),
         volume=float(ib_bar.volume) if ib_bar.volume is not None else None,
     )
+
+
+def _duration_for_bar_size(bar_size: str) -> str:
+    normalized = bar_size.strip().lower()
+    if "sec" in normalized:
+        return "1800 S"
+    return "2 D"
+
+
+def _bar_interval_seconds(bar_size: str) -> Optional[float]:
+    normalized = bar_size.strip().lower()
+    parts = normalized.split()
+    if len(parts) < 2:
+        return None
+    try:
+        value = float(parts[0])
+    except ValueError:
+        return None
+    unit = parts[1]
+    if unit.startswith("sec"):
+        return value
+    if unit.startswith("min"):
+        return value * 60.0
+    if unit.startswith("hour"):
+        return value * 3600.0
+    return None
+
+
+def _normalize_timestamp(value: Optional[datetime]) -> datetime:
+    if value is None:
+        return datetime.now(timezone.utc)
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value

@@ -26,7 +26,7 @@ from apps.core.orders.service import OrderService, OrderValidationError
 from apps.core.pnl.service import PnlService
 from apps.core.positions.models import PositionSnapshot
 from apps.core.positions.service import PositionsService
-from apps.core.strategies.breakout.logic import BreakoutRuleConfig
+from apps.core.strategies.breakout.logic import BreakoutRuleConfig, FastEntryConfig
 from apps.core.strategies.breakout.runner import BreakoutRunConfig, run_breakout
 
 CommandHandler = Callable[[list[str], dict[str, str]], Awaitable[None]]
@@ -158,7 +158,8 @@ class REPL:
                 help="Start or stop a breakout watcher.",
                 usage=(
                     "breakout SYMBOL level=... qty=... [tp=...] [sl=...] [rth=true|false] [bar=1 min] "
-                    "[max_bars=...] [tif=DAY] [outside_rth=true|false] [entry=limit|market] [account=...] [client_tag=...] "
+                    "[fast=true|false] [fast_bar=1 secs] [max_bars=...] [tif=DAY] [outside_rth=true|false] "
+                    "[entry=limit|market] [account=...] [client_tag=...] "
                     "| breakout SYMBOL LEVEL QTY [TP] [SL] "
                     "| breakout status | breakout stop [SYMBOL]"
                 ),
@@ -516,6 +517,13 @@ class REPL:
             or _config_get(self._config, "bar_size")
             or "1 min"
         )
+        fast_value = kwargs.get("fast") or _config_get(self._config, "fast")
+        fast_enabled = _parse_bool(fast_value) if fast_value is not None else True
+        fast_bar_size = (
+            kwargs.get("fast_bar")
+            or _config_get(self._config, "fast_bar")
+            or "1 secs"
+        )
         use_rth_value = kwargs.get("rth") or kwargs.get("use_rth") or _config_get(self._config, "use_rth")
         use_rth = _parse_bool(use_rth_value) if use_rth_value is not None else False
         outside_rth_value = kwargs.get("outside_rth") or _config_get(self._config, "outside_rth")
@@ -557,12 +565,13 @@ class REPL:
         run_config = BreakoutRunConfig(
             symbol=symbol,
             qty=qty,
-            rule=BreakoutRuleConfig(level=level),
+            rule=BreakoutRuleConfig(level=level, fast_entry=FastEntryConfig(enabled=fast_enabled)),
             entry_type=entry_type,
             take_profit=take_profit,
             stop_loss=stop_loss,
             use_rth=use_rth,
             bar_size=bar_size,
+            fast_bar_size=fast_bar_size,
             max_bars=max_bars,
             tif=tif,
             outside_rth=outside_rth,

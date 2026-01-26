@@ -74,6 +74,233 @@ class IbGatewayLog:
 
 
 @dataclass(frozen=True)
+class IbkrConnectionAttempt:
+    host: str
+    port: int
+    client_id: int
+    readonly: bool
+    mode: Optional[str]
+    timestamp: datetime
+
+    @classmethod
+    def now(
+        cls,
+        *,
+        host: str,
+        port: int,
+        client_id: int,
+        readonly: bool,
+        mode: Optional[str],
+    ) -> "IbkrConnectionAttempt":
+        return cls(
+            host=host,
+            port=port,
+            client_id=client_id,
+            readonly=readonly,
+            mode=mode,
+            timestamp=_now(),
+        )
+
+
+@dataclass(frozen=True)
+class IbkrConnectionEstablished:
+    host: str
+    port: int
+    client_id: int
+    readonly: bool
+    server_version: Optional[int]
+    timestamp: datetime
+
+    @classmethod
+    def now(
+        cls,
+        *,
+        host: str,
+        port: int,
+        client_id: int,
+        readonly: bool,
+        server_version: Optional[int],
+    ) -> "IbkrConnectionEstablished":
+        return cls(
+            host=host,
+            port=port,
+            client_id=client_id,
+            readonly=readonly,
+            server_version=server_version,
+            timestamp=_now(),
+        )
+
+
+@dataclass(frozen=True)
+class IbkrConnectionFailed:
+    host: str
+    port: int
+    client_id: int
+    readonly: bool
+    mode: Optional[str]
+    error_type: str
+    message: str
+    timestamp: datetime
+
+    @classmethod
+    def now(
+        cls,
+        *,
+        host: str,
+        port: int,
+        client_id: int,
+        readonly: bool,
+        mode: Optional[str],
+        error_type: str,
+        message: str,
+    ) -> "IbkrConnectionFailed":
+        return cls(
+            host=host,
+            port=port,
+            client_id=client_id,
+            readonly=readonly,
+            mode=mode,
+            error_type=error_type,
+            message=message,
+            timestamp=_now(),
+        )
+
+
+@dataclass(frozen=True)
+class IbkrConnectionClosed:
+    host: str
+    port: int
+    client_id: int
+    readonly: bool
+    reason: Optional[str]
+    timestamp: datetime
+
+    @classmethod
+    def now(
+        cls,
+        *,
+        host: str,
+        port: int,
+        client_id: int,
+        readonly: bool,
+        reason: Optional[str] = None,
+    ) -> "IbkrConnectionClosed":
+        return cls(
+            host=host,
+            port=port,
+            client_id=client_id,
+            readonly=readonly,
+            reason=reason,
+            timestamp=_now(),
+        )
+
+
+@dataclass(frozen=True)
+class BarStreamStarted:
+    symbol: str
+    bar_size: str
+    use_rth: bool
+    timestamp: datetime
+
+    @classmethod
+    def now(cls, *, symbol: str, bar_size: str, use_rth: bool) -> "BarStreamStarted":
+        return cls(symbol=symbol, bar_size=bar_size, use_rth=use_rth, timestamp=_now())
+
+
+@dataclass(frozen=True)
+class BarStreamStopped:
+    symbol: str
+    bar_size: str
+    use_rth: bool
+    reason: Optional[str]
+    last_bar_timestamp: Optional[datetime]
+    timestamp: datetime
+
+    @classmethod
+    def now(
+        cls,
+        *,
+        symbol: str,
+        bar_size: str,
+        use_rth: bool,
+        reason: Optional[str] = None,
+        last_bar_timestamp: Optional[datetime] = None,
+    ) -> "BarStreamStopped":
+        return cls(
+            symbol=symbol,
+            bar_size=bar_size,
+            use_rth=use_rth,
+            reason=reason,
+            last_bar_timestamp=last_bar_timestamp,
+            timestamp=_now(),
+        )
+
+
+@dataclass(frozen=True)
+class BarStreamGapDetected:
+    symbol: str
+    bar_size: str
+    use_rth: bool
+    expected_interval_seconds: float
+    actual_interval_seconds: float
+    previous_bar_timestamp: datetime
+    current_bar_timestamp: datetime
+    timestamp: datetime
+
+    @classmethod
+    def now(
+        cls,
+        *,
+        symbol: str,
+        bar_size: str,
+        use_rth: bool,
+        expected_interval_seconds: float,
+        actual_interval_seconds: float,
+        previous_bar_timestamp: datetime,
+        current_bar_timestamp: datetime,
+    ) -> "BarStreamGapDetected":
+        return cls(
+            symbol=symbol,
+            bar_size=bar_size,
+            use_rth=use_rth,
+            expected_interval_seconds=expected_interval_seconds,
+            actual_interval_seconds=actual_interval_seconds,
+            previous_bar_timestamp=previous_bar_timestamp,
+            current_bar_timestamp=current_bar_timestamp,
+            timestamp=_now(),
+        )
+
+
+@dataclass(frozen=True)
+class BarStreamLagDetected:
+    symbol: str
+    bar_size: str
+    use_rth: bool
+    lag_seconds: float
+    bar_timestamp: datetime
+    timestamp: datetime
+
+    @classmethod
+    def now(
+        cls,
+        *,
+        symbol: str,
+        bar_size: str,
+        use_rth: bool,
+        lag_seconds: float,
+        bar_timestamp: datetime,
+    ) -> "BarStreamLagDetected":
+        return cls(
+            symbol=symbol,
+            bar_size=bar_size,
+            use_rth=use_rth,
+            lag_seconds=lag_seconds,
+            bar_timestamp=bar_timestamp,
+            timestamp=_now(),
+        )
+
+
+@dataclass(frozen=True)
 class IbGatewayRawLine:
     line: str
     source_path: str

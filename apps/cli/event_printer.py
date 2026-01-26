@@ -8,6 +8,7 @@ from apps.core.orders.events import BracketChildOrderFilled, OrderFilled
 from apps.core.strategies.breakout.events import (
     BreakoutBreakDetected,
     BreakoutConfirmed,
+    BreakoutFastTriggered,
     BreakoutStarted,
     BreakoutStopped,
 )
@@ -39,6 +40,22 @@ def print_event(event: object) -> bool:
             f"{event.symbol} level={event.level} bar={bar_time}",
         )
         return True
+    if isinstance(event, BreakoutFastTriggered):
+        bar_time = _format_time(event.bar.timestamp)
+        thresholds = event.thresholds
+        _print_line(
+            event.timestamp,
+            "BreakoutFast",
+            (
+                f"{event.symbol} level={event.level} bar={bar_time} "
+                f"elapsed={thresholds.elapsed_seconds}s "
+                f"dist={thresholds.distance_cents}c "
+                f"range={thresholds.spread_cents}c "
+                f"max_range={thresholds.max_spread_cents}c "
+                f"scale={thresholds.price_scale:g}"
+            ),
+        )
+        return True
     if isinstance(event, BreakoutConfirmed):
         if event.client_tag:
             _CONFIRMED_BY_TAG[event.client_tag] = _EntryFillTiming(
@@ -58,7 +75,7 @@ def print_event(event: object) -> bool:
         )
         return True
     if isinstance(event, BreakoutStopped):
-        if event.client_tag and event.reason != "order_submitted":
+        if event.client_tag and event.reason not in {"order_submitted", "order_submitted_fast"}:
             _CONFIRMED_BY_TAG.pop(event.client_tag, None)
         return False
     if isinstance(event, OrderFilled):

@@ -45,6 +45,7 @@ This document describes the production-ready architecture for the breakout autom
 
 - Accepts a breakout configuration from the CLI (symbol, level, qty, optional TP/SL).
 - Streams 1-minute market data from IBKR.
+- Optionally streams 1-second bars for a fast-entry override.
 - Applies a simple breakout rule: **enter when a bar closes at or above the level**.
 - On entry, submits either:
   - a **limit entry at the ask** by default, or
@@ -122,12 +123,16 @@ Quick orders:
 
 1. Operator starts the breakout watcher via CLI.
 2. Runner subscribes to 1-minute bars from IBKR.
-3. Each **closed** bar is fed into the breakout logic.
-4. If bar close >= level:
+3. If fast entry is enabled, runner also subscribes to 1-second bars.
+4. Each **closed** 1-minute bar is fed into the breakout logic.
+5. If bar close >= level:
    - If TP/SL provided: submit bracket order (parent + TP + SL, OCA).
    - Otherwise: submit a single market entry.
-5. Order lifecycle events are emitted and logged.
-6. Runner stops (single-fire).
+6. If fast entry fires first (1-second high beyond a time-decayed distance, close above level, and spread proxy passes):
+   - Submit the entry immediately.
+   - Bypass the 1-minute close entry (single-fire).
+7. Order lifecycle events are emitted and logged.
+8. Runner stops (single-fire).
 
 ---
 
@@ -150,13 +155,14 @@ Notes:
 ## 6. Observability and audit
 
 Events emitted (full audit log):
-- Breakout lifecycle: Started, BreakDetected, Confirmed, Rejected, Stopped.
+- Breakout lifecycle: Started, BreakDetected, FastTriggered, Confirmed, Rejected, Stopped.
 - Order lifecycle: Intent, Sent, OrderIdAssigned, StatusChanged, Filled.
 - Bracket children: child status/filled events for TP/SL.
 
 Logging:
 - Console output via `event_printer` (intentionally filtered to reduce noise, timestamps include timezone offset).
 - JSONL audit log via `jsonl_logger` (path controlled by `APPS_EVENT_LOG_PATH`), which includes **all** events.
+  - Includes IBKR connection lifecycle and bar stream health events (e.g., connect attempts, gaps, lag).
 - CLI error log via `APPS_OPS_LOG_PATH` (default `apps/journal/ops.jsonl`).
 - IBKR gateway/API error log via `APPS_IB_GATEWAY_LOG_PATH` (default `apps/journal/ib_gateway.jsonl`).
 - IBKR Gateway/TWS file tail log via `IB_GATEWAY_LOG_PATH` (source) -> `APPS_IB_GATEWAY_RAW_LOG_PATH` (default `apps/journal/ib_gateway_raw.jsonl`).
@@ -178,7 +184,7 @@ Logging:
 
 CLI fields:
 - Required: `symbol`, `level`, `qty`
-- Optional: `tp`, `sl`, `rth`, `bar`, `max_bars`, `tif`, `outside_rth`, `entry`, `account`, `client_tag`
+- Optional: `tp`, `sl`, `rth`, `bar`, `fast`, `fast_bar`, `max_bars`, `tif`, `outside_rth`, `entry`, `account`, `client_tag`
 
 Defaults:
 - If `rth` is false (default), `outside_rth` defaults to true for breakout orders so pre/postmarket entries are allowed.
@@ -186,12 +192,21 @@ Defaults:
 Environment (IBKR):
 - `IB_HOST`, `IB_PORT`, `IB_CLIENT_ID`, `PAPER_ONLY`, and related paper/live port settings.
 
+Fast entry defaults (enabled by default):
+- Uses 1-second **high** for distance checks and 1-second **close** for acceptance.
+- 1-second bar size default is `1 secs` (IBKR bar size string).
+- Distance decays linearly every 10s from 15¢ to 5¢ (rounded to whole cents).
+- Price regime scaling based on breakout level: `<$1` uses $1–$4 rules, `$1–$4` = 1.0×, `$4–$7` = 1.1×, `$7–$10` = 1.25×, `>$10` uses $7–$10 rules.
+- Spread proxy uses 1-second high–low range with a max that decays from 4¢ to 1¢ (rounded to whole cents).
+- Minute boundaries are inferred from 1-second bar timestamps when aligning the fast threshold schedule.
+
 ---
 
 ## 9. Limitations (current)
 
 - No auto re-arm; each watcher is single-fire.
 - Breakout rule is fixed (single bar close >= level triggers entry).
+- Fast entry uses fixed, strategy-configured thresholds (time-decayed distance and 1-sec high-low proxy), not adaptive noise models.
 - No volatility-based sizing or dynamic TP/SL yet.
 
 ---

@@ -26,6 +26,15 @@ from apps.core.positions.service import PositionsService
 from apps.core.ops.events import IbGatewayRawLine
 
 
+def _fanout_logger(*loggers):
+    def _log(event: object) -> None:
+        for logger in loggers:
+            if logger:
+                logger(event)
+
+    return _log
+
+
 async def _run_ib_gateway_tail(
     source_path: str,
     *,
@@ -56,8 +65,10 @@ async def _async_main() -> None:
     ops_logger = JsonlEventLogger(ops_log_path).handle if ops_log_path else None
     ib_log_path = os.getenv("APPS_IB_GATEWAY_LOG_PATH", "apps/journal/ib_gateway.jsonl")
     ib_logger = JsonlEventLogger(ib_log_path).handle if ib_log_path else None
-    connection = IBKRConnection(config, gateway_logger=ib_logger)
-    bar_stream = IBKRBarStream(connection)
+    event_logger = _fanout_logger(bus.publish)
+    gateway_logger = _fanout_logger(ib_logger, bus.publish)
+    connection = IBKRConnection(config, gateway_logger=gateway_logger, event_logger=event_logger)
+    bar_stream = IBKRBarStream(connection, event_logger=event_logger)
     quote_port = IBKRQuoteSnapshot(connection)
     order_port = IBKROrderPort(connection, event_bus=bus)
     order_service = OrderService(order_port, event_bus=bus)

@@ -13,15 +13,18 @@ from apps.core.orders.service import OrderService
 from apps.core.strategies.breakout.events import (
     BreakoutBreakDetected,
     BreakoutConfirmed,
+    BreakoutFastTriggered,
     BreakoutRejected,
     BreakoutStarted,
     BreakoutStopped,
 )
 from apps.core.strategies.breakout.logic import (
     BreakoutAction,
+    FastEntryThresholds,
     BreakoutRuleConfig,
     BreakoutState,
     evaluate_breakout,
+    evaluate_fast_entry,
 )
 
 
@@ -35,6 +38,7 @@ class BreakoutRunConfig:
     stop_loss: Optional[float] = None
     use_rth: bool = False
     bar_size: str = "1 min"
+    fast_bar_size: str = "1 secs"
     max_bars: Optional[int] = None
     tif: str = "DAY"
     outside_rth: bool = False
@@ -69,9 +73,120 @@ async def run_breakout(
     client_tag = config.client_tag or _default_breakout_tag(symbol, config.rule.level)
     state = BreakoutState()
     bars_seen = 0
+    decision = asyncio.Event()
+    decision_lock = asyncio.Lock()
+    fast_config = config.rule.fast_entry
 
-    try:
+    async def _submit_entry(
+        bar: "Bar",
+        *,
+        reason: str,
+        fast_thresholds: Optional[FastEntryThresholds] = None,
+    ) -> bool:
+        if decision.is_set():
+            return False
+        async with decision_lock:
+            if decision.is_set():
+                return False
+            decision.set()
+
+        if event_bus and fast_thresholds is not None:
+            event_bus.publish(BreakoutFastTriggered.now(symbol, bar, config.rule.level, fast_thresholds))
+        if event_bus:
+            event_bus.publish(
+                BreakoutConfirmed.now(
+                    symbol,
+                    bar,
+                    config.rule.level,
+                    take_profit=config.take_profit,
+                    stop_loss=config.stop_loss,
+                    account=config.account,
+                    client_tag=client_tag,
+                )
+            )
+        entry_price = None
+        if config.entry_type == OrderType.LIMIT:
+            quote = await quote_port.get_quote(symbol) if quote_port else None
+            if not quote or quote.ask is None:
+                if event_bus:
+                    event_bus.publish(
+                        BreakoutRejected.now(
+                            symbol,
+                            bar,
+                            config.rule.level,
+                            reason="quote_missing",
+                        )
+                    )
+                    event_bus.publish(
+                        BreakoutStopped.now(
+                            symbol,
+                            reason="quote_missing",
+                            client_tag=client_tag,
+                        )
+                    )
+                return True
+            if _is_quote_stale(quote, config.quote_max_age_seconds):
+                if event_bus:
+                    event_bus.publish(
+                        BreakoutRejected.now(
+                            symbol,
+                            bar,
+                            config.rule.level,
+                            reason="quote_stale",
+                        )
+                    )
+                    event_bus.publish(
+                        BreakoutStopped.now(
+                            symbol,
+                            reason="quote_stale",
+                            client_tag=client_tag,
+                        )
+                    )
+                return True
+            entry_price = quote.ask
+        if config.take_profit is not None and config.stop_loss is not None:
+            spec = BracketOrderSpec(
+                symbol=symbol,
+                qty=config.qty,
+                side=OrderSide.BUY,
+                entry_type=config.entry_type,
+                entry_price=entry_price,
+                take_profit=config.take_profit,
+                stop_loss=config.stop_loss,
+                tif=config.tif,
+                outside_rth=config.outside_rth,
+                account=config.account,
+                client_tag=client_tag,
+            )
+            await order_service.submit_bracket(spec)
+        else:
+            spec = OrderSpec(
+                symbol=symbol,
+                qty=config.qty,
+                side=OrderSide.BUY,
+                order_type=config.entry_type,
+                limit_price=entry_price,
+                tif=config.tif,
+                outside_rth=config.outside_rth,
+                account=config.account,
+                client_tag=client_tag,
+            )
+            await order_service.submit_order(spec)
+        if event_bus:
+            event_bus.publish(
+                BreakoutStopped.now(
+                    symbol,
+                    reason=reason,
+                    client_tag=client_tag,
+                )
+            )
+        return True
+
+    async def _watch_slow() -> None:
+        nonlocal bars_seen, state
         async for bar in bar_stream.stream_bars(symbol, bar_size=config.bar_size, use_rth=config.use_rth):
+            if decision.is_set():
+                return
             bars_seen += 1
             was_break_seen = state.break_seen
             state, action = evaluate_breakout(state, bar, config.rule)
@@ -80,94 +195,7 @@ async def run_breakout(
                 event_bus.publish(BreakoutBreakDetected.now(symbol, bar, config.rule.level))
 
             if action == BreakoutAction.ENTER:
-                if event_bus:
-                    event_bus.publish(
-                        BreakoutConfirmed.now(
-                            symbol,
-                            bar,
-                            config.rule.level,
-                            take_profit=config.take_profit,
-                            stop_loss=config.stop_loss,
-                            account=config.account,
-                            client_tag=client_tag,
-                        )
-                    )
-                entry_price = None
-                if config.entry_type == OrderType.LIMIT:
-                    quote = await quote_port.get_quote(symbol) if quote_port else None
-                    if not quote or quote.ask is None:
-                        if event_bus:
-                            event_bus.publish(
-                                BreakoutRejected.now(
-                                    symbol,
-                                    bar,
-                                    config.rule.level,
-                                    reason="quote_missing",
-                                )
-                            )
-                            event_bus.publish(
-                                BreakoutStopped.now(
-                                    symbol,
-                                    reason="quote_missing",
-                                    client_tag=client_tag,
-                                )
-                            )
-                        return
-                    if _is_quote_stale(quote, config.quote_max_age_seconds):
-                        if event_bus:
-                            event_bus.publish(
-                                BreakoutRejected.now(
-                                    symbol,
-                                    bar,
-                                    config.rule.level,
-                                    reason="quote_stale",
-                                )
-                            )
-                            event_bus.publish(
-                                BreakoutStopped.now(
-                                    symbol,
-                                    reason="quote_stale",
-                                    client_tag=client_tag,
-                                )
-                            )
-                        return
-                    entry_price = quote.ask
-                if config.take_profit is not None and config.stop_loss is not None:
-                    spec = BracketOrderSpec(
-                        symbol=symbol,
-                        qty=config.qty,
-                        side=OrderSide.BUY,
-                        entry_type=config.entry_type,
-                        entry_price=entry_price,
-                        take_profit=config.take_profit,
-                        stop_loss=config.stop_loss,
-                        tif=config.tif,
-                        outside_rth=config.outside_rth,
-                        account=config.account,
-                        client_tag=client_tag,
-                    )
-                    await order_service.submit_bracket(spec)
-                else:
-                    spec = OrderSpec(
-                        symbol=symbol,
-                        qty=config.qty,
-                        side=OrderSide.BUY,
-                        order_type=config.entry_type,
-                        limit_price=entry_price,
-                        tif=config.tif,
-                        outside_rth=config.outside_rth,
-                        account=config.account,
-                        client_tag=client_tag,
-                    )
-                    await order_service.submit_order(spec)
-                if event_bus:
-                    event_bus.publish(
-                        BreakoutStopped.now(
-                            symbol,
-                            reason="order_submitted",
-                            client_tag=client_tag,
-                        )
-                    )
+                await _submit_entry(bar, reason="order_submitted")
                 return
 
             if action == BreakoutAction.STOP:
@@ -199,7 +227,42 @@ async def run_breakout(
                         )
                     )
                 return
+
+    async def _watch_fast() -> None:
+        if not fast_config.enabled:
+            return
+        async for bar in bar_stream.stream_bars(symbol, bar_size=config.fast_bar_size, use_rth=config.use_rth):
+            if decision.is_set():
+                return
+            thresholds = evaluate_fast_entry(bar, level=config.rule.level, config=fast_config)
+            if thresholds is None:
+                continue
+            await _submit_entry(
+                bar,
+                reason="order_submitted_fast",
+                fast_thresholds=thresholds,
+            )
+            return
+
+    tasks: list[asyncio.Task] = []
+    try:
+        tasks = [asyncio.create_task(_watch_slow(), name=f"breakout:slow:{symbol}")]
+        if fast_config.enabled:
+            tasks.append(asyncio.create_task(_watch_fast(), name=f"breakout:fast:{symbol}"))
+        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        for task in done:
+            exc = task.exception()
+            if exc:
+                raise exc
     except asyncio.CancelledError:
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         if event_bus:
             event_bus.publish(
                 BreakoutStopped.now(

@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from apps.core.market_data.models import Bar
-from apps.core.strategies.breakout.logic import BreakoutRuleConfig
+from apps.core.strategies.breakout.logic import BreakoutRuleConfig, FastEntryThresholds
 
 
 def _now() -> datetime:
@@ -33,6 +33,25 @@ class BreakoutBreakDetected:
     @classmethod
     def now(cls, symbol: str, bar: Bar, level: float) -> "BreakoutBreakDetected":
         return cls(symbol=symbol, bar=bar, level=level, timestamp=_now())
+
+
+@dataclass(frozen=True)
+class BreakoutFastTriggered:
+    symbol: str
+    bar: Bar
+    level: float
+    thresholds: FastEntryThresholds
+    timestamp: datetime
+
+    @classmethod
+    def now(
+        cls,
+        symbol: str,
+        bar: Bar,
+        level: float,
+        thresholds: FastEntryThresholds,
+    ) -> "BreakoutFastTriggered":
+        return cls(symbol=symbol, bar=bar, level=level, thresholds=thresholds, timestamp=_now())
 
 
 @dataclass(frozen=True)

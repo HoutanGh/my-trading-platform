@@ -6,7 +6,13 @@ from typing import Callable, Optional, Tuple
 
 from ib_insync import IB
 
-from apps.core.ops.events import IbGatewayLog
+from apps.core.ops.events import (
+    IbGatewayLog,
+    IbkrConnectionAttempt,
+    IbkrConnectionClosed,
+    IbkrConnectionEstablished,
+    IbkrConnectionFailed,
+)
 
 @dataclass
 class IBKRConnectionConfig:
@@ -40,10 +46,12 @@ class IBKRConnection:
         ib: Optional[IB] = None,
         *,
         gateway_logger: Optional[Callable[[object], None]] = None,
+        event_logger: Optional[Callable[[object], None]] = None,
     ) -> None:
         self._config = config
         self._ib = ib or IB()
         self._gateway_logger = gateway_logger
+        self._event_logger = event_logger
         self._install_error_filter()
 
     @property
@@ -82,14 +90,46 @@ class IBKRConnection:
         self._assert_paper_mode(new_port)
         if self._ib.isConnected():
             self._ib.disconnect()
+            self._log_event(
+                IbkrConnectionClosed.now(
+                    host=self._config.host,
+                    port=self._config.port,
+                    client_id=self._config.client_id,
+                    readonly=self._config.readonly,
+                    reason="reconnect",
+                )
+            )
 
-        await self._ib.connectAsync(
-            new_host,
-            new_port,
-            clientId=new_client_id,
-            timeout=new_timeout,
-            readonly=new_readonly,
+        self._log_event(
+            IbkrConnectionAttempt.now(
+                host=new_host,
+                port=new_port,
+                client_id=new_client_id,
+                readonly=new_readonly,
+                mode=mode,
+            )
         )
+        try:
+            await self._ib.connectAsync(
+                new_host,
+                new_port,
+                clientId=new_client_id,
+                timeout=new_timeout,
+                readonly=new_readonly,
+            )
+        except Exception as exc:
+            self._log_event(
+                IbkrConnectionFailed.now(
+                    host=new_host,
+                    port=new_port,
+                    client_id=new_client_id,
+                    readonly=new_readonly,
+                    mode=mode,
+                    error_type=type(exc).__name__,
+                    message=str(exc),
+                )
+            )
+            raise
         self._install_error_filter()
 
         self._config = IBKRConnectionConfig(
@@ -102,11 +142,34 @@ class IBKRConnection:
             paper_port=self._config.paper_port,
             live_port=self._config.live_port,
         )
+        server_version = None
+        try:
+            server_version = int(self._ib.serverVersion())
+        except Exception:
+            server_version = None
+        self._log_event(
+            IbkrConnectionEstablished.now(
+                host=new_host,
+                port=new_port,
+                client_id=new_client_id,
+                readonly=new_readonly,
+                server_version=server_version,
+            )
+        )
         return self._config
 
     def disconnect(self) -> None:
         if self._ib.isConnected():
             self._ib.disconnect()
+            self._log_event(
+                IbkrConnectionClosed.now(
+                    host=self._config.host,
+                    port=self._config.port,
+                    client_id=self._config.client_id,
+                    readonly=self._config.readonly,
+                    reason="disconnect",
+                )
+            )
 
     def status(self) -> dict[str, object]:
         return {
@@ -155,6 +218,10 @@ class IBKRConnection:
 
             _filtered_error._apps_filtered = True  # type: ignore[attr-defined]
             wrapper.error = _filtered_error
+
+    def _log_event(self, event: object) -> None:
+        if self._event_logger:
+            self._event_logger(event)
 
 
 def _should_suppress_error(args: tuple[object, ...], kwargs: dict[str, object]) -> bool:
