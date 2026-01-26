@@ -19,3 +19,6 @@ apps/journal/
 data/creds/
 data/raw/ikbr_flex/
 gmail_client_secret.json
+
+#archive
+apps_archive/

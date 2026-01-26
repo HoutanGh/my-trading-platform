@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shlex
 import sys
 import traceback
 import webbrowser
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
@@ -56,6 +58,8 @@ class REPL:
         ops_logger: Optional[Callable[[object], None]] = None,
         *,
         prompt: str = "apps> ",
+        initial_config: Optional[dict[str, str]] = None,
+        account_defaults: Optional[dict[str, str]] = None,
     ) -> None:
         self._connection = connection
         self._order_service = order_service
@@ -68,7 +72,13 @@ class REPL:
         self._event_bus = event_bus
         self._ops_logger = ops_logger
         self._prompt = prompt
-        self._config: dict[str, str] = {}
+        self._config: dict[str, str] = dict(initial_config or {})
+        self._account_defaults = {
+            key: value.strip()
+            for key, value in (account_defaults or {}).items()
+            if value and value.strip()
+        }
+        self._account_default_values = set(self._account_defaults.values())
         self._commands: dict[str, CommandSpec] = {}
         self._aliases: dict[str, str] = {}
         self._should_exit = False
@@ -171,6 +181,14 @@ class REPL:
                 handler=self._cmd_orders,
                 help="Show tracked order statuses from events.",
                 usage="orders [pending]",
+            )
+        )
+        self._register(
+            CommandSpec(
+                name="trades",
+                handler=self._cmd_trades,
+                help="Show today's app-seen fills and completed bracket trades.",
+                usage="trades",
             )
         )
         self._register(
@@ -435,11 +453,31 @@ class REPL:
             overrides["timeout"] = float(kwargs["timeout"])
 
         cfg = await self._connection.connect(mode=mode, **overrides)
+        self._apply_account_default(mode, cfg)
         print(
             "Connected: "
             f"{cfg.host}:{cfg.port} client_id={cfg.client_id} readonly={cfg.readonly}"
         )
         await self._seed_position_origins()
+
+    def _apply_account_default(self, mode: Optional[str], cfg: object) -> None:
+        if not self._account_defaults:
+            return
+        resolved = mode
+        if resolved is None:
+            port = getattr(cfg, "port", None)
+            if port is not None and port == getattr(cfg, "paper_port", None):
+                resolved = "paper"
+            elif port is not None and port == getattr(cfg, "live_port", None):
+                resolved = "live"
+        if not resolved:
+            return
+        target = self._account_defaults.get(resolved)
+        if not target:
+            return
+        current = (self._config.get("account") or "").strip()
+        if not current or current in self._account_default_values:
+            self._config["account"] = target
 
     async def _cmd_buy(self, args: list[str], kwargs: dict[str, str]) -> None:
         await self._submit_order(OrderSide.BUY, args, kwargs)
@@ -604,6 +642,178 @@ class REPL:
             return
         for line in lines:
             print(line)
+
+    async def _cmd_trades(self, _args: list[str], _kwargs: dict[str, str]) -> None:
+        log_path = _resolve_event_log_path()
+        if not log_path:
+            print("Event log path not configured.")
+            return
+        log_path = os.path.expanduser(log_path)
+        if not os.path.exists(log_path):
+            print(f"No event log found at {log_path}.")
+            return
+        local_tz = datetime.now().astimezone().tzinfo or timezone.utc
+        today = datetime.now().astimezone().date()
+        fills_rows: list[list[str]] = []
+        completed_rows: list[list[str]] = []
+        entries_by_tag: dict[str, list[dict[str, object]]] = {}
+        unmatched_exits = 0
+
+        with open(log_path, "r", encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                event_type = payload.get("event_type")
+                if event_type not in {"OrderFilled", "BracketChildOrderFilled"}:
+                    continue
+                event = payload.get("event")
+                if not isinstance(event, dict):
+                    continue
+                timestamp = _parse_jsonl_timestamp(event.get("timestamp"), local_tz)
+                if not timestamp:
+                    continue
+                timestamp_local = timestamp.astimezone(local_tz)
+                if timestamp_local.date() != today:
+                    continue
+
+                if event_type == "OrderFilled":
+                    if not _is_fill_event(event.get("status"), event.get("filled_qty")):
+                        continue
+                    spec = event.get("spec")
+                    if not isinstance(spec, dict):
+                        spec = {}
+                    symbol = spec.get("symbol") or "-"
+                    side = spec.get("side") or "-"
+                    qty = _coalesce_number(event.get("filled_qty"), spec.get("qty"))
+                    price = _coalesce_number(event.get("avg_fill_price"), spec.get("limit_price"))
+                    status = event.get("status") or "-"
+                    order_id = event.get("order_id") or "-"
+                    tag = spec.get("client_tag") or "-"
+                    time_str = timestamp_local.strftime("%H:%M:%S")
+                    fills_rows.append(
+                        [
+                            time_str,
+                            "entry",
+                            str(symbol),
+                            str(side),
+                            _format_number(qty),
+                            _format_number(price),
+                            str(status),
+                            str(order_id),
+                            str(tag),
+                        ]
+                    )
+                    tag_value = spec.get("client_tag")
+                    if tag_value and price is not None:
+                        entry = {
+                            "symbol": symbol,
+                            "side": side,
+                            "qty": qty,
+                            "price": price,
+                            "timestamp": timestamp_local,
+                            "order_id": order_id,
+                        }
+                        entries_by_tag.setdefault(str(tag_value), []).append(entry)
+                    continue
+
+                if not _is_fill_event(event.get("status"), event.get("filled_qty")):
+                    continue
+                kind = event.get("kind") or "-"
+                symbol = event.get("symbol") or "-"
+                side = event.get("side") or "-"
+                qty = _coalesce_number(event.get("filled_qty"), event.get("qty"))
+                price = _coalesce_number(event.get("avg_fill_price"), event.get("price"))
+                status = event.get("status") or "-"
+                order_id = event.get("order_id") or "-"
+                tag = event.get("client_tag") or "-"
+                time_str = timestamp_local.strftime("%H:%M:%S")
+                fills_rows.append(
+                    [
+                        time_str,
+                        _format_kind(kind),
+                        str(symbol),
+                        str(side),
+                        _format_number(qty),
+                        _format_number(price),
+                        str(status),
+                        str(order_id),
+                        str(tag),
+                    ]
+                )
+                tag_value = event.get("client_tag")
+                if not tag_value or price is None:
+                    continue
+                entries = entries_by_tag.get(str(tag_value))
+                if not entries:
+                    unmatched_exits += 1
+                    continue
+                entry = entries.pop(0)
+                if not entries:
+                    entries_by_tag.pop(str(tag_value), None)
+                pnl = _compute_pnl(entry.get("side"), entry.get("price"), price, qty)
+                entry_time = entry.get("timestamp")
+                completed_rows.append(
+                    [
+                        time_str,
+                        str(entry.get("symbol") or symbol),
+                        str(entry.get("side") or side),
+                        _format_number(qty),
+                        _format_number(entry.get("price")),
+                        _format_number(price),
+                        _format_number(pnl),
+                        _format_kind(kind),
+                        str(tag_value),
+                        _format_time_value(entry_time),
+                    ]
+                )
+
+        print(f"Trades for {today.isoformat()} (local time).")
+        print("Fills today (app-seen):")
+        if fills_rows:
+            for line in _format_simple_table(
+                [
+                    "time",
+                    "type",
+                    "symbol",
+                    "side",
+                    "qty",
+                    "price",
+                    "status",
+                    "order_id",
+                    "tag",
+                ],
+                fills_rows,
+            ):
+                print(line)
+        else:
+            print("No fills found today.")
+        print("Completed trades (app-matched bracket exits):")
+        if completed_rows:
+            for line in _format_simple_table(
+                [
+                    "exit_time",
+                    "symbol",
+                    "side",
+                    "qty",
+                    "entry",
+                    "exit",
+                    "pnl",
+                    "kind",
+                    "tag",
+                    "entry_time",
+                ],
+                completed_rows,
+            ):
+                print(line)
+        else:
+            print("No completed trades found today.")
+        if unmatched_exits:
+            print(f"Note: {unmatched_exits} exit fill(s) had no matching entry in the log.")
 
     async def _seed_position_origins(self) -> None:
         if not self._position_origin_tracker:
@@ -1197,3 +1407,96 @@ def _print_exception(prefix: str, exc: BaseException) -> None:
 
 def _format_traceback(exc: BaseException) -> str:
     return "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+
+
+def _resolve_event_log_path() -> Optional[str]:
+    log_path = os.getenv("APPS_EVENT_LOG_PATH")
+    if log_path is None:
+        log_path = os.getenv("APPV2_EVENT_LOG_PATH", "apps/journal/events.jsonl")
+    return log_path or None
+
+
+def _parse_jsonl_timestamp(value: object, local_tz) -> Optional[datetime]:
+    if not value or not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=local_tz)
+    return parsed
+
+
+def _is_fill_event(status: object, filled_qty: object) -> bool:
+    qty = _maybe_float(filled_qty)
+    if qty is not None and qty > 0:
+        return True
+    if not status:
+        return False
+    normalized = str(status).strip().lower()
+    return normalized in {"filled", "partiallyfilled", "partially_filled"}
+
+
+def _maybe_float(value: object) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coalesce_number(primary: object, fallback: object) -> Optional[float]:
+    value = _maybe_float(primary)
+    if value is not None:
+        return value
+    return _maybe_float(fallback)
+
+
+def _compute_pnl(
+    entry_side: object,
+    entry_price: object,
+    exit_price: object,
+    qty: object,
+) -> Optional[float]:
+    entry = _maybe_float(entry_price)
+    exit_val = _maybe_float(exit_price)
+    qty_val = _maybe_float(qty)
+    if entry is None or exit_val is None or qty_val is None:
+        return None
+    side = str(entry_side or "").strip().upper()
+    sign = 1.0 if side == "BUY" else -1.0
+    return (exit_val - entry) * qty_val * sign
+
+
+def _format_simple_table(headers: list[str], rows: list[list[str]]) -> list[str]:
+    if not rows:
+        return []
+    widths = [len(label) for label in headers]
+    for row in rows:
+        for idx, value in enumerate(row):
+            widths[idx] = max(widths[idx], len(value))
+    header = " | ".join(label.ljust(widths[idx]) for idx, label in enumerate(headers))
+    divider = "-+-".join("-" * width for width in widths)
+    lines = [header, divider]
+    for row in rows:
+        lines.append(" | ".join(value.ljust(widths[idx]) for idx, value in enumerate(row)))
+    return lines
+
+
+def _format_kind(kind: object) -> str:
+    normalized = str(kind or "").strip().lower()
+    if normalized == "take_profit":
+        return "tp"
+    if normalized == "stop_loss":
+        return "sl"
+    if normalized:
+        return normalized
+    return "-"
+
+
+def _format_time_value(value: object) -> str:
+    if isinstance(value, datetime):
+        return value.strftime("%H:%M:%S")
+    return "-"

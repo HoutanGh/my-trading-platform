@@ -1,5 +1,18 @@
+### 27/01/26
+- [ ] use breakout live
+- [ ] 
+- [ ] remove the columns
+### 26/01/26
+- [x] second breakout strategy
+- [x] see if u can connection to TWS live
+- [x] need p and l from a single trade in cli or given in logs or trades for the day cli command
+- [x] better logs
+
+
 ### 25/01/26
 - [x] e2e calendar
+- [x] TWS connection
+- [x] Live connection
 
 
 ### 24/01/26
@@ -15,13 +28,12 @@
 - [ ] work out exact strategy to use for the 1s time
     - what file structure looks like
 - [x] get all the files that are needed for 
-
 - [ ] error: when i lose connection to broker
 
 ---
 
 ### BREAKOUT
-- [ ] change the market type to LMT order and at the ask - for instant buy and need to see how long it takes (what is the delay) need it to be instant
+- [x] change the market type to LMT order and at the ask - for instant buy and need to see how long it takes (what is the delay) need it to be instant
 - [ ] need to elaborate on this
     - Order submission robustness is thin: bracket children are placed even if order_id is still None after timeout; the runner stops right after submit without handling rejects, partial fills, or failed submissions. Improve by retrying or failing fast when no order_id, waiting for an accept/ack, and emitting a stop reason on failures.
     - Lifecycle and recovery are limited: single‑fire only, no re‑arm, no time/session windows, no reconnect/missed‑bar handling; non‑cancel exceptions bubble up and end the watcher without a structured stop reason. Improve with configurable schedules/timeouts and reconnect/resubscribe behavior plus explicit stop reasons.

@@ -81,6 +81,20 @@ async def _async_main() -> None:
     pnl_store = PostgresDailyPnlStore()
     pnl_ingestor = FlexCsvPnlIngestor(pnl_store)
     pnl_service = PnlService(pnl_ingestor, pnl_store, event_bus=bus)
+    initial_config: dict[str, str] = {}
+    account_defaults: dict[str, str] = {}
+    paper_account = os.getenv("IB_PAPER_ACCOUNT")
+    live_account = os.getenv("IB_LIVE_ACCOUNT")
+    fallback_account = os.getenv("IB_ACCOUNT")
+    if paper_account:
+        account_defaults["paper"] = paper_account
+    if live_account:
+        account_defaults["live"] = live_account
+    if fallback_account:
+        account_defaults.setdefault("paper", fallback_account)
+        account_defaults.setdefault("live", fallback_account)
+    if account_defaults.get("paper"):
+        initial_config["account"] = account_defaults["paper"]
     repl = REPL(
         connection,
         order_service,
@@ -93,6 +107,8 @@ async def _async_main() -> None:
         event_bus=bus,
         ops_logger=ops_logger,
         prompt=prompt,
+        initial_config=initial_config,
+        account_defaults=account_defaults,
     )
     ib_gateway_source = os.getenv("IB_GATEWAY_LOG_PATH")
     ib_gateway_raw_log_path = os.getenv(
