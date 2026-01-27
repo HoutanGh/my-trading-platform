@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from apps.core.orders.events import BracketChildOrderFilled, OrderFilled
+from apps.core.ops.events import IbGatewayLog
 from apps.core.strategies.breakout.events import (
     BreakoutBreakDetected,
     BreakoutConfirmed,
@@ -16,6 +17,7 @@ from apps.core.strategies.breakout.events import (
 
 _PROMPT_PREFIX: Optional[str] = None
 _CONFIRMED_BY_TAG: dict[str, "_EntryFillTiming"] = {}
+_MAX_GATEWAY_MSG_LEN = 160
 
 
 @dataclass
@@ -62,7 +64,9 @@ def print_event(event: object) -> bool:
                 confirmed_at=_normalize_timestamp(event.timestamp)
             )
         extras = []
-        if event.take_profit is not None:
+        if event.take_profits:
+            extras.append(f"tp={_format_tp_list(event.take_profits)}")
+        elif event.take_profit is not None:
             extras.append(f"tp={event.take_profit}")
         if event.stop_loss is not None:
             extras.append(f"sl={event.stop_loss}")
@@ -78,6 +82,22 @@ def print_event(event: object) -> bool:
         if event.client_tag and event.reason not in {"order_submitted", "order_submitted_fast"}:
             _CONFIRMED_BY_TAG.pop(event.client_tag, None)
         return False
+    if isinstance(event, IbGatewayLog):
+        if event.code is None and not event.message:
+            return False
+        label = _gateway_label(event)
+        parts = []
+        if event.code is not None:
+            parts.append(f"code={event.code}")
+        if event.req_id is not None:
+            parts.append(f"req_id={event.req_id}")
+        if event.message:
+            parts.append(f"msg={_shorten_message(event.message)}")
+        if event.advanced:
+            parts.append("advanced=1")
+        parts.append("see=ib_gateway.jsonl")
+        _print_line(event.timestamp, label, " ".join(parts))
+        return True
     if isinstance(event, OrderFilled):
         if not _is_fill_event(event.status, event.filled_qty):
             return False
@@ -95,7 +115,11 @@ def print_event(event: object) -> bool:
     if isinstance(event, BracketChildOrderFilled):
         if not _is_fill_event(event.status, event.filled_qty):
             return False
-        label = "TakeProfitFilled" if event.kind == "take_profit" else "StopLossFilled"
+        if event.kind.startswith("take_profit"):
+            suffix = event.kind.split("_", 2)[-1] if event.kind.startswith("take_profit_") else ""
+            label = f"TakeProfit{suffix}Filled" if suffix else "TakeProfitFilled"
+        else:
+            label = "StopLossFilled"
         fill_price = event.avg_fill_price if event.avg_fill_price is not None else event.price
         _print_line(
             event.timestamp,
@@ -107,6 +131,26 @@ def print_event(event: object) -> bool:
         )
         return True
     return False
+
+
+def _format_tp_list(levels: list[float]) -> str:
+    return "[" + ",".join(f"{level:g}" for level in levels) + "]"
+
+
+def _shorten_message(message: str, max_len: int = _MAX_GATEWAY_MSG_LEN) -> str:
+    compact = " ".join(str(message).split())
+    if len(compact) <= max_len:
+        return compact
+    return compact[: max_len - 3].rstrip() + "..."
+
+
+def _gateway_label(event: IbGatewayLog) -> str:
+    message = str(event.message or "").lower()
+    if "is ok" in message:
+        return "IbStatus"
+    if "inactive" in message or "broken" in message:
+        return "IbWarn"
+    return "IbError"
 
 
 def _print_line(timestamp, label: str, message: str) -> None:

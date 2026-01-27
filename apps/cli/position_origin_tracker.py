@@ -20,9 +20,12 @@ class PositionOriginTracker:
     def handle_event(self, event: object) -> None:
         if not isinstance(event, OrderFilled):
             if isinstance(event, BreakoutConfirmed):
+                take_profit = event.take_profit
+                if event.take_profits:
+                    take_profit = event.take_profits[0]
                 self._record_exits(
                     event.symbol,
-                    event.take_profit,
+                    take_profit,
                     event.stop_loss,
                     account=event.account,
                 )
@@ -104,9 +107,15 @@ class PositionOriginTracker:
                         ):
                             added += 1
                 elif event_type == "BreakoutConfirmed":
+                    take_profits = event.get("take_profits")
+                    take_profit = (
+                        take_profits[0]
+                        if isinstance(take_profits, list) and take_profits
+                        else event.get("take_profit")
+                    )
                     self._record_exits(
                         event.get("symbol", ""),
-                        event.get("take_profit"),
+                        take_profit,
                         event.get("stop_loss"),
                         account=event.get("account"),
                     )

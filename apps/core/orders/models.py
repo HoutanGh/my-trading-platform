@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
@@ -40,6 +40,26 @@ class BracketOrderSpec:
     entry_price: Optional[float] = None
     take_profit: float = 0.0
     stop_loss: float = 0.0
+    tif: str = "DAY"
+    outside_rth: bool = False
+    exchange: str = "SMART"
+    currency: str = "USD"
+    account: Optional[str] = None
+    client_tag: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class LadderOrderSpec:
+    symbol: str
+    qty: int
+    side: OrderSide
+    entry_type: OrderType = OrderType.MARKET
+    entry_price: Optional[float] = None
+    take_profits: list[float] = field(default_factory=list)
+    take_profit_qtys: list[int] = field(default_factory=list)
+    stop_loss: float = 0.0
+    stop_limit_offset: float = 0.0
+    stop_updates: list[float] = field(default_factory=list)
     tif: str = "DAY"
     outside_rth: bool = False
     exchange: str = "SMART"

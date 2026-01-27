@@ -142,9 +142,15 @@ Quick orders:
 - Market entry is available via explicit config.
 - If `tp` and `sl` are provided, a bracket order is placed:
   - Parent: entry BUY (limit at ask by default, or market if configured).
-  - Children: TP limit SELL and SL stop SELL.
+  - Children: TP limit SELL and SL stop-limit SELL (0.02 offset).
   - Children are linked with an OCA group so one cancels the other.
-- IBKR enforces TP/SL even if the app disconnects after submission.
+  - IBKR enforces TP/SL even if the app disconnects after submission.
+- If `tp` is a ladder (e.g., `tp=1.1-1.3-1.5`) with `sl`:
+  - Parent: entry BUY (limit at ask by default, or market if configured).
+  - Children: multiple TP limit SELL orders (split by default ratios).
+  - Stop: a stop-limit SELL for the remaining qty (outside RTH).
+  - Stop is bumped after TP1 to the breakout level, and after TP2 to TP1.
+  - Remaining exits are app-managed (not broker OCA) after fills.
   
 Notes:
 - Market orders can fill very quickly (especially in paper), which can look "instant" after bar close.

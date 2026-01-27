@@ -61,6 +61,7 @@ class BreakoutConfirmed:
     level: float
     timestamp: datetime
     take_profit: Optional[float] = None
+    take_profits: Optional[list[float]] = None
     stop_loss: Optional[float] = None
     account: Optional[str] = None
     client_tag: Optional[str] = None
@@ -73,6 +74,7 @@ class BreakoutConfirmed:
         level: float,
         *,
         take_profit: Optional[float] = None,
+        take_profits: Optional[list[float]] = None,
         stop_loss: Optional[float] = None,
         account: Optional[str] = None,
         client_tag: Optional[str] = None,
@@ -83,6 +85,7 @@ class BreakoutConfirmed:
             level=level,
             timestamp=_now(),
             take_profit=take_profit,
+            take_profits=take_profits,
             stop_loss=stop_loss,
             account=account,
             client_tag=client_tag,

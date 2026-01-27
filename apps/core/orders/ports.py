@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Awaitable, Callable, Protocol, TypeVar
 
-from apps.core.orders.models import BracketOrderSpec, OrderAck, OrderSpec
+from apps.core.orders.models import BracketOrderSpec, LadderOrderSpec, OrderAck, OrderSpec
 
 EventT = TypeVar("EventT")
 EventHandler = Callable[[EventT], Awaitable[None] | None]
@@ -15,6 +15,10 @@ class OrderPort(Protocol):
 
     async def submit_bracket_order(self, spec: BracketOrderSpec) -> OrderAck:
         """Submit a bracket order to the broker and return an acknowledgement."""
+        raise NotImplementedError
+
+    async def submit_ladder_order(self, spec: LadderOrderSpec) -> OrderAck:
+        """Submit a take-profit ladder with a managed stop-loss order."""
         raise NotImplementedError
 
 

@@ -35,7 +35,18 @@ class IBKRPositionsPort(PositionsPort):
                     if snapshot:
                         snapshots.append(snapshot)
             except asyncio.TimeoutError as exc:
-                fallback_positions = fallback_positions or await _fetch_positions(self._ib, timeout=timeout)
+                try:
+                    fallback_positions = fallback_positions or await _fetch_positions(
+                        self._ib,
+                        timeout=timeout,
+                    )
+                except asyncio.TimeoutError:
+                    message = (
+                        "Timed out waiting for IBKR positions snapshot. "
+                        "Verify the account id and IB API account data settings, or increase IB_TIMEOUT."
+                    )
+                    print(f"Warning: {message}")
+                    continue
                 fallback = [
                     item
                     for item in fallback_positions
@@ -46,8 +57,6 @@ class IBKRPositionsPort(PositionsPort):
                         "Timed out waiting for IBKR account updates and no positions were returned. "
                         "Verify the account id and IB API account data settings, or increase IB_TIMEOUT."
                     )
-                    if explicit_account:
-                        raise RuntimeError(message) from exc
                     print(f"Warning: {message}")
                     continue
                 print(

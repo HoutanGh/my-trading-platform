@@ -1,7 +1,9 @@
 ### 27/01/26
-- [ ] use breakout live
-- [ ] 
+- [x] multiple take profits
 - [ ] remove the columns
+- [x] make the stop losses all limit orders
+- [ ] being able to change orders 
+
 ### 26/01/26
 - [x] second breakout strategy
 - [x] see if u can connection to TWS live

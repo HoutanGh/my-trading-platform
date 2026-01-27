@@ -1,13 +1,20 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from datetime import datetime, timezone
 from dataclasses import dataclass
 from typing import Optional
 
 from apps.core.market_data.models import Quote
 from apps.core.market_data.ports import BarStreamPort, QuotePort
-from apps.core.orders.models import BracketOrderSpec, OrderSide, OrderSpec, OrderType
+from apps.core.orders.models import (
+    BracketOrderSpec,
+    LadderOrderSpec,
+    OrderSide,
+    OrderSpec,
+    OrderType,
+)
 from apps.core.orders.ports import EventBus
 from apps.core.orders.service import OrderService
 from apps.core.strategies.breakout.events import (
@@ -35,6 +42,7 @@ class BreakoutRunConfig:
     rule: BreakoutRuleConfig
     entry_type: OrderType = OrderType.LIMIT
     take_profit: Optional[float] = None
+    take_profits: Optional[list[float]] = None
     stop_loss: Optional[float] = None
     use_rth: bool = False
     bar_size: str = "1 min"
@@ -62,7 +70,9 @@ async def run_breakout(
         raise ValueError("qty must be greater than zero")
     if config.rule.level <= 0:
         raise ValueError("breakout level must be greater than zero")
-    if (config.take_profit is None) ^ (config.stop_loss is None):
+    if config.take_profit is not None and config.take_profits:
+        raise ValueError("take_profit and take_profits cannot both be provided")
+    if (config.take_profit is None and not config.take_profits) ^ (config.stop_loss is None):
         raise ValueError("take_profit and stop_loss must be provided together")
     if config.entry_type == OrderType.LIMIT and quote_port is None:
         raise ValueError("quote_port is required for limit breakout entries")
@@ -99,6 +109,7 @@ async def run_breakout(
                     bar,
                     config.rule.level,
                     take_profit=config.take_profit,
+                    take_profits=config.take_profits,
                     stop_loss=config.stop_loss,
                     account=config.account,
                     client_tag=client_tag,
@@ -144,7 +155,28 @@ async def run_breakout(
                     )
                 return True
             entry_price = quote.ask
-        if config.take_profit is not None and config.stop_loss is not None:
+        if config.take_profits:
+            tp_levels = config.take_profits
+            tp_qtys = _split_take_profit_qtys(config.qty, len(tp_levels))
+            stop_updates = _stop_updates_for_take_profits(tp_levels, config.rule.level)
+            spec = LadderOrderSpec(
+                symbol=symbol,
+                qty=config.qty,
+                side=OrderSide.BUY,
+                entry_type=config.entry_type,
+                entry_price=entry_price,
+                take_profits=tp_levels,
+                take_profit_qtys=tp_qtys,
+                stop_loss=config.stop_loss or 0.0,
+                stop_limit_offset=0.02,
+                stop_updates=stop_updates,
+                tif=config.tif,
+                outside_rth=config.outside_rth,
+                account=config.account,
+                client_tag=client_tag,
+            )
+            await order_service.submit_ladder(spec)
+        elif config.take_profit is not None and config.stop_loss is not None:
             spec = BracketOrderSpec(
                 symbol=symbol,
                 qty=config.qty,
@@ -181,7 +213,6 @@ async def run_breakout(
                 )
             )
         return True
-
     async def _watch_slow() -> None:
         nonlocal bars_seen, state
         async for bar in bar_stream.stream_bars(symbol, bar_size=config.bar_size, use_rth=config.use_rth):
@@ -272,6 +303,35 @@ async def run_breakout(
                 )
             )
         raise
+
+
+def _split_take_profit_qtys(total_qty: int, count: int) -> list[int]:
+    if count == 2:
+        ratios = [0.7, 0.3]
+    elif count == 3:
+        ratios = [0.6, 0.3, 0.1]
+    else:
+        raise ValueError("only 2 or 3 take profits are supported")
+
+    raw = [total_qty * ratio for ratio in ratios]
+    qtys = [int(math.floor(value)) for value in raw]
+    remainder = total_qty - sum(qtys)
+    if remainder > 0:
+        fractions = [(idx, raw[idx] - qtys[idx]) for idx in range(len(qtys))]
+        fractions.sort(key=lambda item: (-item[1], item[0]))
+        for idx, _fraction in fractions[:remainder]:
+            qtys[idx] += 1
+    if any(qty <= 0 for qty in qtys):
+        raise ValueError("qty too small for take profit ladder")
+    return qtys
+
+
+def _stop_updates_for_take_profits(take_profits: list[float], breakout_level: float) -> list[float]:
+    if len(take_profits) == 2:
+        return [breakout_level]
+    if len(take_profits) == 3:
+        return [breakout_level, take_profits[0]]
+    raise ValueError("only 2 or 3 take profits are supported")
 
 
 def _default_breakout_tag(symbol: str, level: float) -> str:

@@ -167,7 +167,7 @@ class REPL:
                 handler=self._cmd_breakout,
                 help="Start or stop a breakout watcher.",
                 usage=(
-                    "breakout SYMBOL level=... qty=... [tp=...] [sl=...] [rth=true|false] [bar=1 min] "
+                    "breakout SYMBOL level=... qty=... [tp=...|tp=1.1-1.3] [sl=...] [rth=true|false] [bar=1 min] "
                     "[fast=true|false] [fast_bar=1 secs] [max_bars=...] [tif=DAY] [outside_rth=true|false] "
                     "[entry=limit|market] [account=...] [client_tag=...] "
                     "| breakout SYMBOL LEVEL QTY [TP] [SL] "
@@ -533,21 +533,45 @@ class REPL:
         tp_raw = kwargs.get("tp") or positional_tp or _config_get(self._config, "tp")
         sl_raw = kwargs.get("sl") or positional_sl or _config_get(self._config, "sl")
         take_profit = None
+        take_profits = None
         stop_loss = None
         if tp_raw is not None or sl_raw is not None:
             if tp_raw is None or sl_raw is None:
                 print("tp and sl must be provided together")
                 return
-            try:
-                take_profit = float(tp_raw)
-            except ValueError:
-                print("tp must be a number")
-                return
+            tp_text = str(tp_raw).strip()
+            if "-" in tp_text:
+                parts = [part.strip() for part in tp_text.split("-") if part.strip()]
+                if len(parts) < 2:
+                    print("tp must include at least two levels when using a ladder")
+                    return
+                try:
+                    take_profits = [float(part) for part in parts]
+                except ValueError:
+                    print("tp must be a list of numbers like 1.1-1.3-1.5")
+                    return
+            else:
+                try:
+                    take_profit = float(tp_text)
+                except ValueError:
+                    print("tp must be a number")
+                    return
             try:
                 stop_loss = float(sl_raw)
             except ValueError:
                 print("sl must be a number")
                 return
+            if take_profits:
+                if len(take_profits) not in {2, 3}:
+                    print("tp ladder must include 2 or 3 levels")
+                    return
+                if any(level <= 0 for level in take_profits):
+                    print("tp ladder levels must be greater than zero")
+                    return
+                for idx in range(1, len(take_profits)):
+                    if take_profits[idx] <= take_profits[idx - 1]:
+                        print("tp ladder levels must be strictly increasing")
+                        return
 
         bar_size = (
             kwargs.get("bar")
@@ -606,6 +630,7 @@ class REPL:
             rule=BreakoutRuleConfig(level=level, fast_entry=FastEntryConfig(enabled=fast_enabled)),
             entry_type=entry_type,
             take_profit=take_profit,
+            take_profits=take_profits,
             stop_loss=stop_loss,
             use_rth=use_rth,
             bar_size=bar_size,
@@ -1401,8 +1426,18 @@ def _match_prefix(text: str, options: list[str]) -> list[str]:
 
 
 def _print_exception(prefix: str, exc: BaseException) -> None:
-    print(f"{prefix}:")
-    traceback.print_exception(type(exc), exc, exc.__traceback__)
+    error_type = type(exc).__name__
+    message = str(exc).splitlines()[0].strip()
+    if len(message) > 200:
+        message = message[:197].rstrip() + "..."
+    if message:
+        summary = f"{error_type}: {message}"
+    else:
+        summary = error_type
+    ops_path = _resolve_ops_log_path()
+    if ops_path:
+        summary = f"{summary} (see {ops_path})"
+    print(f"{prefix}: {summary}")
 
 
 def _format_traceback(exc: BaseException) -> str:
@@ -1413,6 +1448,11 @@ def _resolve_event_log_path() -> Optional[str]:
     log_path = os.getenv("APPS_EVENT_LOG_PATH")
     if log_path is None:
         log_path = os.getenv("APPV2_EVENT_LOG_PATH", "apps/journal/events.jsonl")
+    return log_path or None
+
+
+def _resolve_ops_log_path() -> Optional[str]:
+    log_path = os.getenv("APPS_OPS_LOG_PATH", "apps/journal/ops.jsonl")
     return log_path or None
 
 
