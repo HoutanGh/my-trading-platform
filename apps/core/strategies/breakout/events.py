@@ -99,6 +99,8 @@ class BreakoutRejected:
     level: float
     reason: str
     timestamp: datetime
+    quote_age_seconds: Optional[float] = None
+    quote_max_age_seconds: Optional[float] = None
 
     @classmethod
     def now(
@@ -107,8 +109,19 @@ class BreakoutRejected:
         bar: Bar,
         level: float,
         reason: str,
+        *,
+        quote_age_seconds: Optional[float] = None,
+        quote_max_age_seconds: Optional[float] = None,
     ) -> "BreakoutRejected":
-        return cls(symbol=symbol, bar=bar, level=level, reason=reason, timestamp=_now())
+        return cls(
+            symbol=symbol,
+            bar=bar,
+            level=level,
+            reason=reason,
+            timestamp=_now(),
+            quote_age_seconds=quote_age_seconds,
+            quote_max_age_seconds=quote_max_age_seconds,
+        )
 
 
 @dataclass(frozen=True)

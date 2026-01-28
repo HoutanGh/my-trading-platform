@@ -1,8 +1,15 @@
+### when you have time
+- [ ] remove the columns
+- [ ] being able to change orders 
+- [ ] remove the doubble apps> on cli
+- [ ] need tps in breakout statu
+- [ ] breakoout stop for multiple symbols
+- [ ] breakout should have the tps and sl
+
 ### 27/01/26
 - [x] multiple take profits
-- [ ] remove the columns
 - [x] make the stop losses all limit orders
-- [ ] being able to change orders 
+
 
 ### 26/01/26
 - [x] second breakout strategy
@@ -27,10 +34,10 @@
 - [x] also need the ib gateway logs
 - [x] improve positions
 - [x] need to see what status of breakouts are 
-- [ ] work out exact strategy to use for the 1s time
+- [x] work out exact strategy to use for the 1s time
     - what file structure looks like
 - [x] get all the files that are needed for 
-- [ ] error: when i lose connection to broker
+- [x] error: when i lose connection to broker
 
 ---
 
@@ -39,7 +46,7 @@
 - [ ] need to elaborate on this
     - Order submission robustness is thin: bracket children are placed even if order_id is still None after timeout; the runner stops right after submit without handling rejects, partial fills, or failed submissions. Improve by retrying or failing fast when no order_id, waiting for an accept/ack, and emitting a stop reason on failures.
     - Lifecycle and recovery are limited: single‑fire only, no re‑arm, no time/session windows, no reconnect/missed‑bar handling; non‑cancel exceptions bubble up and end the watcher without a structured stop reason. Improve with configurable schedules/timeouts and reconnect/resubscribe behavior plus explicit stop reasons.
-- [ ] need manual stop losses for out of hours breaks
+- [x] need manual stop losses for out of hours breaks
 - [ ] suggestions for tps (defaults)
 - [ ] take into account strong volume (if it has really weak volume then dont do breakout)
 - [ ] need to catch errors
@@ -54,8 +61,8 @@
 - [ ] need to be able to change tp and sl for orders
 - [x] have tp and sl in the positions table
 - [x] even tho qty is 0 on positions, they are still in table, understand why and then remove
-- [ ] IMPROVEMENT: if the price hits significantly higher than the bar then buy and not wait for next bar (but this probs needs 1s bars or something)
-- [ ] IMPROVEMENT: multiple tps at different percentages, maybe specified with dashes separating the prices, stop loss updates to the latest tp that got hit?
+- [x] IMPROVEMENT: if the price hits significantly higher than the bar then buy and not wait for next bar (but this probs needs 1s bars or something)
+- [x] IMPROVEMENT: multiple tps at different percentages, maybe specified with dashes separating the prices, stop loss updates to the latest tp that got hit?
     - only need condition if outside RTH then need if statements and making sure they happen quickly as a replacement for stop losses - maybe this is preferred so level3 does not expose
     - understand effort  for 1s bars
 - [ ] how branching works
@@ -83,5 +90,5 @@
 
 ### CALENDAR
 
-- [ ] running the front end stuff calendar in the cli
-- [ ] take an email from my gmail export the csv, add it to the table and etc. 
+- [x] running the front end stuff calendar in the cli
+- [x] take an email from my gmail export the csv, add it to the table and etc. 

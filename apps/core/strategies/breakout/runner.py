@@ -126,6 +126,7 @@ async def run_breakout(
                             bar,
                             config.rule.level,
                             reason="quote_missing",
+                            quote_max_age_seconds=config.quote_max_age_seconds,
                         )
                     )
                     event_bus.publish(
@@ -136,7 +137,8 @@ async def run_breakout(
                         )
                     )
                 return True
-            if _is_quote_stale(quote, config.quote_max_age_seconds):
+            quote_age = _quote_age_seconds(quote)
+            if quote_age is not None and _is_quote_stale(quote_age, config.quote_max_age_seconds):
                 if event_bus:
                     event_bus.publish(
                         BreakoutRejected.now(
@@ -144,6 +146,8 @@ async def run_breakout(
                             bar,
                             config.rule.level,
                             reason="quote_stale",
+                            quote_age_seconds=quote_age,
+                            quote_max_age_seconds=config.quote_max_age_seconds,
                         )
                     )
                     event_bus.publish(
@@ -339,12 +343,18 @@ def _default_breakout_tag(symbol: str, level: float) -> str:
     return f"breakout:{symbol}:{level_str}"
 
 
-def _is_quote_stale(quote: Quote, max_age_seconds: float) -> bool:
+def _is_quote_stale(quote_age_seconds: float, max_age_seconds: float) -> bool:
     if max_age_seconds <= 0:
         return False
-    timestamp = _normalize_timestamp(quote.timestamp)
-    age_seconds = (datetime.now(timezone.utc) - timestamp).total_seconds()
-    return age_seconds > max_age_seconds
+    return quote_age_seconds > max_age_seconds
+
+
+def _quote_age_seconds(quote: Quote) -> Optional[float]:
+    timestamp = getattr(quote, "timestamp", None)
+    if timestamp is None:
+        return None
+    timestamp = _normalize_timestamp(timestamp)
+    return (datetime.now(timezone.utc) - timestamp).total_seconds()
 
 
 def _normalize_timestamp(timestamp: datetime) -> datetime:

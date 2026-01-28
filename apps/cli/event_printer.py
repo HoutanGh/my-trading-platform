@@ -10,6 +10,7 @@ from apps.core.strategies.breakout.events import (
     BreakoutBreakDetected,
     BreakoutConfirmed,
     BreakoutFastTriggered,
+    BreakoutRejected,
     BreakoutStarted,
     BreakoutStopped,
 )
@@ -75,6 +76,23 @@ def print_event(event: object) -> bool:
         _print_line(
             event.timestamp,
             "BreakoutConfirmed",
+            f"{event.symbol} level={event.level} bar={bar_time}{suffix}",
+        )
+        return True
+    if isinstance(event, BreakoutRejected):
+        bar_time = _format_time(event.bar.timestamp)
+        extras = []
+        if event.reason:
+            extras.append(f"reason={event.reason}")
+        if event.reason == "quote_stale":
+            if event.quote_age_seconds is not None:
+                extras.append(f"age={event.quote_age_seconds:.3f}s")
+            if event.quote_max_age_seconds is not None:
+                extras.append(f"max={event.quote_max_age_seconds:.3f}s")
+        suffix = f" {' '.join(extras)}" if extras else ""
+        _print_line(
+            event.timestamp,
+            "BreakoutRejected",
             f"{event.symbol} level={event.level} bar={bar_time}{suffix}",
         )
         return True

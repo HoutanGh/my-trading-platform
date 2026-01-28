@@ -169,7 +169,7 @@ class REPL:
                 usage=(
                     "breakout SYMBOL level=... qty=... [tp=...|tp=1.1-1.3] [sl=...] [rth=true|false] [bar=1 min] "
                     "[fast=true|false] [fast_bar=1 secs] [max_bars=...] [tif=DAY] [outside_rth=true|false] "
-                    "[entry=limit|market] [account=...] [client_tag=...] "
+                    "[entry=limit|market] [quote_age=...] [account=...] [client_tag=...] "
                     "| breakout SYMBOL LEVEL QTY [TP] [SL] "
                     "| breakout status | breakout stop [SYMBOL]"
                 ),
@@ -618,6 +618,20 @@ class REPL:
                 print("max_bars must be an integer")
                 return
 
+        quote_age_raw = (
+            kwargs.get("quote_age")
+            or kwargs.get("quote_max_age")
+            or _config_get(self._config, "quote_age")
+            or _config_get(self._config, "quote_max_age")
+        )
+        quote_max_age_seconds = 2.0
+        if quote_age_raw is not None:
+            try:
+                quote_max_age_seconds = float(quote_age_raw)
+            except ValueError:
+                print("quote_age must be a number (seconds)")
+                return
+
         symbol = symbol.strip().upper()
         task_name = f"breakout:{symbol}:{level}"
         if task_name in self._breakout_tasks:
@@ -640,6 +654,7 @@ class REPL:
             outside_rth=outside_rth,
             account=account,
             client_tag=client_tag,
+            quote_max_age_seconds=quote_max_age_seconds,
         )
 
         task = asyncio.create_task(
