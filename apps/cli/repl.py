@@ -111,6 +111,7 @@ class REPL:
             except Exception as exc:
                 self._log_cli_error(exc, cmd_name, line)
                 _print_exception("Command error", exc)
+        await self._stop_pnl_processes()
         await self._stop_breakouts()
 
     def _register_commands(self) -> None:
@@ -1127,8 +1128,31 @@ class REPL:
         )
 
     async def _cmd_quit(self, _args: list[str], _kwargs: dict[str, str]) -> None:
+        await self._stop_pnl_processes()
         await self._stop_breakouts()
         self._should_exit = True
+
+    async def _stop_pnl_processes(self) -> None:
+        if not self._pnl_processes:
+            return
+        for name, proc in list(self._pnl_processes.items()):
+            if proc.returncode is not None:
+                continue
+            print(f"Stopping {name} (pid={proc.pid})...")
+            proc.terminate()
+        for name, proc in list(self._pnl_processes.items()):
+            if proc.returncode is not None:
+                continue
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=5.0)
+                print(f"Stopped {name}.")
+            except asyncio.TimeoutError:
+                print(f"Force killing {name} (pid={proc.pid})...")
+                proc.kill()
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=5.0)
+                except asyncio.TimeoutError:
+                    print(f"Failed to kill {name} (pid={proc.pid}).")
 
     def _log_cli_error(self, exc: BaseException, command: Optional[str], raw_input: str) -> None:
         event = CliErrorLogged.now(
