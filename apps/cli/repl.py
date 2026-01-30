@@ -1051,6 +1051,7 @@ class REPL:
             ],
             cwd=Path("web"),
             env=web_env,
+            stdin=asyncio.subprocess.DEVNULL,
         )
         if web_proc is None:
             return
@@ -1079,6 +1080,7 @@ class REPL:
         cmd: list[str],
         cwd: Optional[Path] = None,
         env: Optional[dict[str, str]] = None,
+        stdin: Optional[int] = None,
     ) -> Optional[asyncio.subprocess.Process]:
         existing = self._pnl_processes.get(name)
         if existing and existing.returncode is None:
@@ -1089,6 +1091,7 @@ class REPL:
                 *cmd,
                 cwd=str(cwd) if cwd else None,
                 env=env,
+                stdin=stdin,
             )
         except FileNotFoundError as exc:
             print(f"Failed to start {name}: {exc}")

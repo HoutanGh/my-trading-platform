@@ -1,11 +1,11 @@
 ### when you have time
 - [ ] remove the columns
 - [ ] being able to change orders 
-- [ ] remove the doubble apps> on cli
-- [ ] need tps in breakout statu
-- [ ] breakoout stop for multiple symbols
+- [ ] remove the double apps> on cli
+- [ ] need tps in breakout status
+- [ ] breakout stop for multiple symbols
 - [ ] breakout should have the tps and sl
-- [ ] change calendar prices into pounds
+- [x] change calendar prices into pounds
 
 ### 27/01/26
 - [x] multiple take profits
