@@ -20,6 +20,9 @@ type DayCell = {
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000'
 const DEFAULT_ACCOUNT = import.meta.env.VITE_DEFAULT_ACCOUNT ?? 'live'
+const USD_GBP_RATE_RAW = import.meta.env.VITE_USD_GBP_RATE
+const USD_GBP_RATE = USD_GBP_RATE_RAW ? Number(USD_GBP_RATE_RAW) : Number.NaN
+const HAS_USD_GBP_RATE = Number.isFinite(USD_GBP_RATE) && USD_GBP_RATE > 0
 
 function toIsoDate(year: number, monthIndex: number, day: number): string {
   // Month index is zero-based; use UTC to avoid timezone drift.
@@ -27,11 +30,23 @@ function toIsoDate(year: number, monthIndex: number, day: number): string {
   return d.toISOString().slice(0, 10)
 }
 
+const GBP_FORMATTER = new Intl.NumberFormat('en-GB', {
+  style: 'currency',
+  currency: 'GBP',
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+})
+
+const USD_FORMATTER = new Intl.NumberFormat('en-US', {
+  style: 'currency',
+  currency: 'USD',
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+})
+
 function formatMoney(value: number): string {
-  return value.toLocaleString(undefined, {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })
+  const converted = HAS_USD_GBP_RATE ? value * USD_GBP_RATE : value
+  return (HAS_USD_GBP_RATE ? GBP_FORMATTER : USD_FORMATTER).format(converted)
 }
 
 function App() {
@@ -153,6 +168,10 @@ function App() {
     return `Showing ${rows.length} entries for ${monthName} ${year}`
   }, [account, loading, error, rows.length, monthName, year])
 
+  const fxNote = HAS_USD_GBP_RATE
+    ? `FX: 1 USD = ${USD_GBP_RATE} GBP (VITE_USD_GBP_RATE)`
+    : 'FX: set VITE_USD_GBP_RATE to convert USD->GBP (showing USD).'
+
   return (
     <div className="app">
       <header className="header">
@@ -192,6 +211,7 @@ function App() {
         </div>
 
         <div className="status">{statusText}</div>
+        <div className="status fx-note">{fxNote}</div>
 
         <div className="summary-row">
           <div className="summary-card">

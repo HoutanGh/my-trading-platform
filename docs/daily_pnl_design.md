@@ -111,6 +111,7 @@ Example API call:
 - **UTC month boundaries**: `start_date` is the 1st of the month in UTC,
   `end_date` is the last day of the month in UTC.
 - **Date mapping**: each `trade_date` is mapped to a day cell by ISO string.
+- **Currency display**: the UI converts USD -> GBP using `VITE_USD_GBP_RATE` when set; otherwise it shows USD and warns that conversion is disabled.
 - **Totals**:
   - Monthly total = sum of `realized_pnl` across returned rows.
   - Weekly totals computed from daily values and the month’s starting weekday.
