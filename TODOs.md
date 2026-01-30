@@ -5,6 +5,7 @@
 - [ ] need tps in breakout statu
 - [ ] breakoout stop for multiple symbols
 - [ ] breakout should have the tps and sl
+- [ ] not sure calendar is adding up correctly
 
 ### 27/01/26
 - [x] multiple take profits
