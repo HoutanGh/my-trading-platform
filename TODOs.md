@@ -1,5 +1,9 @@
-### when you have time
+### 01/06/26
 - [ ] remove the columns
+- [ ] understand implementation of the streaming market data
+
+### when you have time
+
 - [ ] being able to change orders 
 - [ ] remove the double apps> on cli
 - [ ] need tps in breakout status
