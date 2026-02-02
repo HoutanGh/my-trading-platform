@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import math
+import time
 from datetime import datetime, timezone
 from dataclasses import dataclass
 from typing import Optional
 
 from apps.core.market_data.models import Quote
-from apps.core.market_data.ports import BarStreamPort, QuotePort
+from apps.core.market_data.ports import BarStreamPort, QuotePort, QuoteStreamPort
 from apps.core.orders.models import (
     BracketOrderSpec,
     LadderOrderSpec,
@@ -53,6 +54,8 @@ class BreakoutRunConfig:
     account: Optional[str] = None
     client_tag: Optional[str] = None
     quote_max_age_seconds: float = 2.0
+    quote_warmup_seconds: float = 2.0
+    quote_snapshot_fallback: bool = True
 
 
 async def run_breakout(
@@ -61,6 +64,7 @@ async def run_breakout(
     bar_stream: BarStreamPort,
     order_service: OrderService,
     quote_port: QuotePort | None = None,
+    quote_stream: QuoteStreamPort | None = None,
     event_bus: EventBus | None = None,
 ) -> None:
     symbol = config.symbol.strip().upper()
@@ -74,7 +78,7 @@ async def run_breakout(
         raise ValueError("take_profit and take_profits cannot both be provided")
     if (config.take_profit is None and not config.take_profits) ^ (config.stop_loss is None):
         raise ValueError("take_profit and stop_loss must be provided together")
-    if config.entry_type == OrderType.LIMIT and quote_port is None:
+    if config.entry_type == OrderType.LIMIT and quote_port is None and quote_stream is None:
         raise ValueError("quote_port is required for limit breakout entries")
 
     if event_bus:
@@ -117,7 +121,18 @@ async def run_breakout(
             )
         entry_price = None
         if config.entry_type == OrderType.LIMIT:
-            quote = await quote_port.get_quote(symbol) if quote_port else None
+            quote = None
+            quote_age = None
+            if quote_stream:
+                quote, quote_age = await _wait_for_fresh_stream_quote(
+                    quote_stream,
+                    symbol,
+                    max_age_seconds=config.quote_max_age_seconds,
+                    warmup_seconds=config.quote_warmup_seconds,
+                )
+            if (quote is None or quote.ask is None) and config.quote_snapshot_fallback and quote_port:
+                quote = await quote_port.get_quote(symbol)
+                quote_age = _quote_age_seconds(quote)
             if not quote or quote.ask is None:
                 if event_bus:
                     event_bus.publish(
@@ -137,8 +152,26 @@ async def run_breakout(
                         )
                     )
                 return True
-            quote_age = _quote_age_seconds(quote)
-            if quote_age is not None and _is_quote_stale(quote_age, config.quote_max_age_seconds):
+            if quote_age is None:
+                if event_bus:
+                    event_bus.publish(
+                        BreakoutRejected.now(
+                            symbol,
+                            bar,
+                            config.rule.level,
+                            reason="quote_missing",
+                            quote_max_age_seconds=config.quote_max_age_seconds,
+                        )
+                    )
+                    event_bus.publish(
+                        BreakoutStopped.now(
+                            symbol,
+                            reason="quote_missing",
+                            client_tag=client_tag,
+                        )
+                    )
+                return True
+            if _is_quote_stale(quote_age, config.quote_max_age_seconds):
                 if event_bus:
                     event_bus.publish(
                         BreakoutRejected.now(
@@ -280,6 +313,13 @@ async def run_breakout(
             return
 
     tasks: list[asyncio.Task] = []
+    stream_active = False
+    if quote_stream and config.entry_type == OrderType.LIMIT:
+        try:
+            stream_active = await quote_stream.subscribe(symbol)
+        except Exception:
+            stream_active = False
+
     try:
         tasks = [asyncio.create_task(_watch_slow(), name=f"breakout:slow:{symbol}")]
         if fast_config.enabled:
@@ -307,6 +347,9 @@ async def run_breakout(
                 )
             )
         raise
+    finally:
+        if quote_stream and stream_active:
+            await quote_stream.unsubscribe(symbol)
 
 
 def _split_take_profit_qtys(total_qty: int, count: int) -> list[int]:
@@ -355,6 +398,32 @@ def _quote_age_seconds(quote: Quote) -> Optional[float]:
         return None
     timestamp = _normalize_timestamp(timestamp)
     return (datetime.now(timezone.utc) - timestamp).total_seconds()
+
+
+async def _wait_for_fresh_stream_quote(
+    quote_stream: QuoteStreamPort,
+    symbol: str,
+    *,
+    max_age_seconds: float,
+    warmup_seconds: float,
+    poll_interval: float = 0.1,
+) -> tuple[Optional[Quote], Optional[float]]:
+    deadline = time.time() + max(warmup_seconds, 0.0)
+    quote = quote_stream.get_latest(symbol)
+    quote_age = _quote_age_seconds(quote) if quote else None
+    if quote and quote.ask is not None and quote_age is not None:
+        if not _is_quote_stale(quote_age, max_age_seconds):
+            return quote, quote_age
+    if warmup_seconds <= 0:
+        return quote, quote_age
+    while time.time() < deadline:
+        await asyncio.sleep(poll_interval)
+        quote = quote_stream.get_latest(symbol)
+        quote_age = _quote_age_seconds(quote) if quote else None
+        if quote and quote.ask is not None and quote_age is not None:
+            if not _is_quote_stale(quote_age, max_age_seconds):
+                return quote, quote_age
+    return quote, quote_age
 
 
 def _normalize_timestamp(timestamp: datetime) -> datetime:

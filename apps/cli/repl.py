@@ -20,7 +20,7 @@ except ImportError:
 from apps.adapters.broker.ibkr_connection import IBKRConnection
 from apps.cli.order_tracker import OrderTracker
 from apps.cli.position_origin_tracker import PositionOriginTracker
-from apps.core.market_data.ports import BarStreamPort, QuotePort
+from apps.core.market_data.ports import BarStreamPort, QuotePort, QuoteStreamPort
 from apps.core.ops.events import CliErrorLogged
 from apps.core.orders.models import OrderSide, OrderSpec, OrderType
 from apps.core.orders.ports import EventBus
@@ -54,6 +54,7 @@ class REPL:
         position_origin_tracker: Optional[PositionOriginTracker] = None,
         bar_stream: Optional[BarStreamPort] = None,
         quote_port: Optional[QuotePort] = None,
+        quote_stream: Optional[QuoteStreamPort] = None,
         event_bus: Optional[EventBus] = None,
         ops_logger: Optional[Callable[[object], None]] = None,
         *,
@@ -69,6 +70,7 @@ class REPL:
         self._position_origin_tracker = position_origin_tracker
         self._bar_stream = bar_stream
         self._quote_port = quote_port
+        self._quote_stream = quote_stream
         self._event_bus = event_bus
         self._ops_logger = ops_logger
         self._prompt = prompt
@@ -659,13 +661,14 @@ class REPL:
         )
 
         task = asyncio.create_task(
-            run_breakout(
-                run_config,
-                bar_stream=self._bar_stream,
-                order_service=self._order_service,
-                quote_port=self._quote_port,
-                event_bus=self._event_bus,
-            ),
+                run_breakout(
+                    run_config,
+                    bar_stream=self._bar_stream,
+                    order_service=self._order_service,
+                    quote_port=self._quote_port,
+                    quote_stream=self._quote_stream,
+                    event_bus=self._event_bus,
+                ),
             name=task_name,
         )
         self._breakout_tasks[task_name] = (run_config, task)
@@ -1400,12 +1403,6 @@ def _format_positions_table(
         "type",
         "qty",
         "avg_cost",
-        "mkt_price",
-        "mkt_value",
-        "unrl_pnl",
-        "rlzd_pnl",
-        "ccy",
-        "exch",
     ]
     if exit_lookup:
         headers.extend(["tp", "sl"])
@@ -1424,12 +1421,6 @@ def _format_positions_table(
             pos.sec_type or "-",
             _format_number(pos.qty),
             _format_number(pos.avg_cost),
-            _format_number(pos.market_price),
-            _format_number(pos.market_value),
-            _format_number(pos.unrealized_pnl),
-            _format_number(pos.realized_pnl),
-            pos.currency or "-",
-            pos.exchange or "-",
         ]
         if exit_lookup:
             row.extend([_format_number(tp_value), _format_number(sl_value)])

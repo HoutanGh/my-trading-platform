@@ -13,6 +13,7 @@ from apps.adapters.eventbus.in_process import InProcessEventBus
 from apps.adapters.logging.jsonl_logger import JsonlEventLogger
 from apps.adapters.logging.ib_gateway_tail import tail_ib_gateway_log
 from apps.adapters.market_data.ibkr_bars import IBKRBarStream
+from apps.adapters.market_data.ibkr_quote_stream import IBKRQuoteStream
 from apps.adapters.market_data.ibkr_quotes import IBKRQuoteSnapshot
 from apps.adapters.pnl.flex_ingest import FlexCsvPnlIngestor
 from apps.adapters.pnl.store import PostgresDailyPnlStore
@@ -70,6 +71,7 @@ async def _async_main() -> None:
     connection = IBKRConnection(config, gateway_logger=gateway_logger, event_logger=event_logger)
     bar_stream = IBKRBarStream(connection, event_logger=event_logger)
     quote_port = IBKRQuoteSnapshot(connection)
+    quote_stream = IBKRQuoteStream(connection)
     order_port = IBKROrderPort(connection, event_bus=bus)
     order_service = OrderService(order_port, event_bus=bus)
     order_tracker = OrderTracker()
@@ -104,6 +106,7 @@ async def _async_main() -> None:
         position_origin_tracker=position_origin_tracker,
         bar_stream=bar_stream,
         quote_port=quote_port,
+        quote_stream=quote_stream,
         event_bus=bus,
         ops_logger=ops_logger,
         prompt=prompt,

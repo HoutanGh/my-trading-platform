@@ -26,3 +26,17 @@ class QuotePort(Protocol):
     ) -> Quote:
         """Return a snapshot quote for the symbol."""
         raise NotImplementedError
+
+
+class QuoteStreamPort(Protocol):
+    async def subscribe(self, symbol: str) -> bool:
+        """Start a streaming quote subscription for the symbol."""
+        raise NotImplementedError
+
+    async def unsubscribe(self, symbol: str) -> None:
+        """Stop a streaming quote subscription for the symbol."""
+        raise NotImplementedError
+
+    def get_latest(self, symbol: str) -> Quote | None:
+        """Return the latest cached quote for the symbol."""
+        raise NotImplementedError
