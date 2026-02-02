@@ -38,6 +38,7 @@ This document describes the production-ready architecture for the breakout autom
         ├── logging/
         │   └── jsonl_logger.py
         └── market_data/
+            ├── ibkr_quote_stream.py
             └── ibkr_bars.py
 
 
@@ -96,10 +97,14 @@ Quick orders:
 - `apps/core/market_data/models.py`
   - Defines the `Bar` model.
 - `apps/core/market_data/ports.py`
-  - Defines the `BarStreamPort` interface.
+  - Defines the `BarStreamPort`, `QuotePort`, and `QuoteStreamPort` interfaces.
 - `apps/adapters/market_data/ibkr_bars.py`
   - IBKR implementation of the bar stream (1-minute bars, live updates).
   - Important: on each new bar, the adapter emits the **previous bar** (the bar that just closed).
+- `apps/adapters/market_data/ibkr_quote_stream.py`
+  - IBKR streaming quote cache (reqMktData) with ref-counted subscriptions.
+- `apps/adapters/market_data/ibkr_quotes.py`
+  - IBKR snapshot quote adapter used as a fallback.
 
 ### Orders (reusable)
 - `apps/core/orders/service.py`
@@ -124,15 +129,17 @@ Quick orders:
 1. Operator starts the breakout watcher via CLI.
 2. Runner subscribes to 1-minute bars from IBKR.
 3. If fast entry is enabled, runner also subscribes to 1-second bars.
-4. Each **closed** 1-minute bar is fed into the breakout logic.
-5. If bar close >= level:
+4. Runner starts a streaming quote subscription (reqMktData) for the symbol and caches latest bid/ask.
+5. Each **closed** 1-minute bar is fed into the breakout logic.
+6. If bar close >= level:
    - If TP/SL provided: submit bracket order (parent + TP + SL, OCA).
    - Otherwise: submit a single market entry.
-6. If fast entry fires first (1-second high beyond a time-decayed distance, close above level, and spread proxy passes):
+   - For limit entries, use the cached streaming quote if it is fresh; otherwise warm up briefly, then fall back to a snapshot quote once.
+7. If fast entry fires first (1-second high beyond a time-decayed distance, close above level, and spread proxy passes):
    - Submit the entry immediately.
    - Bypass the 1-minute close entry (single-fire).
-7. Order lifecycle events are emitted and logged.
-8. Runner stops (single-fire).
+8. Order lifecycle events are emitted and logged.
+9. Runner stops (single-fire).
 
 ---
 
@@ -169,6 +176,7 @@ Logging:
 - Console output via `event_printer` (intentionally filtered to reduce noise, timestamps include timezone offset).
 - JSONL audit log via `jsonl_logger` (path controlled by `APPS_EVENT_LOG_PATH`), which includes **all** events.
   - Includes IBKR connection lifecycle and bar stream health events (e.g., connect attempts, gaps, lag).
+  - BreakoutRejected includes quote age/max when the rejection reason is `quote_stale`.
 - CLI error log via `APPS_OPS_LOG_PATH` (default `apps/journal/ops.jsonl`).
 - IBKR gateway/API error log via `APPS_IB_GATEWAY_LOG_PATH` (default `apps/journal/ib_gateway.jsonl`).
 - IBKR Gateway/TWS file tail log via `IB_GATEWAY_LOG_PATH` (source) -> `APPS_IB_GATEWAY_RAW_LOG_PATH` (default `apps/journal/ib_gateway_raw.jsonl`).
@@ -183,6 +191,7 @@ Logging:
 - If the bar stream is canceled or the watcher is stopped, the stream is cleaned up.
 - Paper-only guard is enforced by connection config (paper vs live ports).
 - If the breakout uses limit-at-ask and a valid ask quote is missing or stale, the watcher rejects and stops.
+  - The quote freshness guard uses a max-age threshold (default 2s) and optional warmup; stale quotes are rejected to prevent using outdated prices.
 
 ---
 
@@ -190,7 +199,7 @@ Logging:
 
 CLI fields:
 - Required: `symbol`, `level`, `qty`
-- Optional: `tp`, `sl`, `rth`, `bar`, `fast`, `fast_bar`, `max_bars`, `tif`, `outside_rth`, `entry`, `account`, `client_tag`
+- Optional: `tp`, `sl`, `rth`, `bar`, `fast`, `fast_bar`, `max_bars`, `tif`, `outside_rth`, `entry`, `quote_age`, `account`, `client_tag`
 
 Defaults:
 - If `rth` is false (default), `outside_rth` defaults to true for breakout orders so pre/postmarket entries are allowed.

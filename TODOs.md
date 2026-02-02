@@ -1,14 +1,17 @@
-### 01/06/26
-- [ ] remove the columns
-- [ ] understand implementation of the streaming market data
-
-### when you have time
-
+### 03/06/26
+- [ ] test streaming breakou
 - [ ] being able to change orders 
-- [ ] remove the double apps> on cli
 - [ ] need tps in breakout status
-- [ ] breakout stop for multiple symbols
-- [ ] breakout should have the tps and sl
+- [ ] remove the double apps> on cli
+
+
+### 02/06/26
+- [x] find the conversation regarding the timings - calculate breakout automation lag; review breakout_automation.md
+- [x] streaming market data strategy
+
+### 01/06/26
+- [x] remove the columns
+- [x] understand implementation of the streaming market data
 - [x] change calendar prices into pounds
 
 ### 27/01/26
@@ -47,7 +50,9 @@
 ---
 
 ### BREAKOUT
+- [ ] somehow maintain watchers from before if cancelling
 - [x] change the market type to LMT order and at the ask - for instant buy and need to see how long it takes (what is the delay) need it to be instant
+- [ ] latency investigation
 - [ ] need to elaborate on this
     - Order submission robustness is thin: bracket children are placed even if order_id is still None after timeout; the runner stops right after submit without handling rejects, partial fills, or failed submissions. Improve by retrying or failing fast when no order_id, waiting for an accept/ack, and emitting a stop reason on failures.
     - Lifecycle and recovery are limited: single‑fire only, no re‑arm, no time/session windows, no reconnect/missed‑bar handling; non‑cancel exceptions bubble up and end the watcher without a structured stop reason. Improve with configurable schedules/timeouts and reconnect/resubscribe behavior plus explicit stop reasons.
@@ -81,8 +86,8 @@
     - how does it work when i enter on the 
         
     - useful information in the table
-- [ ] get all the files related to the breakout automation
-- [ ] need to know p&l locally (not really tbf)
+- [x] get all the files related to the breakout automation
+- [x] need to know p&l locally (not really tbf)
 - [ ] get this cli on my phone
 - [ ] default version that puts in closest value to the amount of money i want to put in for quick stuff
 - [ ] need to be able to change everything about orders
