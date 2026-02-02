@@ -1,15 +1,15 @@
-### 03/06/26
-- [ ] test streaming breakou
+### 03/02/26
+- [ ] test streaming breakout
 - [ ] being able to change orders 
 - [ ] need tps in breakout status
 - [ ] remove the double apps> on cli
 
 
-### 02/06/26
+### 02/02/26
 - [x] find the conversation regarding the timings - calculate breakout automation lag; review breakout_automation.md
 - [x] streaming market data strategy
 
-### 01/06/26
+### 01/02/26
 - [x] remove the columns
 - [x] understand implementation of the streaming market data
 - [x] change calendar prices into pounds
@@ -102,3 +102,6 @@
 
 - [x] running the front end stuff calendar in the cli
 - [x] take an email from my gmail export the csv, add it to the table and etc. 
+
+### Further Automation
+- [ ] quick pullback automation
