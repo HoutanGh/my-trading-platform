@@ -97,6 +97,10 @@ async def _async_main() -> None:
         account_defaults.setdefault("live", fallback_account)
     if account_defaults.get("paper"):
         initial_config["account"] = account_defaults["paper"]
+    breakout_state_path = os.getenv(
+        "APPS_BREAKOUT_STATE_PATH",
+        "apps/journal/breakout_state.json",
+    )
     repl = REPL(
         connection,
         order_service,
@@ -112,6 +116,7 @@ async def _async_main() -> None:
         prompt=prompt,
         initial_config=initial_config,
         account_defaults=account_defaults,
+        breakout_state_path=breakout_state_path,
     )
     ib_gateway_source = os.getenv("IB_GATEWAY_LOG_PATH")
     ib_gateway_raw_log_path = os.getenv(

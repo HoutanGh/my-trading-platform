@@ -32,6 +32,7 @@ from apps.core.strategies.breakout.logic import BreakoutRuleConfig, FastEntryCon
 from apps.core.strategies.breakout.runner import BreakoutRunConfig, run_breakout
 
 CommandHandler = Callable[[list[str], dict[str, str]], Awaitable[None]]
+_BREAKOUT_STATE_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -61,6 +62,7 @@ class REPL:
         prompt: str = "apps> ",
         initial_config: Optional[dict[str, str]] = None,
         account_defaults: Optional[dict[str, str]] = None,
+        breakout_state_path: Optional[str] = None,
     ) -> None:
         self._connection = connection
         self._order_service = order_service
@@ -81,6 +83,13 @@ class REPL:
             if value and value.strip()
         }
         self._account_default_values = set(self._account_defaults.values())
+        resolved_state_path = breakout_state_path or _resolve_breakout_state_path()
+        self._breakout_state_path = (
+            Path(os.path.expanduser(resolved_state_path))
+            if resolved_state_path
+            else None
+        )
+        self._suspend_breakout_state_updates = False
         self._commands: dict[str, CommandSpec] = {}
         self._aliases: dict[str, str] = {}
         self._should_exit = False
@@ -114,7 +123,7 @@ class REPL:
                 self._log_cli_error(exc, cmd_name, line)
                 _print_exception("Command error", exc)
         await self._stop_pnl_processes()
-        await self._stop_breakouts()
+        await self._stop_breakouts(persist=True)
 
     def _register_commands(self) -> None:
         self._register(
@@ -462,6 +471,7 @@ class REPL:
             f"{cfg.host}:{cfg.port} client_id={cfg.client_id} readonly={cfg.readonly}"
         )
         await self._seed_position_origins()
+        await self._maybe_prompt_resume_breakouts(cfg)
 
     def _apply_account_default(self, mode: Optional[str], cfg: object) -> None:
         if not self._account_defaults:
@@ -636,10 +646,6 @@ class REPL:
                 return
 
         symbol = symbol.strip().upper()
-        task_name = f"breakout:{symbol}:{level}"
-        if task_name in self._breakout_tasks:
-            print(f"Breakout watcher already running: {task_name}")
-            return
 
         run_config = BreakoutRunConfig(
             symbol=symbol,
@@ -660,20 +666,84 @@ class REPL:
             quote_max_age_seconds=quote_max_age_seconds,
         )
 
+        self._launch_breakout(run_config, source="user")
+
+    def _breakout_task_name(self, config: BreakoutRunConfig) -> str:
+        return f"breakout:{config.symbol}:{config.rule.level}"
+
+    def _launch_breakout(self, config: BreakoutRunConfig, *, source: str) -> bool:
+        if not self._bar_stream or not self._order_service:
+            print("Breakout not configured.")
+            return False
+        task_name = self._breakout_task_name(config)
+        if task_name in self._breakout_tasks:
+            print(f"Breakout watcher already running: {task_name}")
+            return False
         task = asyncio.create_task(
-                run_breakout(
-                    run_config,
-                    bar_stream=self._bar_stream,
-                    order_service=self._order_service,
-                    quote_port=self._quote_port,
-                    quote_stream=self._quote_stream,
-                    event_bus=self._event_bus,
-                ),
+            run_breakout(
+                config,
+                bar_stream=self._bar_stream,
+                order_service=self._order_service,
+                quote_port=self._quote_port,
+                quote_stream=self._quote_stream,
+                event_bus=self._event_bus,
+            ),
             name=task_name,
         )
-        self._breakout_tasks[task_name] = (run_config, task)
+        self._breakout_tasks[task_name] = (config, task)
         task.add_done_callback(lambda t: self._on_breakout_done(task_name, t))
-        print(f"Breakout watcher started: {task_name}")
+        if source == "resume":
+            print(f"Resumed breakout watcher: {task_name}")
+        else:
+            print(f"Breakout watcher started: {task_name}")
+        self._persist_breakout_state()
+        return True
+
+    async def _maybe_prompt_resume_breakouts(self, cfg: object) -> None:
+        if self._breakout_tasks:
+            return
+        if not self._bar_stream or not self._order_service:
+            print("Breakout not configured; cannot resume stored breakouts.")
+            return
+        configs = self._load_breakout_state()
+        if not configs:
+            return
+        print("Stored breakout watchers found:")
+        for config in configs:
+            print(f"  - {self._format_breakout_summary(config)}")
+        if not self._is_paper_connection(cfg):
+            print("Resume is disabled for live connections (PAPER_ONLY guard).")
+            if await self._prompt_yes_no("Clear stored breakouts? (y/N): "):
+                self._clear_breakout_state()
+                print("Cleared stored breakouts.")
+            return
+        if not await self._prompt_yes_no("Resume previous breakouts? (y/N): "):
+            self._clear_breakout_state()
+            print("Cleared stored breakouts.")
+            return
+        resumed = 0
+        for config in configs:
+            if self._launch_breakout(config, source="resume"):
+                resumed += 1
+        if resumed == 0:
+            print("No breakout watchers resumed.")
+            self._clear_breakout_state()
+
+    async def _prompt_yes_no(self, prompt: str) -> bool:
+        try:
+            response = await asyncio.to_thread(input, prompt)
+        except EOFError:
+            return False
+        if not response:
+            return False
+        return _parse_bool(response)
+
+    def _is_paper_connection(self, cfg: object) -> bool:
+        port = getattr(cfg, "port", None)
+        paper_port = getattr(cfg, "paper_port", None)
+        if port is None or paper_port is None:
+            return False
+        return port == paper_port
 
     async def _cmd_orders(self, _args: list[str], _kwargs: dict[str, str]) -> None:
         if not self._order_tracker:
@@ -924,28 +994,44 @@ class REPL:
                 f"qty={config.qty} state={state}{suffix}"
             )
 
-    async def _stop_breakouts(self, symbol: Optional[str] = None) -> None:
+    async def _stop_breakouts(
+        self,
+        symbol: Optional[str] = None,
+        *,
+        persist: bool = False,
+    ) -> None:
         if not self._breakout_tasks:
+            if symbol and not persist:
+                print(f"No breakout watchers found for {symbol.strip().upper()}.")
             return
         symbol_filter = symbol.strip().upper() if symbol else None
+        if persist and symbol_filter:
+            persist = False
         targets = []
         for name, (config, task) in self._breakout_tasks.items():
             if symbol_filter and config.symbol != symbol_filter:
                 continue
-            targets.append((name, task))
+            targets.append((name, config, task))
         if not targets:
-            if symbol_filter:
+            if symbol_filter and not persist:
                 print(f"No breakout watchers found for {symbol_filter}.")
             return
-        for _name, task in targets:
+        if persist:
+            self._save_breakout_state([config for _, config, _ in targets])
+            self._suspend_breakout_state_updates = True
+        for _name, _config, task in targets:
             task.cancel()
-        await asyncio.gather(*(task for _, task in targets), return_exceptions=True)
-        for name, _task in targets:
+        await asyncio.gather(*(task for _, _, task in targets), return_exceptions=True)
+        for name, _config, _task in targets:
             self._breakout_tasks.pop(name, None)
+        if not persist:
+            self._persist_breakout_state()
         print(f"Stopped {len(targets)} breakout watcher(s).")
 
     def _on_breakout_done(self, task_name: str, task: asyncio.Task) -> None:
         self._breakout_tasks.pop(task_name, None)
+        if not self._suspend_breakout_state_updates:
+            self._persist_breakout_state()
         if task.cancelled():
             print(f"Breakout watcher cancelled: {task_name}")
             return
@@ -954,6 +1040,103 @@ class REPL:
             _print_exception(f"Breakout watcher failed: {task_name}", exc)
             return
         print(f"Breakout watcher finished: {task_name}")
+
+    def _persist_breakout_state(self) -> None:
+        if self._suspend_breakout_state_updates:
+            return
+        configs = [config for config, _task in self._breakout_tasks.values()]
+        self._save_breakout_state(configs)
+
+    def _save_breakout_state(self, configs: list[BreakoutRunConfig]) -> None:
+        if not self._breakout_state_path:
+            return
+        if not configs:
+            self._clear_breakout_state()
+            return
+        payload = {
+            "version": _BREAKOUT_STATE_VERSION,
+            "saved_at": datetime.now(timezone.utc).isoformat(),
+            "breakouts": [_serialize_breakout_config(config) for config in configs],
+        }
+        try:
+            self._breakout_state_path.parent.mkdir(parents=True, exist_ok=True)
+            with self._breakout_state_path.open("w", encoding="utf-8") as handle:
+                json.dump(payload, handle, indent=2, sort_keys=True, ensure_ascii=True)
+        except Exception as exc:
+            print(f"Failed to write breakout state: {exc}")
+
+    def _clear_breakout_state(self) -> None:
+        if not self._breakout_state_path:
+            return
+        try:
+            if self._breakout_state_path.exists():
+                self._breakout_state_path.unlink()
+        except Exception as exc:
+            print(f"Failed to clear breakout state: {exc}")
+
+    def _load_breakout_state(self) -> list[BreakoutRunConfig]:
+        if not self._breakout_state_path:
+            return []
+        if not self._breakout_state_path.exists():
+            return []
+        try:
+            with self._breakout_state_path.open("r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except Exception as exc:
+            print(f"Failed to read breakout state: {exc}")
+            return []
+        entries: list[object]
+        if isinstance(payload, dict):
+            entries = payload.get("breakouts", [])
+        elif isinstance(payload, list):
+            entries = payload
+        else:
+            print("Breakout state file has an invalid format.")
+            return []
+        if not isinstance(entries, list):
+            print("Breakout state file has an invalid format.")
+            return []
+        configs: list[BreakoutRunConfig] = []
+        invalid_entries = 0
+        for entry in entries:
+            if not isinstance(entry, dict):
+                invalid_entries += 1
+                continue
+            config = _deserialize_breakout_config(entry)
+            if config is None:
+                invalid_entries += 1
+                continue
+            configs.append(config)
+        if invalid_entries:
+            print(f"Skipped {invalid_entries} invalid breakout state entries.")
+        return configs
+
+    def _format_breakout_summary(self, config: BreakoutRunConfig) -> str:
+        parts = [
+            f"symbol={config.symbol}",
+            f"level={config.rule.level:g}",
+            f"qty={config.qty}",
+            f"entry={config.entry_type.value.lower()}",
+            f"bar={config.bar_size}",
+            f"fast={'true' if config.rule.fast_entry.enabled else 'false'}",
+        ]
+        if config.take_profits:
+            levels = ",".join(f"{level:g}" for level in config.take_profits)
+            parts.append(f"tp=[{levels}]")
+        elif config.take_profit is not None:
+            parts.append(f"tp={config.take_profit:g}")
+        if config.stop_loss is not None:
+            parts.append(f"sl={config.stop_loss:g}")
+        if config.max_bars is not None:
+            parts.append(f"max_bars={config.max_bars}")
+        if config.tif:
+            parts.append(f"tif={config.tif}")
+        parts.append(f"outside_rth={'true' if config.outside_rth else 'false'}")
+        if config.account:
+            parts.append(f"account={config.account}")
+        if config.client_tag:
+            parts.append(f"client_tag={config.client_tag}")
+        return " ".join(parts)
 
     async def _cmd_ingest_flex(self, args: list[str], kwargs: dict[str, str]) -> None:
         if not self._pnl_service:
@@ -1144,7 +1327,7 @@ class REPL:
 
     async def _cmd_quit(self, _args: list[str], _kwargs: dict[str, str]) -> None:
         await self._stop_pnl_processes()
-        await self._stop_breakouts()
+        await self._stop_breakouts(persist=True)
         self._should_exit = True
 
     async def _stop_pnl_processes(self) -> None:
@@ -1273,6 +1456,143 @@ def _parse_entry_type(value: str) -> OrderType:
     if normalized in {"limit", "lmt"}:
         return OrderType.LIMIT
     raise ValueError("invalid entry type")
+
+
+def _coerce_bool(value: object, *, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return _parse_bool(value)
+    return default
+
+
+def _coerce_int(value: object) -> Optional[int]:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _coerce_float(value: object) -> Optional[float]:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _coerce_str(value: object) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
+def _coerce_float_list(value: object) -> Optional[list[float]]:
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        return None
+    result: list[float] = []
+    for item in value:
+        as_float = _coerce_float(item)
+        if as_float is None:
+            return None
+        result.append(as_float)
+    return result
+
+
+def _serialize_breakout_config(config: BreakoutRunConfig) -> dict[str, object]:
+    return {
+        "symbol": config.symbol,
+        "qty": config.qty,
+        "level": config.rule.level,
+        "entry_type": config.entry_type.value,
+        "take_profit": config.take_profit,
+        "take_profits": config.take_profits,
+        "stop_loss": config.stop_loss,
+        "use_rth": config.use_rth,
+        "bar_size": config.bar_size,
+        "fast_bar_size": config.fast_bar_size,
+        "fast_enabled": config.rule.fast_entry.enabled,
+        "max_bars": config.max_bars,
+        "tif": config.tif,
+        "outside_rth": config.outside_rth,
+        "account": config.account,
+        "client_tag": config.client_tag,
+        "quote_max_age_seconds": config.quote_max_age_seconds,
+    }
+
+
+def _deserialize_breakout_config(payload: dict[str, object]) -> Optional[BreakoutRunConfig]:
+    symbol = _coerce_str(payload.get("symbol"))
+    level = _coerce_float(payload.get("level"))
+    qty = _coerce_int(payload.get("qty"))
+    if not symbol or level is None or qty is None:
+        return None
+    if level <= 0 or qty <= 0:
+        return None
+    entry_type = OrderType.LIMIT
+    entry_raw = payload.get("entry_type")
+    if isinstance(entry_raw, str):
+        try:
+            entry_type = _parse_entry_type(entry_raw)
+        except ValueError:
+            return None
+    take_profit = _coerce_float(payload.get("take_profit"))
+    take_profits = _coerce_float_list(payload.get("take_profits"))
+    if take_profits == []:
+        take_profits = None
+    if take_profits and len(take_profits) not in {2, 3}:
+        return None
+    stop_loss = _coerce_float(payload.get("stop_loss"))
+    if take_profit is not None and take_profits:
+        return None
+    if stop_loss is not None and take_profit is None and not take_profits:
+        return None
+    if stop_loss is None and (take_profit is not None or take_profits):
+        return None
+    use_rth = _coerce_bool(payload.get("use_rth"), default=False)
+    bar_size = _coerce_str(payload.get("bar_size")) or "1 min"
+    fast_bar_size = _coerce_str(payload.get("fast_bar_size")) or "1 secs"
+    fast_enabled = _coerce_bool(payload.get("fast_enabled"), default=True)
+    max_bars = _coerce_int(payload.get("max_bars"))
+    tif = _coerce_str(payload.get("tif")) or "DAY"
+    outside_rth = _coerce_bool(payload.get("outside_rth"), default=not use_rth)
+    account = _coerce_str(payload.get("account"))
+    client_tag = _coerce_str(payload.get("client_tag"))
+    quote_max_age_seconds = _coerce_float(payload.get("quote_max_age_seconds")) or 2.0
+    return BreakoutRunConfig(
+        symbol=symbol.strip().upper(),
+        qty=qty,
+        rule=BreakoutRuleConfig(level=level, fast_entry=FastEntryConfig(enabled=fast_enabled)),
+        entry_type=entry_type,
+        take_profit=take_profit,
+        take_profits=take_profits,
+        stop_loss=stop_loss,
+        use_rth=use_rth,
+        bar_size=bar_size,
+        fast_bar_size=fast_bar_size,
+        max_bars=max_bars,
+        tif=tif,
+        outside_rth=outside_rth,
+        account=account,
+        client_tag=client_tag,
+        quote_max_age_seconds=quote_max_age_seconds,
+    )
 
 
 def _parse_port(value: Optional[str], default: int) -> int:
@@ -1495,6 +1815,11 @@ def _resolve_event_log_path() -> Optional[str]:
 
 def _resolve_ops_log_path() -> Optional[str]:
     log_path = os.getenv("APPS_OPS_LOG_PATH", "apps/journal/ops.jsonl")
+    return log_path or None
+
+
+def _resolve_breakout_state_path() -> Optional[str]:
+    log_path = os.getenv("APPS_BREAKOUT_STATE_PATH", "apps/journal/breakout_state.json")
     return log_path or None
 
 
