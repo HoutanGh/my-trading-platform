@@ -1307,37 +1307,19 @@ class REPL:
         if args and args[0].lower() != "config":
             print("Usage: show config")
             return
-        config_keys = (
-            "account",
-            "client_tag",
-            "symbol",
-            "qty",
-            "tif",
-            "outside_rth",
-            "level",
-            "tp",
-            "sl",
-            "entry",
-            "bar_size",
-            "fast",
-            "fast_bar",
-            "use_rth",
-            "max_bars",
-            "quote_age",
-            "quote_max_age",
-        )
-
-        def _display_value(key: str) -> str:
-            value = self._config.get(key)
-            if value is None or value == "":
-                return "<unset>"
-            return value
-
-        print("Config defaults (current overrides):")
-        for key in config_keys:
-            print(f"{key}={_display_value(key)}")
-        print("")
-        print("Built-in fallbacks (used when unset):")
+        account = self._config.get("account")
+        visible_keys = [key for key in sorted(self._config) if key != "account"]
+        if not self._config:
+            print("Config: (empty)")
+        else:
+            for key in visible_keys:
+                print(f"{key}={self._config[key]}")
+        if visible_keys:
+            print("")
+        default_line = "Default"
+        if account:
+            default_line += f" account={account}"
+        print(default_line)
         print("  buy/sell: tif=DAY outside_rth=false")
         print(
             "  breakout: bar_size=1 min fast=true fast_bar=1 secs use_rth=false "
