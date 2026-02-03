@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import sys
 from typing import Optional
+
+try:
+    import readline
+except ImportError:
+    readline = None
 
 from apps.core.orders.events import BracketChildOrderFilled, OrderFilled
 from apps.core.ops.events import IbGatewayLog
@@ -292,10 +298,26 @@ def _normalize_timestamp(timestamp: datetime) -> datetime:
 
 
 def make_prompting_event_printer(prompt: str):
-    _set_prompt_prefix(prompt)
+    # Avoid repeating the prompt prefix on event lines; we redraw the prompt below.
+    _set_prompt_prefix("")
 
     def _handler(event: object) -> None:
-        if print_event(event):
+        buffer = ""
+        if readline is not None:
+            try:
+                buffer = readline.get_line_buffer()
+            except Exception:
+                buffer = ""
+            # Clear the current input line before printing async output.
+            sys.stdout.write("\r\x1b[2K")
+            sys.stdout.flush()
+        printed = print_event(event)
+        if readline is not None:
+            # Redraw the prompt and any partially typed input.
+            sys.stdout.write(prompt + buffer)
+            sys.stdout.flush()
+            return
+        if printed:
             print(prompt, end="", flush=True)
 
     return _handler
