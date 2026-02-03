@@ -1,8 +1,16 @@
-### 03/02/26
-- [ ] test streaming breakout
+### 04/02/26
+- [ ] calculate where in a trade is best for tps and sls
 - [ ] being able to change orders 
-- [ ] need tps in breakout status
-- [ ] remove the double apps> on cli
+- [ ] workout how to fast trades on cli
+
+### 03/02/26
+- [x] test streaming breakout - seemed to work need to investigate
+- [x] need tps and sl in breakout status
+- [x] remove the double apps> on cli
+    - [x] investigate how to do cleaner cli
+- [x] cache of runners
+- [x] show config actually shows all the defaults configs
+- [x] look at FATN breakout and see if there are any gaps
 
 
 ### 02/02/26
@@ -50,7 +58,7 @@
 ---
 
 ### BREAKOUT
-- [ ] somehow maintain watchers from before if cancelling
+- [x] somehow maintain watchers from before if cancelling
 - [x] change the market type to LMT order and at the ask - for instant buy and need to see how long it takes (what is the delay) need it to be instant
 - [ ] latency investigation
 - [ ] need to elaborate on this
