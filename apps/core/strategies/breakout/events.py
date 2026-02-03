@@ -17,10 +17,28 @@ class BreakoutStarted:
     symbol: str
     rule: BreakoutRuleConfig
     timestamp: datetime
+    take_profit: Optional[float] = None
+    take_profits: Optional[list[float]] = None
+    stop_loss: Optional[float] = None
 
     @classmethod
-    def now(cls, symbol: str, rule: BreakoutRuleConfig) -> "BreakoutStarted":
-        return cls(symbol=symbol, rule=rule, timestamp=_now())
+    def now(
+        cls,
+        symbol: str,
+        rule: BreakoutRuleConfig,
+        *,
+        take_profit: Optional[float] = None,
+        take_profits: Optional[list[float]] = None,
+        stop_loss: Optional[float] = None,
+    ) -> "BreakoutStarted":
+        return cls(
+            symbol=symbol,
+            rule=rule,
+            timestamp=_now(),
+            take_profit=take_profit,
+            take_profits=take_profits,
+            stop_loss=stop_loss,
+        )
 
 
 @dataclass(frozen=True)
@@ -29,10 +47,30 @@ class BreakoutBreakDetected:
     bar: Bar
     level: float
     timestamp: datetime
+    take_profit: Optional[float] = None
+    take_profits: Optional[list[float]] = None
+    stop_loss: Optional[float] = None
 
     @classmethod
-    def now(cls, symbol: str, bar: Bar, level: float) -> "BreakoutBreakDetected":
-        return cls(symbol=symbol, bar=bar, level=level, timestamp=_now())
+    def now(
+        cls,
+        symbol: str,
+        bar: Bar,
+        level: float,
+        *,
+        take_profit: Optional[float] = None,
+        take_profits: Optional[list[float]] = None,
+        stop_loss: Optional[float] = None,
+    ) -> "BreakoutBreakDetected":
+        return cls(
+            symbol=symbol,
+            bar=bar,
+            level=level,
+            timestamp=_now(),
+            take_profit=take_profit,
+            take_profits=take_profits,
+            stop_loss=stop_loss,
+        )
 
 
 @dataclass(frozen=True)
@@ -42,6 +80,9 @@ class BreakoutFastTriggered:
     level: float
     thresholds: FastEntryThresholds
     timestamp: datetime
+    take_profit: Optional[float] = None
+    take_profits: Optional[list[float]] = None
+    stop_loss: Optional[float] = None
 
     @classmethod
     def now(
@@ -50,8 +91,21 @@ class BreakoutFastTriggered:
         bar: Bar,
         level: float,
         thresholds: FastEntryThresholds,
+        *,
+        take_profit: Optional[float] = None,
+        take_profits: Optional[list[float]] = None,
+        stop_loss: Optional[float] = None,
     ) -> "BreakoutFastTriggered":
-        return cls(symbol=symbol, bar=bar, level=level, thresholds=thresholds, timestamp=_now())
+        return cls(
+            symbol=symbol,
+            bar=bar,
+            level=level,
+            thresholds=thresholds,
+            timestamp=_now(),
+            take_profit=take_profit,
+            take_profits=take_profits,
+            stop_loss=stop_loss,
+        )
 
 
 @dataclass(frozen=True)
@@ -99,6 +153,9 @@ class BreakoutRejected:
     level: float
     reason: str
     timestamp: datetime
+    take_profit: Optional[float] = None
+    take_profits: Optional[list[float]] = None
+    stop_loss: Optional[float] = None
     quote_age_seconds: Optional[float] = None
     quote_max_age_seconds: Optional[float] = None
 
@@ -110,6 +167,9 @@ class BreakoutRejected:
         level: float,
         reason: str,
         *,
+        take_profit: Optional[float] = None,
+        take_profits: Optional[list[float]] = None,
+        stop_loss: Optional[float] = None,
         quote_age_seconds: Optional[float] = None,
         quote_max_age_seconds: Optional[float] = None,
     ) -> "BreakoutRejected":
@@ -119,6 +179,9 @@ class BreakoutRejected:
             level=level,
             reason=reason,
             timestamp=_now(),
+            take_profit=take_profit,
+            take_profits=take_profits,
+            stop_loss=stop_loss,
             quote_age_seconds=quote_age_seconds,
             quote_max_age_seconds=quote_max_age_seconds,
         )

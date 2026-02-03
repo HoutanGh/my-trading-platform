@@ -82,7 +82,15 @@ async def run_breakout(
         raise ValueError("quote_port is required for limit breakout entries")
 
     if event_bus:
-        event_bus.publish(BreakoutStarted.now(symbol, config.rule))
+        event_bus.publish(
+            BreakoutStarted.now(
+                symbol,
+                config.rule,
+                take_profit=config.take_profit,
+                take_profits=config.take_profits,
+                stop_loss=config.stop_loss,
+            )
+        )
 
     client_tag = config.client_tag or _default_breakout_tag(symbol, config.rule.level)
     state = BreakoutState()
@@ -105,7 +113,17 @@ async def run_breakout(
             decision.set()
 
         if event_bus and fast_thresholds is not None:
-            event_bus.publish(BreakoutFastTriggered.now(symbol, bar, config.rule.level, fast_thresholds))
+            event_bus.publish(
+                BreakoutFastTriggered.now(
+                    symbol,
+                    bar,
+                    config.rule.level,
+                    fast_thresholds,
+                    take_profit=config.take_profit,
+                    take_profits=config.take_profits,
+                    stop_loss=config.stop_loss,
+                )
+            )
         if event_bus:
             event_bus.publish(
                 BreakoutConfirmed.now(
@@ -141,6 +159,9 @@ async def run_breakout(
                             bar,
                             config.rule.level,
                             reason="quote_missing",
+                            take_profit=config.take_profit,
+                            take_profits=config.take_profits,
+                            stop_loss=config.stop_loss,
                             quote_max_age_seconds=config.quote_max_age_seconds,
                         )
                     )
@@ -160,6 +181,9 @@ async def run_breakout(
                             bar,
                             config.rule.level,
                             reason="quote_missing",
+                            take_profit=config.take_profit,
+                            take_profits=config.take_profits,
+                            stop_loss=config.stop_loss,
                             quote_max_age_seconds=config.quote_max_age_seconds,
                         )
                     )
@@ -179,6 +203,9 @@ async def run_breakout(
                             bar,
                             config.rule.level,
                             reason="quote_stale",
+                            take_profit=config.take_profit,
+                            take_profits=config.take_profits,
+                            stop_loss=config.stop_loss,
                             quote_age_seconds=quote_age,
                             quote_max_age_seconds=config.quote_max_age_seconds,
                         )
@@ -260,7 +287,16 @@ async def run_breakout(
             state, action = evaluate_breakout(state, bar, config.rule)
 
             if not was_break_seen and state.break_seen and event_bus:
-                event_bus.publish(BreakoutBreakDetected.now(symbol, bar, config.rule.level))
+                event_bus.publish(
+                    BreakoutBreakDetected.now(
+                        symbol,
+                        bar,
+                        config.rule.level,
+                        take_profit=config.take_profit,
+                        take_profits=config.take_profits,
+                        stop_loss=config.stop_loss,
+                    )
+                )
 
             if action == BreakoutAction.ENTER:
                 await _submit_entry(bar, reason="order_submitted")
@@ -274,6 +310,9 @@ async def run_breakout(
                             bar,
                             config.rule.level,
                             reason="confirm_failed",
+                            take_profit=config.take_profit,
+                            take_profits=config.take_profits,
+                            stop_loss=config.stop_loss,
                         )
                     )
                     event_bus.publish(

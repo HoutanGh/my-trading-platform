@@ -910,9 +910,18 @@ class REPL:
             return
         for name, (config, task) in sorted(self._breakout_tasks.items()):
             state = "running" if not task.done() else "done"
+            extras = []
+            if config.take_profits:
+                levels = ",".join(f"{level:g}" for level in config.take_profits)
+                extras.append(f"tp=[{levels}]")
+            elif config.take_profit is not None:
+                extras.append(f"tp={config.take_profit}")
+            if config.stop_loss is not None:
+                extras.append(f"sl={config.stop_loss}")
+            suffix = f" {' '.join(extras)}" if extras else ""
             print(
                 f"{name} symbol={config.symbol} level={config.rule.level} "
-                f"qty={config.qty} state={state}"
+                f"qty={config.qty} state={state}{suffix}"
             )
 
     async def _stop_breakouts(self, symbol: Optional[str] = None) -> None:

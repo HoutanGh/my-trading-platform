@@ -29,23 +29,38 @@ class _EntryFillTiming:
 
 def print_event(event: object) -> bool:
     if isinstance(event, BreakoutStarted):
+        suffix = _breakout_tp_sl_suffix(
+            take_profit=event.take_profit,
+            take_profits=event.take_profits,
+            stop_loss=event.stop_loss,
+        )
         _print_line(
             event.timestamp,
             "BreakoutStarted",
-            f"{event.symbol} level={event.rule.level}",
+            f"{event.symbol} level={event.rule.level}{suffix}",
         )
         return True
     if isinstance(event, BreakoutBreakDetected):
         bar_time = _format_time(event.bar.timestamp)
+        suffix = _breakout_tp_sl_suffix(
+            take_profit=event.take_profit,
+            take_profits=event.take_profits,
+            stop_loss=event.stop_loss,
+        )
         _print_line(
             event.timestamp,
             "BreakoutBreak",
-            f"{event.symbol} level={event.level} bar={bar_time}",
+            f"{event.symbol} level={event.level} bar={bar_time}{suffix}",
         )
         return True
     if isinstance(event, BreakoutFastTriggered):
         bar_time = _format_time(event.bar.timestamp)
         thresholds = event.thresholds
+        suffix = _breakout_tp_sl_suffix(
+            take_profit=event.take_profit,
+            take_profits=event.take_profits,
+            stop_loss=event.stop_loss,
+        )
         _print_line(
             event.timestamp,
             "BreakoutFast",
@@ -55,7 +70,7 @@ def print_event(event: object) -> bool:
                 f"dist={thresholds.distance_cents}c "
                 f"range={thresholds.spread_cents}c "
                 f"max_range={thresholds.max_spread_cents}c "
-                f"scale={thresholds.price_scale:g}"
+                f"scale={thresholds.price_scale:g}{suffix}"
             ),
         )
         return True
@@ -64,14 +79,11 @@ def print_event(event: object) -> bool:
             _CONFIRMED_BY_TAG[event.client_tag] = _EntryFillTiming(
                 confirmed_at=_normalize_timestamp(event.timestamp)
             )
-        extras = []
-        if event.take_profits:
-            extras.append(f"tp={_format_tp_list(event.take_profits)}")
-        elif event.take_profit is not None:
-            extras.append(f"tp={event.take_profit}")
-        if event.stop_loss is not None:
-            extras.append(f"sl={event.stop_loss}")
-        suffix = f" {' '.join(extras)}" if extras else ""
+        suffix = _breakout_tp_sl_suffix(
+            take_profit=event.take_profit,
+            take_profits=event.take_profits,
+            stop_loss=event.stop_loss,
+        )
         bar_time = _format_time(event.bar.timestamp)
         _print_line(
             event.timestamp,
@@ -89,6 +101,13 @@ def print_event(event: object) -> bool:
                 extras.append(f"age={event.quote_age_seconds:.3f}s")
             if event.quote_max_age_seconds is not None:
                 extras.append(f"max={event.quote_max_age_seconds:.3f}s")
+        extras.extend(
+            _breakout_tp_sl_parts(
+                take_profit=event.take_profit,
+                take_profits=event.take_profits,
+                stop_loss=event.stop_loss,
+            )
+        )
         suffix = f" {' '.join(extras)}" if extras else ""
         _print_line(
             event.timestamp,
@@ -153,6 +172,36 @@ def print_event(event: object) -> bool:
 
 def _format_tp_list(levels: list[float]) -> str:
     return "[" + ",".join(f"{level:g}" for level in levels) + "]"
+
+
+def _breakout_tp_sl_parts(
+    *,
+    take_profit: Optional[float],
+    take_profits: Optional[list[float]],
+    stop_loss: Optional[float],
+) -> list[str]:
+    parts = []
+    if take_profits:
+        parts.append(f"tp={_format_tp_list(take_profits)}")
+    elif take_profit is not None:
+        parts.append(f"tp={take_profit}")
+    if stop_loss is not None:
+        parts.append(f"sl={stop_loss}")
+    return parts
+
+
+def _breakout_tp_sl_suffix(
+    *,
+    take_profit: Optional[float],
+    take_profits: Optional[list[float]],
+    stop_loss: Optional[float],
+) -> str:
+    parts = _breakout_tp_sl_parts(
+        take_profit=take_profit,
+        take_profits=take_profits,
+        stop_loss=stop_loss,
+    )
+    return f" {' '.join(parts)}" if parts else ""
 
 
 def _shorten_message(message: str, max_len: int = _MAX_GATEWAY_MSG_LEN) -> str:
