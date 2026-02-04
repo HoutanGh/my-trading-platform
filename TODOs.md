@@ -1,7 +1,14 @@
+### 05/02/26
+- [ ] research how to 
+
 ### 04/02/26
-- [ ] calculate where in a trade is best for tps and sls
-- [ ] being able to change orders 
-- [ ] workout how to fast trades on cli
+- [ ] brainstorm best tps and sls
+- [ ] same tp and sl functionality for normally buying
+- [x] being able to change orders 
+- [x] workout how to do fast trades on cli - enter a session
+- [ ] cli cleaning
+    - [ ] short form
+    - [ ] etc.
 
 ### 03/02/26
 - [x] test streaming breakout - seemed to work need to investigate

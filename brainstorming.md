@@ -1,3 +1,12 @@
+#### Day trading session
+- enter a session for stock
+- make sure breakouts are still running in background but dont output results onto cli until have exited the stock session?
+- limiting factor is that doesnt insta buy - shouldn't be too bad 
+    - understand scenario where this is bad 
+        - if somehow passes stop loss condition that if it lower than this price, close position
+- have different options 
+
+
 
 #### BREAKOUT
 - there seemed to be a delay for when the breakout happened and breakout assigning IDs and shit
