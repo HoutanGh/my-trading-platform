@@ -126,6 +126,8 @@ def print_event(event: object) -> bool:
             _CONFIRMED_BY_TAG.pop(event.client_tag, None)
         return False
     if isinstance(event, IbGatewayLog):
+        if _should_hide_gateway_log(event):
+            return False
         if event.code is None and not event.message:
             return False
         label = _gateway_label(event)
@@ -224,6 +226,13 @@ def _gateway_label(event: IbGatewayLog) -> str:
     if "inactive" in message or "broken" in message:
         return "IbWarn"
     return "IbError"
+
+
+def _should_hide_gateway_log(event: IbGatewayLog) -> bool:
+    if event.code != 162:
+        return False
+    message = str(event.message or "").lower()
+    return "query cancel" in message
 
 
 def _print_line(timestamp, label: str, message: str) -> None:
