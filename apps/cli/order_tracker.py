@@ -76,6 +76,9 @@ class OrderTracker:
             )
         return lines
 
+    def get_order_record(self, order_id: int) -> Optional[OrderRecord]:
+        return self._orders.get(order_id)
+
     def _rows(self, *, pending_only: bool) -> list[list[str]]:
         rows: list[list[str]] = []
         if not pending_only:

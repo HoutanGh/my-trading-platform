@@ -8,6 +8,8 @@ from apps.core.orders.models import (
     BracketOrderSpec,
     LadderOrderSpec,
     OrderAck,
+    OrderCancelSpec,
+    OrderReplaceSpec,
     OrderSide,
     OrderSpec,
     OrderType,
@@ -32,6 +34,16 @@ class OrderService:
         if self._event_bus:
             self._event_bus.publish(OrderIntent.now(normalized))
         return await self._order_port.submit_order(normalized)
+
+    async def cancel_order(self, spec: OrderCancelSpec) -> OrderAck:
+        normalized = self._normalize_cancel_spec(spec)
+        self._validate_cancel(normalized)
+        return await self._order_port.cancel_order(normalized)
+
+    async def replace_order(self, spec: OrderReplaceSpec) -> OrderAck:
+        normalized = self._normalize_replace_spec(spec)
+        self._validate_replace(normalized)
+        return await self._order_port.replace_order(normalized)
 
     async def submit_bracket(self, spec: BracketOrderSpec) -> OrderAck:
         normalized = self._normalize_bracket_spec(spec)
@@ -83,6 +95,13 @@ class OrderService:
             currency=currency,
         )
 
+    def _normalize_cancel_spec(self, spec: OrderCancelSpec) -> OrderCancelSpec:
+        return spec
+
+    def _normalize_replace_spec(self, spec: OrderReplaceSpec) -> OrderReplaceSpec:
+        tif = spec.tif.strip().upper() if spec.tif else None
+        return replace(spec, tif=tif)
+
     def _validate(self, spec: OrderSpec) -> None:
         if not spec.symbol:
             raise OrderValidationError("symbol is required")
@@ -118,6 +137,27 @@ class OrderService:
             raise OrderValidationError("take_profit must be above stop_loss for BUY")
         if spec.side == OrderSide.SELL and spec.take_profit >= spec.stop_loss:
             raise OrderValidationError("take_profit must be below stop_loss for SELL")
+
+    def _validate_cancel(self, spec: OrderCancelSpec) -> None:
+        if spec.order_id <= 0:
+            raise OrderValidationError("order_id must be greater than zero")
+
+    def _validate_replace(self, spec: OrderReplaceSpec) -> None:
+        if spec.order_id <= 0:
+            raise OrderValidationError("order_id must be greater than zero")
+        if (
+            spec.qty is None
+            and spec.limit_price is None
+            and spec.tif is None
+            and spec.outside_rth is None
+        ):
+            raise OrderValidationError("replace requires at least one change")
+        if spec.qty is not None and spec.qty <= 0:
+            raise OrderValidationError("qty must be greater than zero")
+        if spec.limit_price is not None and spec.limit_price <= 0:
+            raise OrderValidationError("limit_price must be greater than zero")
+        if spec.tif is not None and not spec.tif:
+            raise OrderValidationError("tif is required when provided")
 
     def _normalize_ladder_spec(self, spec: LadderOrderSpec) -> LadderOrderSpec:
         side = _coerce_enum(OrderSide, spec.side, "side")

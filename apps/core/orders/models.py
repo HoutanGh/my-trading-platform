@@ -32,6 +32,20 @@ class OrderSpec:
 
 
 @dataclass(frozen=True)
+class OrderCancelSpec:
+    order_id: int
+
+
+@dataclass(frozen=True)
+class OrderReplaceSpec:
+    order_id: int
+    qty: Optional[int] = None
+    limit_price: Optional[float] = None
+    tif: Optional[str] = None
+    outside_rth: Optional[bool] = None
+
+
+@dataclass(frozen=True)
 class BracketOrderSpec:
     symbol: str
     qty: int

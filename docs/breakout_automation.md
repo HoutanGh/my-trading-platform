@@ -74,6 +74,8 @@ Stop or check status:
 Quick orders:
 - `buy AAPL 100`
 - `sell AAPL 50`
+ - `orders cancel 12345`
+ - `orders replace 12345 limit=191.25`
 
 ---
 
@@ -113,6 +115,7 @@ Quick orders:
   - `OrderSpec` for standard orders and `BracketOrderSpec` for TP/SL.
 - `apps/adapters/broker/ibkr_order_port.py`
   - Converts order specs to IBKR orders (including bracket/OCA logic).
+  - Supports cancelling and replacing basic limit orders from the current session.
 
 ### Events and logging (reusable)
 - `apps/adapters/eventbus/in_process.py`
@@ -223,6 +226,7 @@ Fast entry defaults (enabled by default):
 - Breakout rule is fixed (single bar close >= level triggers entry).
 - Fast entry uses fixed, strategy-configured thresholds (time-decayed distance and 1-sec high-low proxy), not adaptive noise models.
 - No volatility-based sizing or dynamic TP/SL yet.
+ - Order replace only supports limit orders tracked by the current session.
 
 ---
 

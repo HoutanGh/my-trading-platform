@@ -22,7 +22,7 @@ from apps.cli.order_tracker import OrderTracker
 from apps.cli.position_origin_tracker import PositionOriginTracker
 from apps.core.market_data.ports import BarStreamPort, QuotePort, QuoteStreamPort
 from apps.core.ops.events import CliErrorLogged
-from apps.core.orders.models import OrderSide, OrderSpec, OrderType
+from apps.core.orders.models import OrderCancelSpec, OrderReplaceSpec, OrderSide, OrderSpec, OrderType
 from apps.core.orders.ports import EventBus
 from apps.core.orders.service import OrderService, OrderValidationError
 from apps.core.pnl.service import PnlService
@@ -191,8 +191,12 @@ class REPL:
             CommandSpec(
                 name="orders",
                 handler=self._cmd_orders,
-                help="Show tracked order statuses from events.",
-                usage="orders [pending]",
+                help="Show tracked order statuses or change an order.",
+                usage=(
+                    "orders [pending] "
+                    "| orders cancel ORDER_ID "
+                    "| orders replace ORDER_ID [limit=...] [qty=...] [tif=DAY] [outside_rth=true|false]"
+                ),
             )
         )
         self._register(
@@ -373,7 +377,7 @@ class REPL:
                 "client_tag=",
             ]
         if name == "orders":
-            return ["pending"]
+            return ["pending", "cancel", "replace", "limit=", "qty=", "tif=", "outside_rth="]
         if name == "positions":
             return ["account="]
         if name == "ingest-flex":
@@ -746,6 +750,14 @@ class REPL:
         return port == paper_port
 
     async def _cmd_orders(self, _args: list[str], _kwargs: dict[str, str]) -> None:
+        if _args:
+            subcommand = _args[0].lower()
+            if subcommand == "cancel":
+                await self._cmd_order_cancel(_args[1:], _kwargs)
+                return
+            if subcommand == "replace":
+                await self._cmd_order_replace(_args[1:], _kwargs)
+                return
         if not self._order_tracker:
             print("Order tracker not configured.")
             return
@@ -756,6 +768,83 @@ class REPL:
             return
         for line in lines:
             print(line)
+
+    async def _cmd_order_cancel(self, args: list[str], _kwargs: dict[str, str]) -> None:
+        if not self._order_service:
+            print("Order service not configured.")
+            return
+        if not args:
+            print("Usage: orders cancel ORDER_ID")
+            return
+        order_id = _coerce_int(args[0])
+        if not order_id or order_id <= 0:
+            print("order_id must be a positive integer")
+            return
+        spec = OrderCancelSpec(order_id=order_id)
+        try:
+            ack = await self._order_service.cancel_order(spec)
+        except OrderValidationError as exc:
+            print(f"Cancel rejected: {exc}")
+            return
+        except Exception as exc:
+            _print_exception("Cancel failed", exc)
+            return
+        print(f"Cancel requested: order_id={ack.order_id} status={ack.status}")
+
+    async def _cmd_order_replace(self, args: list[str], kwargs: dict[str, str]) -> None:
+        if not self._order_service:
+            print("Order service not configured.")
+            return
+        if not self._order_tracker:
+            print("Order tracker not configured.")
+            return
+        if not args:
+            print(
+                "Usage: orders replace ORDER_ID [limit=...] [qty=...] [tif=DAY] [outside_rth=true|false]"
+            )
+            return
+        order_id = _coerce_int(args[0])
+        if not order_id or order_id <= 0:
+            print("order_id must be a positive integer")
+            return
+        record = self._order_tracker.get_order_record(order_id)
+        if not record:
+            print("Order id not tracked; replace only supports orders placed by this session.")
+            return
+        if record.spec.order_type != OrderType.LIMIT:
+            print("Replace only supports limit orders.")
+            return
+        qty = _coerce_int(kwargs.get("qty")) if "qty" in kwargs else None
+        if "qty" in kwargs and qty is None:
+            print("qty must be an integer")
+            return
+        limit_price = _coerce_float(kwargs.get("limit")) if "limit" in kwargs else None
+        if "limit" in kwargs and limit_price is None:
+            print("limit must be a number")
+            return
+        tif = _coerce_str(kwargs.get("tif")) if "tif" in kwargs else None
+        if "tif" in kwargs and tif is None:
+            print("tif must be a non-empty string")
+            return
+        outside_rth = None
+        if "outside_rth" in kwargs:
+            outside_rth = _coerce_bool(kwargs.get("outside_rth"), default=False)
+        spec = OrderReplaceSpec(
+            order_id=order_id,
+            qty=qty,
+            limit_price=limit_price,
+            tif=tif,
+            outside_rth=outside_rth,
+        )
+        try:
+            ack = await self._order_service.replace_order(spec)
+        except OrderValidationError as exc:
+            print(f"Replace rejected: {exc}")
+            return
+        except Exception as exc:
+            _print_exception("Replace failed", exc)
+            return
+        print(f"Replace requested: order_id={ack.order_id} status={ack.status}")
 
     async def _cmd_trades(self, _args: list[str], _kwargs: dict[str, str]) -> None:
         log_path = _resolve_event_log_path()
@@ -1672,7 +1761,13 @@ def _flag_aliases(command: str) -> dict[str, str]:
             "c": "client_tag",
         }
     if command == "orders":
-        return {"p": "pending"}
+        return {
+            "p": "pending",
+            "q": "qty",
+            "l": "limit",
+            "t": "tif",
+            "o": "outside_rth",
+        }
     if command == "positions":
         return {"a": "account"}
     return {}

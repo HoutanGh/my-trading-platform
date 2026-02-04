@@ -11,6 +11,8 @@ from apps.core.orders.models import (
     BracketOrderSpec,
     LadderOrderSpec,
     OrderAck,
+    OrderCancelSpec,
+    OrderReplaceSpec,
     OrderSpec,
     OrderSide,
     OrderType,
@@ -21,6 +23,8 @@ from apps.core.orders.service import OrderService, OrderValidationError
 __all__ = [
     "OrderAck",
     "OrderSpec",
+    "OrderCancelSpec",
+    "OrderReplaceSpec",
     "BracketOrderSpec",
     "LadderOrderSpec",
     "OrderSide",

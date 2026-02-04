@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import threading
 import time
 import uuid
@@ -22,6 +23,8 @@ from apps.core.orders.models import (
     BracketOrderSpec,
     LadderOrderSpec,
     OrderAck,
+    OrderCancelSpec,
+    OrderReplaceSpec,
     OrderSide,
     OrderSpec,
     OrderType,
@@ -74,6 +77,41 @@ class IBKROrderPort(OrderPort):
                 OrderStatusChanged.now(spec, order_id=order_id, status=status)
             )
         return OrderAck.now(order_id=order_id, status=status)
+
+    async def cancel_order(self, spec: OrderCancelSpec) -> OrderAck:
+        if not self._ib.isConnected():
+            raise RuntimeError("IBKR is not connected")
+        trade = _find_trade_by_order_id(self._ib, spec.order_id)
+        if trade is None:
+            raise RuntimeError(f"Order {spec.order_id} not found in current session")
+        self._ib.cancelOrder(trade.order)
+        status = await _wait_for_order_status(trade)
+        return OrderAck.now(order_id=spec.order_id, status=status)
+
+    async def replace_order(self, spec: OrderReplaceSpec) -> OrderAck:
+        if not self._ib.isConnected():
+            raise RuntimeError("IBKR is not connected")
+        trade = _find_trade_by_order_id(self._ib, spec.order_id)
+        if trade is None:
+            raise RuntimeError(f"Order {spec.order_id} not found in current session")
+        order = copy.copy(trade.order)
+        order_type = str(getattr(order, "orderType", "")).strip().upper()
+        if order_type not in {"LMT", "LIMIT"}:
+            raise RuntimeError("Only limit orders can be replaced")
+        if spec.qty is not None:
+            order.totalQuantity = spec.qty
+        if spec.limit_price is not None:
+            order.lmtPrice = spec.limit_price
+        if spec.tif is not None:
+            order.tif = spec.tif
+        if spec.outside_rth is not None:
+            order.outsideRth = spec.outside_rth
+        order.orderId = trade.order.orderId
+        updated_trade = self._ib.placeOrder(trade.contract, order)
+        if self._event_bus and updated_trade is not trade:
+            _attach_trade_handlers(updated_trade, _order_spec_from_trade(updated_trade), self._event_bus)
+        status = await _wait_for_order_status(updated_trade)
+        return OrderAck.now(order_id=spec.order_id, status=status)
 
     async def submit_bracket_order(self, spec: BracketOrderSpec) -> OrderAck:
         if not self._ib.isConnected():
@@ -315,6 +353,51 @@ async def _wait_for_order_status(
         await asyncio.sleep(poll_interval)
         status = trade.orderStatus.status
     return status or None
+
+
+def _find_trade_by_order_id(ib: IB, order_id: int) -> Optional[Trade]:
+    for trade in ib.trades():
+        if getattr(getattr(trade, "order", None), "orderId", None) == order_id:
+            return trade
+    return None
+
+
+def _order_spec_from_trade(trade: Trade) -> OrderSpec:
+    order = trade.order
+    contract = trade.contract
+    symbol = getattr(contract, "symbol", "") or ""
+    exchange = getattr(contract, "exchange", None) or "SMART"
+    currency = getattr(contract, "currency", None) or "USD"
+    action = str(getattr(order, "action", "")).strip().upper()
+    side = OrderSide.SELL if action == "SELL" else OrderSide.BUY
+    order_type_raw = str(getattr(order, "orderType", "")).strip().upper()
+    if order_type_raw in {"LMT", "LIMIT"}:
+        order_type = OrderType.LIMIT
+    else:
+        order_type = OrderType.MARKET
+    limit_price = getattr(order, "lmtPrice", None)
+    tif = getattr(order, "tif", None) or "DAY"
+    outside_rth = bool(getattr(order, "outsideRth", False))
+    account = getattr(order, "account", None) or None
+    client_tag = getattr(order, "orderRef", None) or None
+    qty_raw = getattr(order, "totalQuantity", 0)
+    try:
+        qty = int(qty_raw)
+    except (TypeError, ValueError):
+        qty = 0
+    return OrderSpec(
+        symbol=symbol,
+        qty=qty,
+        side=side,
+        order_type=order_type,
+        limit_price=limit_price,
+        tif=str(tif),
+        outside_rth=outside_rth,
+        exchange=exchange,
+        currency=currency,
+        account=account,
+        client_tag=client_tag,
+    )
 
 
 def _entry_spec_from_bracket(spec: BracketOrderSpec) -> OrderSpec:
