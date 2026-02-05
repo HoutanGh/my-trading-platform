@@ -1,9 +1,17 @@
 ### 05/02/26
-- [ ] research how to 
+- [ ] research how to the investment analysis
+- [ ] same tp and sl functionality for normally buying
+- [x] brainstorm best tps and sls
+- [ ] do best tps and sls
+- [ ] cancel more than just one stock on breakout stop
+- [ ] breakout cancel instead of stop
+- [ ] research having multiple sessions open
+- [ ] rename adapter/market_data files 
+- [ ] breakout cancel ALL functionality
+- [ ] cli clear functionality 
 
 ### 04/02/26
-- [ ] brainstorm best tps and sls
-- [ ] same tp and sl functionality for normally buying
+
 - [x] being able to change orders 
 - [x] workout how to do fast trades on cli - enter a session
 - [ ] cli cleaning
@@ -67,7 +75,7 @@
 ### BREAKOUT
 - [x] somehow maintain watchers from before if cancelling
 - [x] change the market type to LMT order and at the ask - for instant buy and need to see how long it takes (what is the delay) need it to be instant
-- [ ] latency investigation
+- [x] latency investigation
 - [ ] need to elaborate on this
     - Order submission robustness is thin: bracket children are placed even if order_id is still None after timeout; the runner stops right after submit without handling rejects, partial fills, or failed submissions. Improve by retrying or failing fast when no order_id, waiting for an accept/ack, and emitting a stop reason on failures.
     - Lifecycle and recovery are limited: single‑fire only, no re‑arm, no time/session windows, no reconnect/missed‑bar handling; non‑cancel exceptions bubble up and end the watcher without a structured stop reason. Improve with configurable schedules/timeouts and reconnect/resubscribe behavior plus explicit stop reasons.

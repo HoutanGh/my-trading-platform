@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import AsyncIterator, Protocol
 
 from apps.core.market_data.models import Bar, Quote
@@ -14,6 +15,20 @@ class BarStreamPort(Protocol):
         use_rth: bool = False,
     ) -> AsyncIterator[Bar]:
         """Return an async iterator of live bars for the symbol."""
+        raise NotImplementedError
+
+
+class BarHistoryPort(Protocol):
+    async def fetch_bars(
+        self,
+        symbol: str,
+        *,
+        bar_size: str = "1 min",
+        start: datetime | None = None,
+        end: datetime | None = None,
+        use_rth: bool = False,
+    ) -> list[Bar]:
+        """Return historical bars for the symbol within the requested time window."""
         raise NotImplementedError
 
 

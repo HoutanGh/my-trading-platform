@@ -12,7 +12,7 @@ from apps.adapters.broker.ibkr_positions_port import IBKRPositionsPort
 from apps.adapters.eventbus.in_process import InProcessEventBus
 from apps.adapters.logging.jsonl_logger import JsonlEventLogger
 from apps.adapters.logging.ib_gateway_tail import tail_ib_gateway_log
-from apps.adapters.market_data.ibkr_bars import IBKRBarStream
+from apps.adapters.market_data.ibkr_bars import IBKRBarHistory, IBKRBarStream
 from apps.adapters.market_data.ibkr_quote_stream import IBKRQuoteStream
 from apps.adapters.market_data.ibkr_quotes import IBKRQuoteSnapshot
 from apps.adapters.pnl.flex_ingest import FlexCsvPnlIngestor
@@ -21,6 +21,7 @@ from apps.cli.event_printer import make_prompting_event_printer
 from apps.cli.order_tracker import OrderTracker
 from apps.cli.position_origin_tracker import PositionOriginTracker
 from apps.cli.repl import REPL
+from apps.core.analytics.flow.service import TakeProfitService
 from apps.core.orders.service import OrderService
 from apps.core.pnl.service import PnlService
 from apps.core.positions.service import PositionsService
@@ -70,6 +71,7 @@ async def _async_main() -> None:
     gateway_logger = _fanout_logger(ib_logger, bus.publish)
     connection = IBKRConnection(config, gateway_logger=gateway_logger, event_logger=event_logger)
     bar_stream = IBKRBarStream(connection, event_logger=event_logger)
+    bar_history = IBKRBarHistory(connection, event_logger=event_logger)
     quote_port = IBKRQuoteSnapshot(connection)
     quote_stream = IBKRQuoteStream(connection)
     order_port = IBKROrderPort(connection, event_bus=bus)
@@ -83,6 +85,7 @@ async def _async_main() -> None:
     pnl_store = PostgresDailyPnlStore()
     pnl_ingestor = FlexCsvPnlIngestor(pnl_store)
     pnl_service = PnlService(pnl_ingestor, pnl_store, event_bus=bus)
+    tp_service = TakeProfitService(bar_history)
     initial_config: dict[str, str] = {}
     account_defaults: dict[str, str] = {}
     paper_account = os.getenv("IB_PAPER_ACCOUNT")
@@ -109,6 +112,7 @@ async def _async_main() -> None:
         positions_service=positions_service,
         position_origin_tracker=position_origin_tracker,
         bar_stream=bar_stream,
+        tp_service=tp_service,
         quote_port=quote_port,
         quote_stream=quote_stream,
         event_bus=bus,

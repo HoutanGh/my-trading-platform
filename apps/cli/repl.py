@@ -20,6 +20,7 @@ except ImportError:
 from apps.adapters.broker.ibkr_connection import IBKRConnection
 from apps.cli.order_tracker import OrderTracker
 from apps.cli.position_origin_tracker import PositionOriginTracker
+from apps.core.analytics.flow.service import TakeProfitRequest, TakeProfitService
 from apps.core.market_data.ports import BarStreamPort, QuotePort, QuoteStreamPort
 from apps.core.ops.events import CliErrorLogged
 from apps.core.orders.models import OrderCancelSpec, OrderReplaceSpec, OrderSide, OrderSpec, OrderType
@@ -54,6 +55,7 @@ class REPL:
         positions_service: Optional[PositionsService] = None,
         position_origin_tracker: Optional[PositionOriginTracker] = None,
         bar_stream: Optional[BarStreamPort] = None,
+        tp_service: Optional[TakeProfitService] = None,
         quote_port: Optional[QuotePort] = None,
         quote_stream: Optional[QuoteStreamPort] = None,
         event_bus: Optional[EventBus] = None,
@@ -71,6 +73,7 @@ class REPL:
         self._positions_service = positions_service
         self._position_origin_tracker = position_origin_tracker
         self._bar_stream = bar_stream
+        self._tp_service = tp_service
         self._quote_port = quote_port
         self._quote_stream = quote_stream
         self._event_bus = event_bus
@@ -185,6 +188,14 @@ class REPL:
                     "| breakout SYMBOL LEVEL QTY [TP] [SL] "
                     "| breakout status | breakout stop [SYMBOL]"
                 ),
+            )
+        )
+        self._register(
+            CommandSpec(
+                name="tp",
+                handler=self._cmd_tp,
+                help="Compute take-profit levels (analysis only).",
+                usage="tp SYMBOL [bar=1 min] [rth=true|false]",
             )
         )
         self._register(
@@ -671,6 +682,51 @@ class REPL:
         )
 
         self._launch_breakout(run_config, source="user")
+
+    async def _cmd_tp(self, args: list[str], kwargs: dict[str, str]) -> None:
+        if not self._tp_service:
+            print("TP service not configured.")
+            return
+        if not self._connection.status().get("connected"):
+            print("Not connected. Use `connect` before requesting TP levels.")
+            return
+        if not args:
+            print(self._commands["tp"].usage)
+            return
+
+        symbol = args[0].strip().upper()
+        if not symbol:
+            print(self._commands["tp"].usage)
+            return
+
+        bar_size = kwargs.get("bar") or kwargs.get("bar_size") or "1 min"
+        use_rth_value = kwargs.get("rth") or kwargs.get("use_rth")
+        use_rth = _parse_bool(use_rth_value) if use_rth_value is not None else False
+
+        try:
+            result = await self._tp_service.compute_levels(
+                TakeProfitRequest(
+                    symbol=symbol,
+                    bar_size=bar_size,
+                    use_rth=use_rth,
+                )
+            )
+        except NotImplementedError:
+            print("TP calculation is not implemented yet.")
+            return
+        except RuntimeError as exc:
+            print(f"TP calculation failed: {exc}")
+            return
+
+        if not result.levels:
+            print("No TP levels found.")
+            return
+
+        lookback = f"{result.lookback_days}d" if result.lookback_days is not None else "n/a"
+        suffix = " (fallback)" if result.used_fallback else ""
+        print(f"{symbol} TP levels (lookback={lookback}, bar={bar_size}){suffix}:")
+        for idx, level in enumerate(result.levels, start=1):
+            print(f"  TP{idx}: {level.price:g} ({level.reason.value})")
 
     def _breakout_task_name(self, config: BreakoutRunConfig) -> str:
         return f"breakout:{config.symbol}:{config.rule.level}"
