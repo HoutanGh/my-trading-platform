@@ -82,7 +82,9 @@ Examples:
 
 Stop or check status:
 - `breakout status`
-- `breakout stop XRTX`
+- `breakout cancel XRTX`
+- `breakout cancel XRTX CISS`
+- `breakout cancel ALL`
 
 Quick orders:
 - `buy AAPL 100`

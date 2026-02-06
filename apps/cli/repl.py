@@ -190,6 +190,15 @@ class REPL:
         )
         self._register(
             CommandSpec(
+                name="clear",
+                handler=self._cmd_clear,
+                help="Clear the terminal screen.",
+                usage="clear",
+                aliases=("cls",),
+            )
+        )
+        self._register(
+            CommandSpec(
                 name="connect",
                 handler=self._cmd_connect,
                 help="Connect to IBKR (paper or live).",
@@ -222,14 +231,14 @@ class REPL:
             CommandSpec(
                 name="breakout",
                 handler=self._cmd_breakout,
-                help="Start or stop a breakout watcher.",
+                help="Start or cancel a breakout watcher.",
                 usage=(
                     "breakout SYMBOL level=... qty=... [tp=...|tp=1.1-1.3|tp=auto tp_count=2|3] [sl=...] [rth=true|false] [bar=1 min] "
                     "[fast=true|false] [fast_bar=1 secs] [max_bars=...] [tif=DAY] [outside_rth=true|false] "
                     "[entry=limit|market] [quote_age=...] [account=...] [client_tag=...] "
                     "| breakout SYMBOL LEVEL QTY [TP] [SL] "
                     "| breakout SYMBOL LEVEL QTY tp-2 [SL] "
-                    "| breakout status | breakout stop [SYMBOL]"
+                    "| breakout status | breakout cancel [SYMBOL ...|ALL]"
                 ),
             )
         )
@@ -416,7 +425,8 @@ class REPL:
             return [
                 "status",
                 "list",
-                "stop",
+                "cancel",
+                "ALL",
                 "symbol=",
                 "level=",
                 "qty=",
@@ -505,6 +515,15 @@ class REPL:
         for spec in specs:
             print(f"{spec.name:<10} {spec.help}")
 
+    async def _cmd_clear(self, _args: list[str], _kwargs: dict[str, str]) -> None:
+        if os.name == "nt":
+            os.system("cls")
+            return
+        if sys.stdout.isatty():
+            print("\033[2J\033[H", end="", flush=True)
+            return
+        print("\n" * 100, end="")
+
     async def _cmd_connect(self, args: list[str], kwargs: dict[str, str]) -> None:
         mode = None
         if args:
@@ -571,9 +590,34 @@ class REPL:
             if action in {"status", "list"}:
                 self._print_breakout_status()
                 return
-            if action == "stop":
-                symbol = args[1] if len(args) > 1 else kwargs.get("symbol")
-                await self._stop_breakouts(symbol=symbol)
+            if action in {"cancel", "stop"}:
+                cancel_tokens = list(args[1:])
+                symbol_kw = kwargs.get("symbol")
+                if symbol_kw:
+                    cancel_tokens.extend(symbol_kw.split(","))
+                if not cancel_tokens:
+                    await self._stop_breakouts(symbol=None)
+                    return
+
+                symbols: list[str] = []
+                seen: set[str] = set()
+                for token in cancel_tokens:
+                    for raw_symbol in token.split(","):
+                        symbol = raw_symbol.strip().upper()
+                        if not symbol:
+                            continue
+                        if symbol == "ALL":
+                            await self._stop_breakouts(symbol=None)
+                            return
+                        if symbol in seen:
+                            continue
+                        seen.add(symbol)
+                        symbols.append(symbol)
+                if not symbols:
+                    await self._stop_breakouts(symbol=None)
+                    return
+                for symbol in symbols:
+                    await self._stop_breakouts(symbol=symbol)
                 return
 
         symbol = args[0] if args else kwargs.get("symbol") or _config_get(self._config, "symbol")
