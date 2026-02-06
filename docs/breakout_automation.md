@@ -1,6 +1,6 @@
 # Breakout Automation - Production Architecture (apps)
 
-This document describes the production-ready architecture for the breakout automation as implemented in apps. It focuses on system responsibilities, data flow, and operational behavior. It is intended to be high-signal context for future Codex sessions.
+This document describes the production breakout automation architecture in `apps/`, including the current TP ladder and TP reprice behavior.
 
 ---
 .
@@ -15,6 +15,10 @@ This document describes the production-ready architecture for the breakout autom
     │   ├── order_tracker.py
     │   └── position_origin_tracker.py
     ├── core/
+    │   ├── analytics/
+    │   │   └── flow/
+    │   │       ├── service.py
+    │   │       └── take_profit.py
     │   ├── market_data/
     │   │   ├── models.py
     │   │   └── ports.py
@@ -39,43 +43,52 @@ This document describes the production-ready architecture for the breakout autom
         │   └── jsonl_logger.py
         └── market_data/
             ├── ibkr_quote_stream.py
+            ├── ibkr_quotes.py
             └── ibkr_bars.py
 
 
 ## 1. What the system does (current)
 
-- Accepts a breakout configuration from the CLI (symbol, level, qty, optional TP/SL).
-- Streams 1-minute market data from IBKR.
-- Optionally streams 1-second bars for a fast-entry override.
-- Applies a simple breakout rule: **enter when a bar closes at or above the level**.
-- On entry, submits either:
-  - a **limit entry at the ask** by default, or
-  - a bracket order with TP/SL if provided (entry type matches the breakout entry type).
-- Emits events for visibility and audit.
-- Stops after one trade attempt (single-fire).
+- Accepts a breakout configuration from CLI (symbol, level, qty, optional TP/SL).
+- Streams 1-minute bars from IBKR; optionally 1-second bars for fast entry.
+- Applies breakout rule: enter when bar close is at/above level.
+- Supports:
+  - manual TP/SL (`tp=...`, `tp=1.1-1.3`, `sl=...`)
+  - auto TP ladder (`tp=auto tp_count=2|3` or shorthand `tp-2` / `tp-3`).
+- Auto TP ladder uses historical bars to produce fallback TP levels at watcher start.
+- For auto ladder mode, after full entry fill the app can recalc TP levels from fill price and attempt to replace remaining TP child orders.
+- Emits strategy/order events for audit and CLI visibility.
+- Breakout watcher remains single-fire (one trade attempt), while TP reprice handling is coordinated in CLI event flow after submission.
 
 ---
 
 ## 2. User workflow (CLI)
 
-Operator runs the apps CLI and starts a breakout watcher:
+Operator runs apps CLI and starts a watcher.
 
-- Example (market entry, key/value):
+Examples:
+- Basic breakout:
   - `breakout AAPL level=190 qty=1`
-- Example (market entry + TP/SL bracket, key/value):
+- Manual bracket:
   - `breakout AAPL level=190 qty=1 tp=195 sl=187`
-- Example (positional):
-  - `breakout AAPL 190 1 195 187`
+- Manual ladder:
+  - `breakout AAPL level=190 qty=100 tp=195-198-205 sl=187`
+- Auto ladder (key/value):
+  - `breakout XRTX level=0.42 qty=1000 tp=auto tp_count=2 sl=0.37`
+- Auto ladder shorthand:
+  - `breakout XRTX 0.42 1000 tp-2 sl=0.37`
+- Auto ladder shorthand with custom split:
+  - `breakout XRTX 0.42 1000 tp-2 sl=0.37 tp_alloc=85-15`
 
 Stop or check status:
 - `breakout status`
-- `breakout stop AAPL`
+- `breakout stop XRTX`
 
 Quick orders:
 - `buy AAPL 100`
 - `sell AAPL 50`
- - `orders cancel 12345`
- - `orders replace 12345 limit=191.25`
+- `orders cancel 12345`
+- `orders replace 12345 limit=191.25`
 
 ---
 
@@ -83,167 +96,184 @@ Quick orders:
 
 ### CLI and orchestration
 - `apps/cli/__main__.py`
-  - Wires the event bus, IBKR connection, order service, bar stream adapter, and REPL.
+  - Wires event bus, IBKR adapters, services, and REPL.
 - `apps/cli/repl.py`
-  - Parses `breakout` commands, validates input, and starts/stops watcher tasks.
+  - Parses breakout commands, resolves TP mode, computes initial auto TP levels, starts/stops watcher tasks.
+  - Hosts TP reprice coordinator (event-driven, post-fill).
+- `apps/cli/position_origin_tracker.py`
+  - Tracks position origin tag and latest TP/SL display state (including TP updates).
+- `apps/cli/event_printer.py`
+  - Prints selected strategy/order events, including TP update events.
 
 ### Strategy (unique logic)
 - `apps/core/strategies/breakout/logic.py`
-  - Pure breakout rule and state machine. This is the only strategy-specific logic.
+  - Pure breakout and fast-entry threshold logic.
 - `apps/core/strategies/breakout/runner.py`
-  - Runs the strategy against the live bar stream and submits orders.
+  - Executes streaming breakout strategy and submits market/limit/bracket/ladder entries.
 - `apps/core/strategies/breakout/events.py`
-  - Emits lifecycle events: started, break detected, confirmed, rejected, stopped.
+  - Breakout lifecycle events and TP update event (`BreakoutTakeProfitsUpdated`).
+
+### Analytics (flow)
+- `apps/core/analytics/flow/take_profit.py`
+  - TP computation model (runner-oriented levels from bars).
+- `apps/core/analytics/flow/service.py`
+  - Adaptive lookback + bar-size retry orchestration.
+  - Supports explicit `anchor_price` (used for fill-based TP recalculation).
 
 ### Market data (reusable)
 - `apps/core/market_data/models.py`
-  - Defines the `Bar` model.
+  - `Bar`, `Quote` models.
 - `apps/core/market_data/ports.py`
-  - Defines the `BarStreamPort`, `QuotePort`, and `QuoteStreamPort` interfaces.
+  - `BarStreamPort`, `BarHistoryPort`, `QuotePort`, `QuoteStreamPort`.
 - `apps/adapters/market_data/ibkr_bars.py`
-  - IBKR implementation of the bar stream (1-minute bars, live updates).
-  - Important: on each new bar, the adapter emits the **previous bar** (the bar that just closed).
+  - Streaming bars + historical bars adapter.
 - `apps/adapters/market_data/ibkr_quote_stream.py`
-  - IBKR streaming quote cache (reqMktData) with ref-counted subscriptions.
+  - Streaming quote cache.
 - `apps/adapters/market_data/ibkr_quotes.py`
-  - IBKR snapshot quote adapter used as a fallback.
+  - Snapshot quote fallback.
 
 ### Orders (reusable)
 - `apps/core/orders/service.py`
-  - Validates and submits orders; emits order lifecycle events.
+  - Validation + submit/replace/cancel interface.
 - `apps/core/orders/models.py`
-  - `OrderSpec` for standard orders and `BracketOrderSpec` for TP/SL.
+  - `OrderSpec`, `BracketOrderSpec`, `LadderOrderSpec`.
 - `apps/adapters/broker/ibkr_order_port.py`
-  - Converts order specs to IBKR orders (including bracket/OCA logic).
-  - Supports cancelling and replacing basic limit orders from the current session.
+  - IBKR translation and child order event wiring.
 
-### Events and logging (reusable)
+### Events and logging
 - `apps/adapters/eventbus/in_process.py`
-  - In-process event bus for pub/sub.
-- `apps/cli/event_printer.py`
-  - Prints events to the console.
+  - In-process pub/sub.
 - `apps/adapters/logging/jsonl_logger.py`
-  - Writes event payloads to JSONL for audit.
+  - JSONL audit log sink.
 
 ---
 
 ## 4. Runtime sequence
 
-1. Operator starts the breakout watcher via CLI.
-2. Runner subscribes to 1-minute bars from IBKR.
-3. If fast entry is enabled, runner also subscribes to 1-second bars.
-4. Runner starts a streaming quote subscription (reqMktData) for the symbol and caches latest bid/ask.
-5. Each **closed** 1-minute bar is fed into the breakout logic.
-6. If bar close >= level:
-   - If TP/SL provided: submit bracket order (parent + TP + SL, OCA).
-   - Otherwise: submit a single market entry.
-   - For limit entries, use the cached streaming quote if it is fresh; otherwise warm up briefly, then fall back to a snapshot quote once.
-7. If fast entry fires first (1-second high beyond a time-decayed distance, close above level, and spread proxy passes):
-   - Submit the entry immediately.
-   - Bypass the 1-minute close entry (single-fire).
-8. Order lifecycle events are emitted and logged.
-9. Runner stops (single-fire).
+1. Operator starts breakout via CLI.
+2. REPL parses input and resolves TP mode.
+3. If auto TP mode is requested:
+   - REPL computes fallback TP ladder using `TakeProfitService` anchored at breakout level.
+   - REPL sets TP qty split (defaults: `tp-2 => 80/20`, `tp-3 => 60/30/10`, override with `tp_alloc`).
+4. Runner subscribes to slow bars (and optional fast bars) and streaming quotes.
+5. On trigger, runner submits entry + exits:
+   - bracket for single TP
+   - ladder for 2/3 TP levels.
+6. Runner stops (single-fire) after one trade attempt.
+7. For auto ladder mode with reprice enabled:
+   - REPL tracks order and child TP events by `client_tag`.
+   - On full parent fill, REPL recalculates TP levels from `anchor_price=fill_price`.
+   - REPL replaces TP child limit prices if no TP has filled and replace acks are accepted.
+   - On full success, REPL publishes `BreakoutTakeProfitsUpdated`.
 
 ---
 
-## 5. Order behavior
+## 5. Order and TP behavior
 
-- Limit entry at the ask is default.
-- Market entry is available via explicit config.
-- If `tp` and `sl` are provided, a bracket order is placed:
-  - Parent: entry BUY (limit at ask by default, or market if configured).
-  - Children: TP limit SELL and SL stop-limit SELL (0.02 offset).
-  - Children are linked with an OCA group so one cancels the other.
-  - IBKR enforces TP/SL even if the app disconnects after submission.
-- If `tp` is a ladder (e.g., `tp=1.1-1.3-1.5`) with `sl`:
-  - Parent: entry BUY (limit at ask by default, or market if configured).
-  - Children: multiple TP limit SELL orders (split by default ratios).
-  - Stop: a stop-limit SELL for the remaining qty (outside RTH).
-  - Stop is bumped after TP1 to the breakout level, and after TP2 to TP1.
-  - Remaining exits are app-managed (not broker OCA) after fills.
-  
-Notes:
-- Market orders can fill very quickly (especially in paper), which can look "instant" after bar close.
-- Bracket child status/fill events are emitted for visibility.
+- Default entry type: limit at ask.
+- Market entry is supported via explicit `entry=market`.
+
+Manual bracket:
+- `tp` + `sl` with single TP price.
+
+Manual ladder:
+- `tp=price1-price2` or `tp=price1-price2-price3` + `sl`.
+- Optional `tp_alloc=` supports custom quantity splits.
+
+Auto ladder:
+- `tp=auto tp_count=2|3` or `tp-2` / `tp-3` + `sl`.
+- Initial TP ladder is computed at breakout start (fallback protection).
+- Fill-time reprice tries to replace remaining TP levels using fill-anchored TP calculation.
+
+V1 reprice safety rules:
+- If any TP fill is detected before/during reprice, reprice is skipped.
+- If child TP order IDs are unavailable by timeout, reprice is skipped.
+- If any replace ack is not accepted, reprice is skipped and no TP-update success event is emitted.
+- TP-update event is only published after all targeted TP child replacements are accepted.
 
 ---
 
 ## 6. Observability and audit
 
-Events emitted (full audit log):
-- Breakout lifecycle: Started, BreakDetected, FastTriggered, Confirmed, Rejected, Stopped.
-- Order lifecycle: Intent, Sent, OrderIdAssigned, StatusChanged, Filled.
-- Bracket children: child status/filled events for TP/SL.
+Emitted events (relevant groups):
+- Breakout lifecycle: `BreakoutStarted`, `BreakoutBreakDetected`, `BreakoutFastTriggered`, `BreakoutConfirmed`, `BreakoutRejected`, `BreakoutStopped`.
+- TP update: `BreakoutTakeProfitsUpdated`.
+- Orders: `OrderIntent`, `OrderSent`, `OrderIdAssigned`, `OrderStatusChanged`, `OrderFilled`.
+- Bracket/ladder children: `BracketChildOrderStatusChanged`, `BracketChildOrderFilled`.
+
+Display behavior:
+- `event_printer` shows `BreakoutTpUpdated` when TP update event is emitted.
+- `positions` TP column uses latest tracked TP list when available (not only TP1).
 
 Logging:
-- Console output via `event_printer` (intentionally filtered to reduce noise, timestamps include timezone offset).
-- JSONL audit log via `jsonl_logger` (path controlled by `APPS_EVENT_LOG_PATH`), which includes **all** events.
-  - Includes IBKR connection lifecycle and bar stream health events (e.g., connect attempts, gaps, lag).
-  - BreakoutRejected includes quote age/max when the rejection reason is `quote_stale`.
-- CLI error log via `APPS_OPS_LOG_PATH` (default `apps/journal/ops.jsonl`).
-- IBKR gateway/API error log via `APPS_IB_GATEWAY_LOG_PATH` (default `apps/journal/ib_gateway.jsonl`).
-- IBKR Gateway/TWS file tail log via `IB_GATEWAY_LOG_PATH` (source) -> `APPS_IB_GATEWAY_RAW_LOG_PATH` (default `apps/journal/ib_gateway_raw.jsonl`).
-  - Optional: `IB_GATEWAY_LOG_POLL_SECS` (default 0.5) and `IB_GATEWAY_LOG_FROM_START=1` to backfill from the beginning.
+- JSONL via `APPS_EVENT_LOG_PATH` includes all emitted events.
+- Ops and gateway logs unchanged (`APPS_OPS_LOG_PATH`, `APPS_IB_GATEWAY_LOG_PATH`, raw tail options).
 
 ---
 
 ## 7. Operational behavior and guardrails
 
-- Single-fire: each watcher stops after one trade attempt.
-- Requires active IBKR connection; otherwise the CLI refuses to start a watcher.
-- If the bar stream is canceled or the watcher is stopped, the stream is cleaned up.
-- Paper-only guard is enforced by connection config (paper vs live ports).
-- If the breakout uses limit-at-ask and a valid ask quote is missing or stale, the watcher rejects and stops.
-  - The quote freshness guard uses a max-age threshold (default 2s) and optional warmup; stale quotes are rejected to prevent using outdated prices.
+- Breakout watchers are single-fire.
+- Active IBKR connection required to start watchers.
+- Paper/live guard behavior unchanged (paper defaults/ports).
+- Limit-at-ask entry rejects on missing/stale quote.
+- TP reprice is conservative by design:
+  - prefers skip over forcing uncertain state transitions.
 
 ---
 
 ## 8. Configuration inputs
 
-CLI fields:
+Core CLI fields:
 - Required: `symbol`, `level`, `qty`
-- Optional: `tp`, `sl`, `rth`, `bar`, `fast`, `fast_bar`, `max_bars`, `tif`, `outside_rth`, `entry`, `quote_age`, `account`, `client_tag`
+- Optional common: `tp`, `sl`, `rth`, `bar`, `fast`, `fast_bar`, `max_bars`, `tif`, `outside_rth`, `entry`, `quote_age`, `account`, `client_tag`
+
+Auto TP / reprice fields:
+- `tp=auto`
+- `tp_count=1|2|3`
+- shorthand token: `tp-1|tp-2|tp-3`
+- `tp_alloc=...` (example: `80-20`, `60-30-10`)
+- `tp_bar` / `tp_bar_size` (historical bar size for TP calculation)
+- `tp_rth` / `tp_use_rth`
+- `tp_timeout` (seconds for child TP ID readiness)
 
 Defaults:
-- If `rth` is false (default), `outside_rth` defaults to true for breakout orders so pre/postmarket entries are allowed.
+- If `rth=false`, breakout orders default `outside_rth=true`.
+- Auto TP default allocation:
+  - `tp-2 => 80/20`
+  - `tp-3 => 60/30/10`
 
-Environment (IBKR):
-- `IB_HOST`, `IB_PORT`, `IB_CLIENT_ID`, `PAPER_ONLY`, and related paper/live port settings.
-
-Fast entry defaults (enabled by default):
-- Uses 1-second **high** for distance checks and 1-second **close** for acceptance.
-- 1-second bar size default is `1 secs` (IBKR bar size string).
-- Distance decays linearly every 10s from 15¢ to 5¢ (rounded to whole cents).
-- Price regime scaling based on breakout level: `<$1` uses $1–$4 rules, `$1–$4` = 1.0×, `$4–$7` = 1.1×, `$7–$10` = 1.25×, `>$10` uses $7–$10 rules.
-- Spread proxy uses 1-second high–low range with a max that decays from 4¢ to 1¢ (rounded to whole cents).
-- Minute boundaries are inferred from 1-second bar timestamps when aligning the fast threshold schedule.
+Environment:
+- IBKR connection env vars unchanged (`IB_HOST`, `IB_PORT`, `IB_CLIENT_ID`, `PAPER_ONLY`, etc.).
 
 ---
 
 ## 9. Limitations (current)
 
-- No auto re-arm; each watcher is single-fire.
-- Breakout rule is fixed (single bar close >= level triggers entry).
-- Fast entry uses fixed, strategy-configured thresholds (time-decayed distance and 1-sec high-low proxy), not adaptive noise models.
-- No volatility-based sizing or dynamic TP/SL yet.
- - Order replace only supports limit orders tracked by the current session.
+- Watcher lifecycle is single-fire.
+- Breakout trigger logic is still fixed (close >= level).
+- Fill-time TP reprice currently targets auto ladder flow (2/3 TP levels).
+- Reprice applies sequential TP replaces; if interrupted, broker may hold partially updated levels (CLI marks this as skipped/partial and does not emit success TP-update event).
+- Replace support remains limited to orders tracked in current session.
 
 ---
 
 ## 10. Future enhancements (optional)
 
-- Automated TP/SL from volatility or historical structure.
-- Sizing off for profits or stop losses
-- Entry types beyond market (limit/stop entry).
-- Strategy re-arming and session scheduling.
-- Real-time PnL tracking and fill-based performance stats.
+- Explicit structured events for TP reprice skip/failure reasons.
+- Broker-state reconciliation after partial replace scenarios.
+- Reprice support for broader TP modes and optional stop-update re-optimization.
+- Strategy schedules/re-arm and richer risk/session constraints.
+- Deeper analytics modules (macro/flow/micro) feeding strategy presets.
 
 ---
 
-## 11. Gotchas + debugging notes (recent)
+## 11. Gotchas + debugging notes
 
-- IBKR bar timestamps are **bar start** times. The bar is only emitted to the strategy when it closes.
-- If you start mid-bar, the first bar you see is the **closing bar you were already inside**.
-- If price seems to "buy instantly," it is usually because the **first closed bar** already closed above the level and the entry is a market order.
-- Console output is filtered; if you need order status detail, check `apps/journal/events.jsonl`.
-- TP/SL visibility: CLI `positions` shows configured TP/SL if the breakout watcher included them.
+- IBKR bar timestamps are bar-start times; strategy sees bars on close.
+- Starting mid-bar means first seen bar may already be the close that triggers entry.
+- For TP reprice debugging, check:
+  - console lines beginning with `TP reprice ...`
+  - `BreakoutTakeProfitsUpdated` in `apps/journal/events.jsonl`
+  - child order events (`BracketChildOrderStatusChanged`, `BracketChildOrderFilled`).
+- `positions` TP display reflects latest tracked TP updates after the TP update event is emitted.
