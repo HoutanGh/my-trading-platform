@@ -6,7 +6,7 @@ import os
 from typing import Optional
 
 from apps.core.orders.events import OrderFilled
-from apps.core.strategies.breakout.events import BreakoutConfirmed
+from apps.core.strategies.breakout.events import BreakoutConfirmed, BreakoutTakeProfitsUpdated
 
 
 class PositionOriginTracker:
@@ -15,6 +15,8 @@ class PositionOriginTracker:
         self._tags_by_symbol: dict[str, str] = {}
         self._exits_by_account_symbol: dict[tuple[str, str], tuple[Optional[float], Optional[float]]] = {}
         self._exits_by_symbol: dict[str, tuple[Optional[float], Optional[float]]] = {}
+        self._tps_by_account_symbol: dict[tuple[str, str], list[float]] = {}
+        self._tps_by_symbol: dict[str, list[float]] = {}
         self._log_path = log_path
 
     def handle_event(self, event: object) -> None:
@@ -28,6 +30,16 @@ class PositionOriginTracker:
                     take_profit,
                     event.stop_loss,
                     account=event.account,
+                    take_profits=event.take_profits,
+                )
+            elif isinstance(event, BreakoutTakeProfitsUpdated):
+                first_take_profit = event.take_profits[0] if event.take_profits else None
+                self._record_exits(
+                    event.symbol,
+                    first_take_profit,
+                    event.stop_loss,
+                    account=event.account,
+                    take_profits=event.take_profits,
                 )
             return
         self._record_tag(event.spec.account, event.spec.symbol, event.spec.client_tag)
@@ -51,6 +63,19 @@ class PositionOriginTracker:
             if levels:
                 return levels
         return self._exits_by_symbol.get(sym, (None, None))
+
+    def take_profits_for(
+        self,
+        account: Optional[str],
+        symbol: str,
+    ) -> Optional[list[float]]:
+        sym = symbol.strip().upper()
+        if account:
+            levels = self._tps_by_account_symbol.get((account, sym))
+            if levels:
+                return list(levels)
+        levels = self._tps_by_symbol.get(sym)
+        return list(levels) if levels else None
 
     async def seed_from_ibkr(self, ib, *, timeout: float) -> int:
         fills = await asyncio.wait_for(ib.reqExecutionsAsync(), timeout=timeout)
@@ -118,6 +143,19 @@ class PositionOriginTracker:
                         take_profit,
                         event.get("stop_loss"),
                         account=event.get("account"),
+                        take_profits=take_profits if isinstance(take_profits, list) else None,
+                    )
+                elif event_type == "BreakoutTakeProfitsUpdated":
+                    take_profits = event.get("take_profits")
+                    if not isinstance(take_profits, list) or not take_profits:
+                        continue
+                    first_take_profit = take_profits[0]
+                    self._record_exits(
+                        event.get("symbol", ""),
+                        first_take_profit,
+                        event.get("stop_loss"),
+                        account=event.get("account"),
+                        take_profits=take_profits,
                     )
         return added
 
@@ -145,6 +183,7 @@ class PositionOriginTracker:
         stop_loss: Optional[float],
         *,
         account: Optional[str] = None,
+        take_profits: Optional[list[float]] = None,
     ) -> bool:
         if take_profit is None and stop_loss is None:
             return False
@@ -161,7 +200,37 @@ class PositionOriginTracker:
         if self._exits_by_symbol.get(sym) != levels:
             self._exits_by_symbol[sym] = levels
             changed = True
+        normalized_tps: list[float] = []
+        if take_profits:
+            for item in take_profits:
+                parsed = _coerce_float(item)
+                if parsed is None:
+                    continue
+                normalized_tps.append(parsed)
+        elif take_profit is not None:
+            parsed_take_profit = _coerce_float(take_profit)
+            if parsed_take_profit is not None:
+                normalized_tps.append(parsed_take_profit)
+        if normalized_tps:
+            if acct:
+                existing = self._tps_by_account_symbol.get((acct, sym))
+                if existing != normalized_tps:
+                    self._tps_by_account_symbol[(acct, sym)] = list(normalized_tps)
+                    changed = True
+            existing_symbol = self._tps_by_symbol.get(sym)
+            if existing_symbol != normalized_tps:
+                self._tps_by_symbol[sym] = list(normalized_tps)
+                changed = True
         return changed
+
+
+def _coerce_float(value: object) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _is_filled_status(status: object) -> bool:

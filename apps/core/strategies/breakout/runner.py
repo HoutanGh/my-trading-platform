@@ -44,6 +44,7 @@ class BreakoutRunConfig:
     entry_type: OrderType = OrderType.LIMIT
     take_profit: Optional[float] = None
     take_profits: Optional[list[float]] = None
+    take_profit_qtys: Optional[list[int]] = None
     stop_loss: Optional[float] = None
     use_rth: bool = False
     bar_size: str = "1 min"
@@ -56,6 +57,10 @@ class BreakoutRunConfig:
     quote_max_age_seconds: float = 2.0
     quote_warmup_seconds: float = 2.0
     quote_snapshot_fallback: bool = True
+    tp_reprice_on_fill: bool = False
+    tp_reprice_bar_size: str = "1 min"
+    tp_reprice_use_rth: bool = False
+    tp_reprice_timeout_seconds: float = 5.0
 
 
 async def run_breakout(
@@ -78,6 +83,17 @@ async def run_breakout(
         raise ValueError("take_profit and take_profits cannot both be provided")
     if (config.take_profit is None and not config.take_profits) ^ (config.stop_loss is None):
         raise ValueError("take_profit and stop_loss must be provided together")
+    if config.take_profit_qtys is not None and not config.take_profits:
+        raise ValueError("take_profit_qtys requires take_profits")
+    if config.take_profits and config.take_profit_qtys is not None:
+        if len(config.take_profits) != len(config.take_profit_qtys):
+            raise ValueError("take_profit_qtys must match take_profits")
+        if any(qty <= 0 for qty in config.take_profit_qtys):
+            raise ValueError("take_profit_qtys must be greater than zero")
+        if sum(config.take_profit_qtys) != config.qty:
+            raise ValueError("take_profit_qtys must sum to qty")
+    if config.tp_reprice_timeout_seconds <= 0:
+        raise ValueError("tp_reprice_timeout_seconds must be greater than zero")
     if config.entry_type == OrderType.LIMIT and quote_port is None and quote_stream is None:
         raise ValueError("quote_port is required for limit breakout entries")
 
@@ -221,7 +237,7 @@ async def run_breakout(
             entry_price = quote.ask
         if config.take_profits:
             tp_levels = config.take_profits
-            tp_qtys = _split_take_profit_qtys(config.qty, len(tp_levels))
+            tp_qtys = config.take_profit_qtys or _split_take_profit_qtys(config.qty, len(tp_levels))
             stop_updates = _stop_updates_for_take_profits(tp_levels, config.rule.level)
             spec = LadderOrderSpec(
                 symbol=symbol,

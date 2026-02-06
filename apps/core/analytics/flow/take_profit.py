@@ -2,14 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Iterable, Sequence
+from typing import Sequence
 
 from apps.core.market_data.models import Bar
 
 
 class TakeProfitReason(str, Enum):
-    SWING = "swing"
-    PRIOR = "prior"
     VOLUME = "volume"
     VOLATILITY = "volatility"
 
@@ -29,17 +27,26 @@ class TakeProfitResult:
 
 @dataclass(frozen=True)
 class TakeProfitConfig:
-    lookback_days: list[int] = field(default_factory=lambda: [5, 20, 60])
+    lookback_days: list[int] = field(default_factory=lambda: [20, 60, 120, 240])
     min_levels: int = 3
-    # Distance thresholds are expressed as either ATR multiples or % of price.
-    # The implementation should treat the effective threshold as the max of the
-    # configured ATR-based and % based values (when both are provided).
-    too_close_atr_mult: float = 0.25
-    too_close_pct: float = 0.003
-    cluster_atr_mult: float = 0.5
-    cluster_pct: float = 0.005
     atr_window: int = 14
-    volume_zone_top_n: int = 20
+    anchor_atr_mults: tuple[float, float, float] = (1.5, 3.5, 8.0)
+    anchor_pcts: tuple[float, float, float] = (0.15, 0.30, 0.80)
+    gap_atr_mults: tuple[float, float] = (0.75, 1.5)
+    gap_pcts: tuple[float, float] = (0.04, 0.08)
+    volume_bin_atr_mult: float = 0.25
+    volume_bin_pct: float = 0.005
+    volume_bin_min: float = 0.01
+    volume_peak_top_n: int = 30
+    volume_recency_floor: float = 0.6
+    volume_max_bins_per_bar: int = 32
+    volume_min_levels_to_accept: int = 3
+
+
+@dataclass(frozen=True)
+class _VolumeZone:
+    price: float
+    score: float
 
 
 def compute_take_profits(
@@ -49,176 +56,229 @@ def compute_take_profits(
     config: TakeProfitConfig | None = None,
 ) -> TakeProfitResult:
     """
-    Compute take-profit levels for a long position from OHLCV bars.
+    Compute runner-style long take-profit levels from OHLCV bars.
 
-    Contract:
-    - Uses only historical bars provided in `bars`.
-    - Returns up to three TP levels (TP1/TP2/TP3) with short reasons.
-    - Does not perform adaptive lookback; callers should handle expanding windows.
-    - Falls back to volatility-based targets if no meaningful levels are found.
+    The method creates anchor prices from ATR/percent floors and snaps each anchor
+    to the nearest high-volume price zone above the minimum allowed price.
     """
     if not bars:
         return TakeProfitResult(levels=[], used_fallback=False, lookback_days=None)
 
     cfg = config or TakeProfitConfig()
+    _validate_config(cfg)
+
     ordered = sorted(bars, key=lambda bar: bar.timestamp)
-    price = current_price if current_price is not None else ordered[-1].close
-    if price <= 0:
+    baseline = current_price if current_price is not None else ordered[-1].close
+    if baseline <= 0:
         return TakeProfitResult(levels=[], used_fallback=False, lookback_days=None)
 
     atr_value = _atr(ordered, cfg.atr_window)
-
-    candidates: list[tuple[float, TakeProfitReason]] = []
-    candidates.extend((level, TakeProfitReason.SWING) for level in _swing_highs(ordered, left=2, right=2))
-
-    prior_day_high, prior_week_high = _prior_highs(ordered)
-    if prior_day_high is not None:
-        candidates.append((prior_day_high, TakeProfitReason.PRIOR))
-    if prior_week_high is not None:
-        candidates.append((prior_week_high, TakeProfitReason.PRIOR))
-
-    candidates.extend(
-        (level, TakeProfitReason.VOLUME)
-        for level in _volume_zone_levels(ordered, top_n=cfg.volume_zone_top_n)
+    anchors = _anchor_prices(baseline, atr_value, cfg)
+    bin_size = _volume_bin_size(baseline, atr_value, cfg)
+    zones = _volume_zones(
+        ordered,
+        baseline=baseline,
+        bin_size=bin_size,
+        top_n=cfg.volume_peak_top_n,
+        recency_floor=cfg.volume_recency_floor,
+        max_bins_per_bar=cfg.volume_max_bins_per_bar,
     )
-
-    candidates = [(level, reason) for level, reason in candidates if level > price]
-    if candidates:
-        cluster_threshold = _threshold_value(
-            atr_value,
-            cfg.cluster_atr_mult,
-            cfg.cluster_pct,
-            price,
-        )
-        merged = _merge_levels(candidates, threshold=cluster_threshold)
-
-        too_close = _threshold_value(
-            atr_value,
-            cfg.too_close_atr_mult,
-            cfg.too_close_pct,
-            price,
-        )
-        filtered = [
-            level for level in merged if level.price >= price + too_close
-        ]
-        filtered.sort(key=lambda level: level.price)
-    else:
-        filtered = []
-
-    if len(filtered) >= cfg.min_levels:
-        return TakeProfitResult(
-            levels=filtered[: cfg.min_levels],
-            used_fallback=False,
-            lookback_days=None,
-        )
-
-    fallback_levels = _volatility_targets(price, ordered, cfg)
-    return TakeProfitResult(
-        levels=fallback_levels,
-        used_fallback=True,
-        lookback_days=None,
+    levels = _snap_anchors_to_zones(
+        anchors,
+        zones,
+        baseline=baseline,
+        atr_value=atr_value,
+        cfg=cfg,
     )
+    levels = levels[: cfg.min_levels]
+    used_fallback = any(level.reason == TakeProfitReason.VOLATILITY for level in levels)
+    return TakeProfitResult(levels=levels, used_fallback=used_fallback, lookback_days=None)
 
 
-def _swing_highs(bars: Sequence[Bar], *, left: int = 2, right: int = 2) -> list[float]:
-    if len(bars) < left + right + 1:
-        return []
-    highs = [bar.high for bar in bars]
-    results: list[float] = []
-    for idx in range(left, len(bars) - right):
-        pivot = highs[idx]
-        if all(pivot > highs[j] for j in range(idx - left, idx)) and all(
-            pivot > highs[j] for j in range(idx + 1, idx + right + 1)
-        ):
-            results.append(pivot)
-    return results
+def _validate_config(config: TakeProfitConfig) -> None:
+    if len(config.anchor_atr_mults) != 3 or len(config.anchor_pcts) != 3:
+        raise ValueError("anchor_atr_mults and anchor_pcts must each have 3 values")
+    if len(config.gap_atr_mults) != 2 or len(config.gap_pcts) != 2:
+        raise ValueError("gap_atr_mults and gap_pcts must each have 2 values")
+    if config.min_levels <= 0:
+        raise ValueError("min_levels must be greater than zero")
+    if config.volume_peak_top_n <= 0:
+        raise ValueError("volume_peak_top_n must be greater than zero")
+    if config.volume_max_bins_per_bar <= 0:
+        raise ValueError("volume_max_bins_per_bar must be greater than zero")
 
 
-def _prior_highs(bars: Sequence[Bar]) -> tuple[float | None, float | None]:
-    days: list[tuple[object, list[Bar]]] = []
-    current_day = None
-    for bar in bars:
-        day = bar.timestamp.date()
-        if current_day != day:
-            days.append((day, [bar]))
-            current_day = day
-        else:
-            days[-1][1].append(bar)
-
-    if len(days) < 2:
-        return None, None
-
-    prior_day_bars = days[-2][1]
-    prior_day_high = max(bar.high for bar in prior_day_bars)
-
-    lookback_days = [bars_for_day for _day, bars_for_day in days[:-1]][-5:]
-    if not lookback_days:
-        return prior_day_high, None
-    prior_week_high = max(bar.high for bars_for_day in lookback_days for bar in bars_for_day)
-    return prior_day_high, prior_week_high
+def _anchor_prices(baseline: float, atr_value: float, config: TakeProfitConfig) -> list[float]:
+    prices: list[float] = []
+    for atr_mult, pct in zip(config.anchor_atr_mults, config.anchor_pcts):
+        distance = max(atr_value * atr_mult, baseline * pct)
+        prices.append(baseline + distance)
+    return prices
 
 
-def _volume_zone_levels(bars: Sequence[Bar], *, top_n: int | None) -> list[float]:
-    if not top_n or top_n <= 0:
-        return []
-    bars_with_volume = [bar for bar in bars if bar.volume is not None]
-    if not bars_with_volume:
-        return []
-    sorted_by_volume = sorted(bars_with_volume, key=lambda bar: bar.volume or 0.0, reverse=True)
-    return [bar.close for bar in sorted_by_volume[:top_n]]
+def _volume_bin_size(baseline: float, atr_value: float, config: TakeProfitConfig) -> float:
+    atr_component = atr_value * config.volume_bin_atr_mult
+    pct_component = baseline * config.volume_bin_pct
+    return max(config.volume_bin_min, atr_component, pct_component)
 
 
-def _merge_levels(
-    levels: Iterable[tuple[float, TakeProfitReason]],
+def _volume_zones(
+    bars: Sequence[Bar],
     *,
-    threshold: float,
-) -> list[TakeProfitLevel]:
-    ordered = sorted(levels, key=lambda item: item[0])
-    if not ordered:
+    baseline: float,
+    bin_size: float,
+    top_n: int,
+    recency_floor: float,
+    max_bins_per_bar: int,
+) -> list[_VolumeZone]:
+    if not bars:
         return []
 
-    clusters: list[list[tuple[float, TakeProfitReason]]] = [[ordered[0]]]
-    for price, reason in ordered[1:]:
-        last_price = clusters[-1][-1][0]
-        if abs(price - last_price) <= threshold:
-            clusters[-1].append((price, reason))
-        else:
-            clusters.append([(price, reason)])
+    volume_by_bin: dict[int, float] = {}
+    total = len(bars)
+    for idx, bar in enumerate(bars):
+        volume = float(bar.volume or 0.0)
+        if volume <= 0:
+            continue
+        low = min(bar.low, bar.high)
+        high = max(bar.low, bar.high)
+        if high <= 0:
+            continue
 
-    results: list[TakeProfitLevel] = []
+        recency_weight = _recency_weight(idx, total, recency_floor)
+        span = max(high - low, 0.0)
+        bins_for_bar = max(1, min(max_bins_per_bar, int(span / bin_size) + 1))
+        share = (volume * recency_weight) / bins_for_bar
+        if bins_for_bar == 1:
+            price = (low + high) / 2.0
+            bin_idx = int(round(price / bin_size))
+            volume_by_bin[bin_idx] = volume_by_bin.get(bin_idx, 0.0) + share
+            continue
+
+        step = span / (bins_for_bar - 1)
+        for pos in range(bins_for_bar):
+            price = low + (step * pos)
+            bin_idx = int(round(price / bin_size))
+            volume_by_bin[bin_idx] = volume_by_bin.get(bin_idx, 0.0) + share
+
+    if not volume_by_bin:
+        return []
+
+    peak_zones = _local_peak_zones(volume_by_bin, bin_size=bin_size, baseline=baseline)
+    if not peak_zones:
+        return []
+    merged = _merge_zones(peak_zones, merge_distance=bin_size * 2.0)
+    strongest = sorted(merged, key=lambda zone: zone.score, reverse=True)[:top_n]
+    return sorted(strongest, key=lambda zone: zone.price)
+
+
+def _local_peak_zones(
+    volume_by_bin: dict[int, float],
+    *,
+    bin_size: float,
+    baseline: float,
+) -> list[_VolumeZone]:
+    ordered = sorted(volume_by_bin.items(), key=lambda item: item[0])
+    peaks: list[_VolumeZone] = []
+    for idx, (bin_idx, score) in enumerate(ordered):
+        price = bin_idx * bin_size
+        if price <= baseline:
+            continue
+        left = ordered[idx - 1][1] if idx > 0 else 0.0
+        right = ordered[idx + 1][1] if idx < len(ordered) - 1 else 0.0
+        if score < left or score < right:
+            continue
+        peaks.append(_VolumeZone(price=price, score=score))
+    return peaks
+
+
+def _merge_zones(zones: Sequence[_VolumeZone], *, merge_distance: float) -> list[_VolumeZone]:
+    if not zones:
+        return []
+    ordered = sorted(zones, key=lambda zone: zone.price)
+    clusters: list[list[_VolumeZone]] = [[ordered[0]]]
+    for zone in ordered[1:]:
+        if zone.price - clusters[-1][-1].price <= merge_distance:
+            clusters[-1].append(zone)
+            continue
+        clusters.append([zone])
+
+    merged: list[_VolumeZone] = []
     for cluster in clusters:
-        cluster_price = sum(level for level, _ in cluster) / len(cluster)
-        cluster_reason = _pick_reason(reason for _level, reason in cluster)
-        results.append(TakeProfitLevel(price=cluster_price, reason=cluster_reason))
-    return results
+        total_score = sum(item.score for item in cluster)
+        if total_score <= 0:
+            continue
+        avg_price = sum(item.price * item.score for item in cluster) / total_score
+        merged.append(_VolumeZone(price=avg_price, score=total_score))
+    return merged
 
 
-def _pick_reason(reasons: Iterable[TakeProfitReason]) -> TakeProfitReason:
-    priority = {
-        TakeProfitReason.SWING: 1,
-        TakeProfitReason.PRIOR: 2,
-        TakeProfitReason.VOLUME: 3,
-        TakeProfitReason.VOLATILITY: 4,
-    }
-    selected = None
-    selected_priority = 999
-    for reason in reasons:
-        rank = priority.get(reason, 999)
-        if rank < selected_priority:
-            selected = reason
-            selected_priority = rank
-    return selected or TakeProfitReason.VOLUME
-
-
-def _threshold_value(
+def _snap_anchors_to_zones(
+    anchors: Sequence[float],
+    zones: Sequence[_VolumeZone],
+    *,
+    baseline: float,
     atr_value: float,
-    atr_mult: float | None,
-    pct: float | None,
-    price: float,
-) -> float:
-    atr_component = atr_value * atr_mult if atr_mult is not None else 0.0
-    pct_component = price * pct if pct is not None else 0.0
-    return max(atr_component, pct_component)
+    cfg: TakeProfitConfig,
+) -> list[TakeProfitLevel]:
+    levels: list[TakeProfitLevel] = []
+    used_zone_indexes: set[int] = set()
+    previous_price = baseline
+
+    for idx, anchor in enumerate(anchors):
+        min_price = anchor
+        if idx > 0:
+            gap = max(
+                atr_value * cfg.gap_atr_mults[idx - 1],
+                baseline * cfg.gap_pcts[idx - 1],
+            )
+            min_price = max(min_price, previous_price + gap)
+
+        zone_idx = _nearest_zone_index(
+            zones,
+            anchor=anchor,
+            min_price=min_price,
+            used_indexes=used_zone_indexes,
+        )
+        if zone_idx is None:
+            levels.append(TakeProfitLevel(price=min_price, reason=TakeProfitReason.VOLATILITY))
+            previous_price = min_price
+            continue
+
+        zone_price = zones[zone_idx].price
+        used_zone_indexes.add(zone_idx)
+        levels.append(TakeProfitLevel(price=zone_price, reason=TakeProfitReason.VOLUME))
+        previous_price = zone_price
+
+    return levels
+
+
+def _nearest_zone_index(
+    zones: Sequence[_VolumeZone],
+    *,
+    anchor: float,
+    min_price: float,
+    used_indexes: set[int],
+) -> int | None:
+    candidates = [
+        idx
+        for idx, zone in enumerate(zones)
+        if idx not in used_indexes and zone.price >= min_price
+    ]
+    if not candidates:
+        return None
+    return min(
+        candidates,
+        key=lambda idx: (abs(zones[idx].price - anchor), zones[idx].price),
+    )
+
+
+def _recency_weight(index: int, total: int, floor: float) -> float:
+    if total <= 1:
+        return 1.0
+    bounded_floor = min(max(floor, 0.0), 1.0)
+    progress = index / (total - 1)
+    return bounded_floor + (1.0 - bounded_floor) * progress
 
 
 def _atr(bars: Sequence[Bar], window: int) -> float:
@@ -238,22 +298,3 @@ def _atr(bars: Sequence[Bar], window: int) -> float:
     window_size = max(1, min(window, len(tr_values)))
     window_values = tr_values[-window_size:]
     return sum(window_values) / len(window_values)
-
-
-def _volatility_targets(
-    price: float,
-    bars: Sequence[Bar],
-    config: TakeProfitConfig,
-) -> list[TakeProfitLevel]:
-    atr_value = _atr(bars, config.atr_window)
-    if atr_value <= 0:
-        ranges = [bar.high - bar.low for bar in bars if bar.high >= bar.low]
-        atr_value = sum(ranges) / len(ranges) if ranges else 0.0
-    if atr_value <= 0:
-        atr_value = price * 0.005
-
-    levels = [
-        TakeProfitLevel(price=price + atr_value * multiple, reason=TakeProfitReason.VOLATILITY)
-        for multiple in (1.0, 2.0, 3.0)
-    ]
-    return levels
