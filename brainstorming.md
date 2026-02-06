@@ -1,14 +1,19 @@
-#### Day trading session
+### Day trading session
 - enter a session for stock
-- make sure breakouts are still running in background but dont output results onto cli until have exited the stock session?
-- limiting factor is that doesnt insta buy - shouldn't be too bad 
-    - understand scenario where this is bad 
-        - if somehow passes stop loss condition that if it lower than this price, close position
-- have different options 
+    - make sure breakouts are still running in background but dont output results onto cli until have exited the stock session?
+    - limiting factor is that doesnt insta buy - shouldn't be too bad 
+        - understand scenario where this is bad 
+            - if somehow passes stop loss condition that if it lower than this price, close position
+    - have different options 
+    - be able to exit and re-enter session and doesnt cancel orders
 
 
 
-#### BREAKOUT
+### BREAKOUT
+-  [ ] if market is closed use tps that are more conservative 
+
+#### tp and sl
+- 
 - there seemed to be a delay for when the breakout happened and breakout assigning IDs and shit
 - need to if changing code now affects current orders in app
 - need to know the all the stages filled, partially filled etc.
