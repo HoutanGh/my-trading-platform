@@ -1,3 +1,9 @@
+### Micro/Macro/Flow
+- Investment analysis
+- options pricing to predict futures on stocks
+- marco on a stock - does it have options
+    - something that tells me about its future in terms of options
+
 ### Day trading session
 - enter a session for stock
     - make sure breakouts are still running in background but dont output results onto cli until have exited the stock session?
