@@ -353,6 +353,15 @@ class REPL:
                 aliases=("exit", "q"),
             )
         )
+        self._register(
+            CommandSpec(
+                name="refresh",
+                handler=self._cmd_refresh,
+                help="Restart the CLI process to pick up code changes.",
+                usage="refresh",
+                aliases=("reload", "restart"),
+            )
+        )
 
     def _register(self, spec: CommandSpec) -> None:
         self._commands[spec.name] = spec
@@ -2028,6 +2037,35 @@ class REPL:
         await self._stop_pnl_processes()
         await self._stop_breakouts(persist=True)
         self._should_exit = True
+
+    async def _cmd_refresh(self, args: list[str], kwargs: dict[str, str]) -> None:
+        if args or kwargs:
+            print("Usage: refresh")
+            return
+        await self._stop_pnl_processes()
+        await self._stop_breakouts(persist=True)
+        await self._stop_tp_reprice_tasks()
+        self._connection.disconnect()
+
+        orig_argv = getattr(sys, "orig_argv", None)
+        if isinstance(orig_argv, list) and len(orig_argv) > 1:
+            exec_args = [sys.executable, *orig_argv[1:]]
+        else:
+            main_module = sys.modules.get("__main__")
+            package = getattr(main_module, "__package__", None)
+            if package:
+                exec_args = [sys.executable, "-m", str(package), *sys.argv[1:]]
+            else:
+                script_path = Path(sys.argv[0]).expanduser()
+                if script_path.exists():
+                    exec_args = [sys.executable, *sys.argv]
+                else:
+                    exec_args = [sys.executable, "-m", "apps.cli", *sys.argv[1:]]
+        print("Refreshing CLI...")
+        try:
+            os.execv(sys.executable, exec_args)
+        except OSError as exc:
+            print(f"Refresh failed: {exc}")
 
     async def _stop_pnl_processes(self) -> None:
         if not self._pnl_processes:

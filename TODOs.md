@@ -1,9 +1,9 @@
 ### 08/02/26
 - [ ] research having multiple sessions open
-- [ ] rename adapter/market_data files 
+- [x] rename adapter/market_data files 
 - [ ] research how to the investment analysis
 - [ ] same tp and sl functionality for normally buying
-- [ ] put take profit files into correct folders 
+- [x] put take profit files into correct folders 
 - [ ] have a refresh (for new versions) option for the app instead of quitting 
 
 ### 06/02/26
