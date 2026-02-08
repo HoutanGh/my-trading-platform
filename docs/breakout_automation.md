@@ -17,8 +17,9 @@ This document describes the production breakout automation architecture in `apps
     ├── core/
     │   ├── analytics/
     │   │   └── flow/
-    │   │       ├── service.py
-    │   │       └── take_profit.py
+    │   │       └── take_profit/
+    │   │           ├── service.py
+    │   │           └── calculator.py
     │   ├── market_data/
     │   │   ├── models.py
     │   │   └── ports.py
@@ -117,9 +118,9 @@ Quick orders:
   - Breakout lifecycle events and TP update event (`BreakoutTakeProfitsUpdated`).
 
 ### Analytics (flow)
-- `apps/core/analytics/flow/take_profit.py`
+- `apps/core/analytics/flow/take_profit/calculator.py`
   - TP computation model (runner-oriented levels from bars).
-- `apps/core/analytics/flow/service.py`
+- `apps/core/analytics/flow/take_profit/service.py`
   - Adaptive lookback + bar-size retry orchestration.
   - Supports explicit `anchor_price` (used for fill-based TP recalculation).
 

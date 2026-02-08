@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
-from apps.core.analytics.flow.take_profit import (
+from apps.core.analytics.flow.take_profit.calculator import (
     TakeProfitConfig,
     TakeProfitReason,
     TakeProfitResult,

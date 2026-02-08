@@ -22,7 +22,7 @@ from apps.cli.event_printer import make_prompting_event_printer
 from apps.cli.order_tracker import OrderTracker
 from apps.cli.position_origin_tracker import PositionOriginTracker
 from apps.cli.repl import REPL
-from apps.core.analytics.flow.service import TakeProfitService
+from apps.core.analytics.flow.take_profit import TakeProfitService
 from apps.core.orders.service import OrderService
 from apps.core.pnl.service import PnlService
 from apps.core.positions.service import PositionsService

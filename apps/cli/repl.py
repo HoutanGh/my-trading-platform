@@ -21,7 +21,7 @@ except ImportError:
 from apps.adapters.broker.ibkr_connection import IBKRConnection
 from apps.cli.order_tracker import OrderTracker
 from apps.cli.position_origin_tracker import PositionOriginTracker
-from apps.core.analytics.flow.service import TakeProfitRequest, TakeProfitService
+from apps.core.analytics.flow.take_profit import TakeProfitRequest, TakeProfitService
 from apps.core.market_data.ports import BarStreamPort, QuotePort, QuoteStreamPort
 from apps.core.ops.events import CliErrorLogged
 from apps.core.orders.events import (
