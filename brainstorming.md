@@ -55,7 +55,7 @@
 - [ ] cli needs option to inform you if it is prepost, market or closed market
 - [ ] have some information in the cli line
 - [ ] short form and long form
-- CLI evolution ideas (still one‑line first)
+- CLI evolution ideas (still one-line first)
 
 - buy AAPL qty=5 → market
 - buy AAPL qty=5 limit=189.50 → limit
@@ -72,3 +72,41 @@
 - see if i can run npm run dev and other stuff in cli
 
 
+## Pre-Trade Brief Brainstorm
+
+### Your Thinking
+- You want a simple CLI-first workflow: `brief TSLA`.
+    - need to know what options are for this - marco, micro, flow - research on chatgpt
+- The command should return a fast summary dashboard for decision support.
+- Later, add more real-time guidance while trading - maybe on breakout
+- You want it to reflect your intended trade levels (entry/stop), not only generic symbol stats.
+
+### My Thinking
+- Focus on non-obvious momentum/breakout behaviors:
+  - follow-through vs fakeout - how far back do you have to go for this info
+  - post-break hold/retest behavior and pullback depth
+  - adverse-first risk (hits risk before reward)
+  - market/time-of-day conditioning
+  - execution friction
+- With IBKR bars + top-of-book + Level 2, include microstructure:
+  - understand how level 2 affects likelihood of breakout
+  - near-touch imbalance
+  - depth resilience/depletion
+  - spread/depth shock
+  - depth-adjusted slippage proxy
+- Compress output into one screen:
+  - tradeability score
+  - execution mode (break-now / wait-close / wait-retest)
+  - size multiplier
+  - kill condition
+
+### Proposed v1 Behavior
+- `brief TSLA` uses saved TSLA plan levels if available.
+- If no plan exists, infer candidate levels and label them as assumed.
+- Allow overrides: `brief TSLA --entry X --stop Y`.
+- Analytics only (paper-safe), no live order actions.
+
+### Incremental Build Path
+1. CLI summary using historical intraday bars.
+2. Add optional L2 microstructure section.
+3. Add `brief-live TSLA` for timed refresh updates.

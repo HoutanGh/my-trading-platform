@@ -1,10 +1,19 @@
+### 09/02/26
+- [ ] understand how i could make this project public
+    - [ ] update README.md
+    - [ ] general cleanup
+    - [ ] what sensitive data i have currently
+- [ ] research more on investment analysis approach
+- [ ] research on caclulating breakouts
+- [ ] research on options pricing prediction
+
 ### 08/02/26
 - [ ] research having multiple sessions open
 - [x] rename adapter/market_data files 
-- [ ] research how to the investment analysis
+- [x] research how to the investment analysis
 - [ ] same tp and sl functionality for normally buying
 - [x] put take profit files into correct folders 
-- [ ] have a refresh (for new versions) option for the app instead of quitting 
+- [x] have a refresh (for new versions) option for the app instead of quitting 
 
 ### 06/02/26
 - [x] optimise best tps and sls
