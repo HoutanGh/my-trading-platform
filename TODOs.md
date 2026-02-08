@@ -1,4 +1,4 @@
-### 07/02/26
+### 08/02/26
 - [ ] research having multiple sessions open
 - [ ] rename adapter/market_data files 
 - [ ] research how to the investment analysis
