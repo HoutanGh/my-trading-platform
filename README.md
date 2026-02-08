@@ -38,7 +38,10 @@ apps/
       ibkr_connection.py  # connect/disconnect + config
       ibkr_order_port.py  # OrderPort implementation (IBKR)
     market_data/
-      ibkr_bars.py         # BarStreamPort implementation (IBKR)
+      ibkr_bar_stream.py    # BarStreamPort implementation (IBKR)
+      ibkr_bar_history.py   # BarHistoryPort implementation (IBKR)
+      ibkr_quote_stream.py  # QuoteStreamPort implementation (IBKR)
+      ibkr_quote_snapshot.py # QuotePort implementation (IBKR)
     pnl/
       db.py              # Postgres connection + schema
       store.py           # daily_pnl upserts + queries

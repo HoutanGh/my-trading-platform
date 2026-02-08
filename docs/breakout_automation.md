@@ -42,9 +42,10 @@ This document describes the production breakout automation architecture in `apps
         ├── logging/
         │   └── jsonl_logger.py
         └── market_data/
+            ├── ibkr_bar_history.py
+            ├── ibkr_bar_stream.py
             ├── ibkr_quote_stream.py
-            ├── ibkr_quotes.py
-            └── ibkr_bars.py
+            └── ibkr_quote_snapshot.py
 
 
 ## 1. What the system does (current)
@@ -127,11 +128,13 @@ Quick orders:
   - `Bar`, `Quote` models.
 - `apps/core/market_data/ports.py`
   - `BarStreamPort`, `BarHistoryPort`, `QuotePort`, `QuoteStreamPort`.
-- `apps/adapters/market_data/ibkr_bars.py`
-  - Streaming bars + historical bars adapter.
+- `apps/adapters/market_data/ibkr_bar_stream.py`
+  - Streaming bars adapter.
+- `apps/adapters/market_data/ibkr_bar_history.py`
+  - Historical bars adapter.
 - `apps/adapters/market_data/ibkr_quote_stream.py`
   - Streaming quote cache.
-- `apps/adapters/market_data/ibkr_quotes.py`
+- `apps/adapters/market_data/ibkr_quote_snapshot.py`
   - Snapshot quote fallback.
 
 ### Orders (reusable)
