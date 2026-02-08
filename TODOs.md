@@ -6,12 +6,13 @@
 - [ ] research more on investment analysis approach
 - [ ] research on caclulating breakouts
 - [ ] research on options pricing prediction
+- [ ] same tp and sl functionality for normally buying
+- [ ] research having multiple sessions open
 
 ### 08/02/26
-- [ ] research having multiple sessions open
+
 - [x] rename adapter/market_data files 
 - [x] research how to the investment analysis
-- [ ] same tp and sl functionality for normally buying
 - [x] put take profit files into correct folders 
 - [x] have a refresh (for new versions) option for the app instead of quitting 
 
