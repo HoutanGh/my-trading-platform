@@ -1,13 +1,27 @@
-### 09/02/26
-- [ ] understand how i could make this project public
-    - [ ] update README.md
-    - [ ] general cleanup
-    - [ ] what sensitive data i have currently
+## GENERAL TODOs
+- [ ] how to calculate breakouts for stocks
+- [ ] understand how a backtesting framework would also work for this
 - [ ] research more on investment analysis approach
 - [ ] research on caclulating breakouts
 - [ ] research on options pricing prediction
 - [ ] same tp and sl functionality for normally buying
 - [ ] research having multiple sessions open
+- [ ] maybe have dry-runs
+- [ ] for breakouts, when first take profit is taken the lowest SL should just be the lowest it can stay to stay green
+- [ ] need kill switch
+
+### 10/02/26
+- [ ] decide on what to do first
+    - trading session
+    - breakout calculation
+    - backtesting framework
+- [ ] understand how i could make this project public
+    - [ ] update README.md
+    - [ ] general cleanup
+    - [ ] what sensitive data i have currently
+
+### 09/02/26
+- did nothing
 
 ### 08/02/26
 

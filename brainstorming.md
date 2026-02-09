@@ -5,6 +5,13 @@
     - something that tells me about its future in terms of options
 
 ### Day trading session
+- b just defaults to buying LMT 100
+- tp attaches to the most recent one 
+    - can tp 2.1 50 so only half gets attached
+    - then again for another price
+- sl same thing
+- think about how to change 
+
 - enter a session for stock
     - make sure breakouts are still running in background but dont output results onto cli until have exited the stock session?
     - limiting factor is that doesnt insta buy - shouldn't be too bad 
@@ -80,6 +87,7 @@
 - The command should return a fast summary dashboard for decision support.
 - Later, add more real-time guidance while trading - maybe on breakout
 - You want it to reflect your intended trade levels (entry/stop), not only generic symbol stats.
+- what if i enter a session for a stock that provides real time breakout details
 
 ### My Thinking
 - Focus on non-obvious momentum/breakout behaviors:
