@@ -11,6 +11,13 @@
 - [ ] need kill switch
 - [ ] how to calulate volume rotation and tie this into stock pairs trading
 
+### 11/02/26
+- [ ] test breakout
+- [ ] backtesting start
+    - [ ] get a plan going
+- [ ] debugging
+- [ ] clean TODOs
+
 ### 10/02/26
 - [x] fix breakout streaming failure defect
     - [x] check if there wont be conflict between the single recovery que and the global recovery pass
@@ -19,13 +26,13 @@ stop market doesnt not work outside_rth, stop suggesting this
 how is the take profit set up? that seems to always trigger instantly and reliably
 - [ ] understand take profit functionality - why that take profit was 100%
 - [ ] make stop limits more reliable
-- [ ] decide on what to do first
+- [x] decide on what to do first
     - trading session
     - breakout calculation
     - backtesting framework
     - pullback automation/buying
 - [ ] understand how i could make this project public
-    - [ ] update README.md
+    - [x] update README.md
     - [ ] general cleanup
     - [ ] what sensitive data i have currently
 
