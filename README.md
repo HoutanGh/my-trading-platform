@@ -4,6 +4,10 @@ This repo centers on apps (core + adapters + CLI + API) with a separate web UI.
 It includes a production-ready breakout automation flow in apps.
 The legacy `apps_archive/` folder is no longer used by the `apps/` package.
 
+## Summary
+
+This platform runs real-time, rule-based trading workflows with a clean architecture that separates decision-making from external integrations: the `core` layer holds the trading logic and domain rules, `adapters` connect that logic to systems like IBKR and Postgres, and the CLI/API provide practical control surfaces for operators and reporting; together, this design keeps behavior consistent, observable, and easier to evolve safely.
+
 ## apps goals
 
 - Keep core trading logic independent of IBKR and the CLI.

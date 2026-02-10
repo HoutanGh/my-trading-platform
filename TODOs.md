@@ -12,8 +12,8 @@
 - [ ] how to calulate volume rotation and tie this into stock pairs trading
 
 ### 10/02/26
-- [ ] fix breakout streaming failure defect
-    - [ ] check if there wont be conflict between the single recovery que and the global recovery pass
+- [x] fix breakout streaming failure defect
+    - [x] check if there wont be conflict between the single recovery que and the global recovery pass
 stop market doesnt not work outside_rth, stop suggesting this
 
 how is the take profit set up? that seems to always trigger instantly and reliably
