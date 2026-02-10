@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import math
 import threading
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Optional
+from collections.abc import Coroutine
+from typing import Callable, Optional
 
 from ib_insync import IB, LimitOrder, MarketOrder, Stock, StopLimitOrder, Trade
 
@@ -30,8 +32,6 @@ from apps.core.orders.models import (
     OrderType,
 )
 from apps.core.orders.ports import EventBus, OrderPort
-
-_BRACKET_STOP_LIMIT_OFFSET = 0.02
 
 
 class IBKROrderPort(OrderPort):
@@ -122,6 +122,7 @@ class IBKROrderPort(OrderPort):
         if not contracts:
             raise RuntimeError(f"Could not qualify contract for {spec.symbol}")
         qualified = contracts[0]
+        loop = asyncio.get_running_loop()
 
         if spec.entry_type == OrderType.MARKET:
             parent = MarketOrder(spec.side.value, spec.qty, tif=spec.tif)
@@ -152,7 +153,7 @@ class IBKROrderPort(OrderPort):
             side=child_side,
             qty=spec.qty,
             stop_price=spec.stop_loss,
-            offset=_BRACKET_STOP_LIMIT_OFFSET,
+            limit_price=spec.stop_loss,
             tif=spec.tif,
             outside_rth=spec.outside_rth,
             account=spec.account,
@@ -195,6 +196,19 @@ class IBKROrderPort(OrderPort):
                 client_tag=spec.client_tag,
                 event_bus=self._event_bus,
             )
+        _attach_stop_trigger_reprice(
+            sl_trade,
+            ib=self._ib,
+            contract=qualified,
+            side=child_side,
+            qty=spec.qty,
+            stop_price=spec.stop_loss,
+            symbol=spec.symbol,
+            parent_order_id=order_id,
+            client_tag=spec.client_tag,
+            event_bus=self._event_bus,
+            loop=loop,
+        )
         if self._event_bus:
             self._event_bus.publish(OrderIdAssigned.now(parent_spec, order_id))
         status = await _wait_for_order_status(trade)
@@ -213,6 +227,7 @@ class IBKROrderPort(OrderPort):
         if not contracts:
             raise RuntimeError(f"Could not qualify contract for {spec.symbol}")
         qualified = contracts[0]
+        loop = asyncio.get_running_loop()
 
         if spec.entry_type == OrderType.MARKET:
             parent = MarketOrder(spec.side.value, spec.qty, tif=spec.tif)
@@ -271,7 +286,7 @@ class IBKROrderPort(OrderPort):
             side=child_side,
             qty=spec.qty,
             stop_price=spec.stop_loss,
-            offset=spec.stop_limit_offset,
+            limit_price=spec.stop_loss,
             tif=spec.tif,
             outside_rth=spec.outside_rth,
             account=spec.account,
@@ -304,16 +319,30 @@ class IBKROrderPort(OrderPort):
             stop_price=spec.stop_loss,
             stop_qty=spec.qty,
             stop_updates=spec.stop_updates,
-            stop_limit_offset=spec.stop_limit_offset,
             tif=spec.tif,
             outside_rth=spec.outside_rth,
             account=spec.account,
             client_tag=spec.client_tag,
             event_bus=self._event_bus,
+            loop=loop,
         )
         for state in tp_states:
             _attach_ladder_tp_manager(state.trade, tp_index=state.index, manager=manager)
         _attach_ladder_stop_manager(stop_trade, manager=manager)
+        _attach_stop_trigger_reprice(
+            stop_trade,
+            ib=self._ib,
+            contract=qualified,
+            side=child_side,
+            qty=spec.qty,
+            stop_price=spec.stop_loss,
+            symbol=spec.symbol,
+            parent_order_id=order_id,
+            client_tag=spec.client_tag,
+            event_bus=self._event_bus,
+            loop=loop,
+            on_replaced=manager.handle_stop_trade_replaced,
+        )
 
         if self._event_bus:
             self._event_bus.publish(OrderIdAssigned.now(parent_spec, order_id))
@@ -454,12 +483,12 @@ class _LadderStopManager:
         stop_price: float,
         stop_qty: int,
         stop_updates: list[float],
-        stop_limit_offset: float,
         tif: str,
         outside_rth: bool,
         account: Optional[str],
         client_tag: Optional[str],
         event_bus: EventBus | None,
+        loop: asyncio.AbstractEventLoop,
     ) -> None:
         self._ib = ib
         self._contract = contract
@@ -471,12 +500,12 @@ class _LadderStopManager:
         self._stop_price = stop_price
         self._stop_qty = stop_qty
         self._stop_updates = stop_updates
-        self._stop_limit_offset = stop_limit_offset
         self._tif = tif
         self._outside_rth = outside_rth
         self._account = account
         self._client_tag = client_tag
         self._event_bus = event_bus
+        self._loop = loop
         self._lock = threading.Lock()
         self._processed_tps: set[int] = set()
         self._filled_tp_count = 0
@@ -548,7 +577,7 @@ class _LadderStopManager:
             side=self._child_side,
             qty=qty,
             stop_price=stop_price,
-            offset=self._stop_limit_offset,
+            limit_price=stop_price,
             tif=self._tif,
             outside_rth=self._outside_rth,
             account=self._account,
@@ -573,6 +602,37 @@ class _LadderStopManager:
                 event_bus=self._event_bus,
             )
         _attach_ladder_stop_manager(stop_trade, manager=self)
+        _attach_stop_trigger_reprice(
+            stop_trade,
+            ib=self._ib,
+            contract=self._contract,
+            side=self._child_side,
+            qty=qty,
+            stop_price=stop_price,
+            symbol=self._symbol,
+            parent_order_id=self._parent_order_id,
+            client_tag=self._client_tag,
+            event_bus=self._event_bus,
+            loop=self._loop,
+            on_replaced=self.handle_stop_trade_replaced,
+        )
+
+    def handle_stop_trade_replaced(self, trade: Trade) -> None:
+        with self._lock:
+            self._stop_trade = trade
+        if self._event_bus:
+            _attach_bracket_child_handlers(
+                trade,
+                kind="stop_loss",
+                symbol=self._symbol,
+                side=self._child_side,
+                qty=self._stop_qty,
+                price=self._stop_price,
+                parent_order_id=self._parent_order_id,
+                client_tag=self._client_tag,
+                event_bus=self._event_bus,
+            )
+        _attach_ladder_stop_manager(trade, manager=self)
 
 
 def _build_stop_limit_order(
@@ -580,15 +640,15 @@ def _build_stop_limit_order(
     side: OrderSide,
     qty: int,
     stop_price: float,
-    offset: float,
+    limit_price: Optional[float],
     tif: str,
     outside_rth: bool,
     account: Optional[str],
     client_tag: Optional[str],
 ) -> StopLimitOrder:
-    limit_price = _stop_limit_price(side, stop_price, offset)
-    order = StopLimitOrder(side.value, qty, limit_price, stop_price, tif=tif)
-    order.lmtPrice = limit_price
+    resolved_limit_price = stop_price if limit_price is None else limit_price
+    order = StopLimitOrder(side.value, qty, resolved_limit_price, stop_price, tif=tif)
+    order.lmtPrice = resolved_limit_price
     order.auxPrice = stop_price
     order.outsideRth = outside_rth
     if account:
@@ -596,12 +656,6 @@ def _build_stop_limit_order(
     if client_tag:
         order.orderRef = client_tag
     return order
-
-
-def _stop_limit_price(side: OrderSide, stop_price: float, offset: float) -> float:
-    if side == OrderSide.SELL:
-        return stop_price - offset
-    return stop_price + offset
 
 
 def _is_trade_filled(trade_obj: Trade, expected_qty: int) -> bool:
@@ -763,6 +817,89 @@ def _attach_bracket_child_handlers(
         fill_event += lambda trade_obj, *_args: _publish_fill(trade_obj)
 
 
+def _attach_stop_trigger_reprice(
+    trade: Trade,
+    *,
+    ib: IB,
+    contract: Stock,
+    side: OrderSide,
+    qty: int,
+    stop_price: float,
+    symbol: str,
+    parent_order_id: Optional[int],
+    client_tag: Optional[str],
+    event_bus: EventBus | None,
+    loop: asyncio.AbstractEventLoop,
+    on_replaced: Optional[Callable[[Trade], None]] = None,
+) -> None:
+    last_status: Optional[str] = None
+    reprice_pending = False
+    reprice_applied = False
+
+    async def _reprice(trade_obj: Trade) -> None:
+        nonlocal reprice_pending, reprice_applied
+        try:
+            touch_price = await _touch_price_for_stop_limit(ib, contract, side)
+            if touch_price is None:
+                return
+            limit_price = _safe_triggered_limit_price(side=side, stop_price=stop_price, touch_price=touch_price)
+            order = copy.copy(trade_obj.order)
+            order.orderId = trade_obj.order.orderId
+            order.lmtPrice = limit_price
+            order.auxPrice = stop_price
+            updated_trade = ib.placeOrder(contract, order)
+            reprice_applied = True
+            if updated_trade is not trade_obj:
+                if on_replaced is not None:
+                    on_replaced(updated_trade)
+                elif event_bus:
+                    _attach_bracket_child_handlers(
+                        updated_trade,
+                        kind="stop_loss",
+                        symbol=symbol,
+                        side=side,
+                        qty=qty,
+                        price=stop_price,
+                        parent_order_id=parent_order_id,
+                        client_tag=client_tag,
+                        event_bus=event_bus,
+                    )
+        finally:
+            reprice_pending = False
+
+    def _publish_status(trade_obj: Trade) -> None:
+        nonlocal last_status, reprice_pending
+        status = _normalize_status(getattr(trade_obj.orderStatus, "status", None))
+        if not status:
+            return
+        previous = last_status
+        last_status = status
+        if reprice_applied or reprice_pending:
+            return
+        # IBKR stop-limit orders move from PreSubmitted to Submitted when the stop is elected.
+        # TODO: verify this transition across all target venues; some routes may not emit PreSubmitted.
+        if previous != "presubmitted" or status != "submitted":
+            return
+        reprice_pending = True
+        _schedule_coroutine(loop, _reprice(trade_obj))
+
+    def _publish_fill(_trade_obj: Trade) -> None:
+        nonlocal reprice_applied
+        reprice_applied = True
+
+    status_event = getattr(trade, "statusEvent", None)
+    if status_event is not None:
+        status_event += lambda trade_obj, *_args: _publish_status(trade_obj)
+
+    filled_event = getattr(trade, "filledEvent", None)
+    if filled_event is not None:
+        filled_event += lambda trade_obj, *_args: _publish_fill(trade_obj)
+
+    fill_event = getattr(trade, "fillEvent", None)
+    if fill_event is not None:
+        fill_event += lambda trade_obj, *_args: _publish_fill(trade_obj)
+
+
 def _attach_ladder_tp_manager(trade: Trade, *, tp_index: int, manager: _LadderStopManager) -> None:
     filled_event = getattr(trade, "filledEvent", None)
     if filled_event is not None:
@@ -790,3 +927,51 @@ def _maybe_float(value: object) -> Optional[float]:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _normalize_status(value: object) -> Optional[str]:
+    if value is None:
+        return None
+    normalized = str(value).strip().lower()
+    return normalized or None
+
+
+def _schedule_coroutine(loop: asyncio.AbstractEventLoop, coro: Coroutine[object, object, None]) -> None:
+    try:
+        running_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        running_loop = None
+    if running_loop is loop:
+        asyncio.create_task(coro)
+        return
+    asyncio.run_coroutine_threadsafe(coro, loop)
+
+
+async def _touch_price_for_stop_limit(ib: IB, contract: Stock, side: OrderSide) -> Optional[float]:
+    ticker = ib.ticker(contract)
+    touch_price = _touch_price_from_ticker(ticker, side)
+    if touch_price is not None:
+        return touch_price
+    try:
+        snapshots = await ib.reqTickersAsync(contract)
+    except Exception:
+        return None
+    if not snapshots:
+        return None
+    return _touch_price_from_ticker(snapshots[0], side)
+
+
+def _touch_price_from_ticker(ticker: object, side: OrderSide) -> Optional[float]:
+    if ticker is None:
+        return None
+    raw_price = getattr(ticker, "bid", None) if side == OrderSide.SELL else getattr(ticker, "ask", None)
+    price = _maybe_float(raw_price)
+    if price is None or not math.isfinite(price) or price <= 0:
+        return None
+    return price
+
+
+def _safe_triggered_limit_price(*, side: OrderSide, stop_price: float, touch_price: float) -> float:
+    if side == OrderSide.SELL:
+        return min(touch_price, stop_price)
+    return max(touch_price, stop_price)

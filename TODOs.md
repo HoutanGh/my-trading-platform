@@ -11,10 +11,12 @@
 - [ ] need kill switch
 
 ### 10/02/26
+- [ ] 
 - [ ] decide on what to do first
     - trading session
     - breakout calculation
     - backtesting framework
+    - pullback automation/buying
 - [ ] understand how i could make this project public
     - [ ] update README.md
     - [ ] general cleanup

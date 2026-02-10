@@ -181,10 +181,12 @@ Quick orders:
 
 Manual bracket:
 - `tp` + `sl` with single TP price.
+- Stop-loss uses stop-limit: initial limit equals `sl`; when the stop is elected, limit reprices to touch (`bid` for SELL, `ask` for BUY).
 
 Manual ladder:
 - `tp=price1-price2` or `tp=price1-price2-price3` + `sl`.
 - Optional `tp_alloc=` supports custom quantity splits.
+- Managed stop-loss uses stop-limit with the same trigger-time touch repricing behavior.
 
 Auto ladder:
 - `tp=auto tp_count=2|3` or `tp-2` / `tp-3` + `sl`.

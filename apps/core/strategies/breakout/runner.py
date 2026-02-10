@@ -248,7 +248,7 @@ async def run_breakout(
                 take_profits=tp_levels,
                 take_profit_qtys=tp_qtys,
                 stop_loss=config.stop_loss or 0.0,
-                stop_limit_offset=0.02,
+                stop_limit_offset=0.0,
                 stop_updates=stop_updates,
                 tif=config.tif,
                 outside_rth=config.outside_rth,
