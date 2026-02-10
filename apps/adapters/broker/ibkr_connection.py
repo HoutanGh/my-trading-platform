@@ -53,6 +53,9 @@ class IBKRConnection:
         self._ib = ib or IB()
         self._gateway_logger = gateway_logger
         self._event_logger = event_logger
+        self._gateway_message_subscribers: list[
+            Callable[[Optional[int], Optional[int], Optional[str], Optional[str]], None]
+        ] = []
         self._install_error_filter()
 
     @property
@@ -182,6 +185,18 @@ class IBKRConnection:
             "paper_only": self._config.paper_only,
         }
 
+    def subscribe_gateway_messages(
+        self,
+        handler: Callable[[Optional[int], Optional[int], Optional[str], Optional[str]], None],
+    ) -> Callable[[], None]:
+        self._gateway_message_subscribers.append(handler)
+
+        def _unsubscribe() -> None:
+            if handler in self._gateway_message_subscribers:
+                self._gateway_message_subscribers.remove(handler)
+
+        return _unsubscribe
+
     def _install_error_filter(self) -> None:
         _silence_ib_insync_logger()
         wrappers = []
@@ -201,8 +216,8 @@ class IBKRConnection:
                 continue
 
             def _filtered_error(*args, _original=current_error, **kwargs) -> None:
+                payload = _parse_gateway_error(args, kwargs)
                 if self._gateway_logger:
-                    payload = _parse_gateway_error(args, kwargs)
                     self._gateway_logger(
                         IbGatewayLog.now(
                             code=payload[1],
@@ -214,6 +229,7 @@ class IBKRConnection:
                             client_id=self._config.client_id,
                         )
                     )
+                self._notify_gateway_message_subscribers(payload)
                 if _should_suppress_error(args, kwargs):
                     return
                 _original(*args, **kwargs)
@@ -224,6 +240,19 @@ class IBKRConnection:
     def _log_event(self, event: object) -> None:
         if self._event_logger:
             self._event_logger(event)
+
+    def _notify_gateway_message_subscribers(
+        self,
+        payload: Tuple[Optional[int], Optional[int], Optional[str], Optional[str]],
+    ) -> None:
+        if not self._gateway_message_subscribers:
+            return
+        req_id, code, message, advanced = payload
+        for handler in list(self._gateway_message_subscribers):
+            try:
+                handler(req_id, code, message, advanced)
+            except Exception:
+                continue
 
 
 def _should_suppress_error(args: tuple[object, ...], kwargs: dict[str, object]) -> bool:

@@ -9,9 +9,16 @@
 - [ ] maybe have dry-runs
 - [ ] for breakouts, when first take profit is taken the lowest SL should just be the lowest it can stay to stay green
 - [ ] need kill switch
+- [ ] how to calulate volume rotation and tie this into stock pairs trading
 
 ### 10/02/26
-- [ ] 
+- [ ] fix breakout streaming failure defect
+    - [ ] check if there wont be conflict between the single recovery que and the global recovery pass
+stop market doesnt not work outside_rth, stop suggesting this
+
+how is the take profit set up? that seems to always trigger instantly and reliably
+- [ ] understand take profit functionality - why that take profit was 100%
+- [ ] make stop limits more reliable
 - [ ] decide on what to do first
     - trading session
     - breakout calculation

@@ -107,6 +107,24 @@ CLI -> OrderService -> OrderPort(IBKR) -> IBKR
 - OrderStatusChanged: status snapshot/update from broker.
 - BreakoutStarted/BreakoutBreakDetected/BreakoutConfirmed/BreakoutStopped: breakout lifecycle milestones.
 
+## Bar Stream Health + Recovery
+
+- IB gateway connectivity and per-symbol bar-subscription health are tracked separately.
+- Health events include:
+  - `BarStreamStalled`, `BarStreamRecovered`
+  - `BarStreamHeal` (`BarStreamRecoveryStarted`), `BarStreamHealFail` (`BarStreamRecoveryFailed`)
+  - `BarStreamBlocked` / `BarStreamUnblocked` for IB code `10197` (competing session)
+  - `BarStreamScan` when a global recovery pass is scheduled
+- Recovery grouping is by symbol + RTH mode, so slow/fast breakout streams for the same symbol are recovered together.
+
+Environment flags:
+- `APPS_BAR_SELF_HEAL_ENABLED` (default `false`, monitor-only by default)
+- `APPS_BAR_HEALTH_POLL_SECS` (default `1.0`)
+- `APPS_BAR_RECOVERY_COOLDOWN_SECS` (default `5.0`)
+- `APPS_BAR_RECOVERY_MAX_ATTEMPTS` (default `5`)
+- `APPS_BAR_RECOVERY_MAX_CONCURRENCY` (default `1`)
+- `APPS_BAR_RECOVERY_STALL_BURST_COUNT` (default `2`)
+
 ## CLI usage (apps)
 
 Launch:

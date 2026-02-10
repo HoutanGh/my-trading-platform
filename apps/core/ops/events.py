@@ -301,6 +301,200 @@ class BarStreamLagDetected:
 
 
 @dataclass(frozen=True)
+class BarStreamStalled:
+    symbol: str
+    bar_size: str
+    use_rth: bool
+    silence_seconds: float
+    timeout_seconds: float
+    timestamp: datetime
+
+    @classmethod
+    def now(
+        cls,
+        *,
+        symbol: str,
+        bar_size: str,
+        use_rth: bool,
+        silence_seconds: float,
+        timeout_seconds: float,
+    ) -> "BarStreamStalled":
+        return cls(
+            symbol=symbol,
+            bar_size=bar_size,
+            use_rth=use_rth,
+            silence_seconds=silence_seconds,
+            timeout_seconds=timeout_seconds,
+            timestamp=_now(),
+        )
+
+
+@dataclass(frozen=True)
+class BarStreamRecovered:
+    symbol: str
+    bar_size: str
+    use_rth: bool
+    downtime_seconds: float
+    timestamp: datetime
+
+    @classmethod
+    def now(
+        cls,
+        *,
+        symbol: str,
+        bar_size: str,
+        use_rth: bool,
+        downtime_seconds: float,
+    ) -> "BarStreamRecovered":
+        return cls(
+            symbol=symbol,
+            bar_size=bar_size,
+            use_rth=use_rth,
+            downtime_seconds=downtime_seconds,
+            timestamp=_now(),
+        )
+
+
+@dataclass(frozen=True)
+class BarStreamRecoveryStarted:
+    symbol: str
+    bar_size: str
+    use_rth: bool
+    attempt: int
+    timestamp: datetime
+
+    @classmethod
+    def now(
+        cls,
+        *,
+        symbol: str,
+        bar_size: str,
+        use_rth: bool,
+        attempt: int,
+    ) -> "BarStreamRecoveryStarted":
+        return cls(
+            symbol=symbol,
+            bar_size=bar_size,
+            use_rth=use_rth,
+            attempt=attempt,
+            timestamp=_now(),
+        )
+
+
+@dataclass(frozen=True)
+class BarStreamRecoveryFailed:
+    symbol: str
+    bar_size: str
+    use_rth: bool
+    attempt: int
+    message: str
+    retry_in_seconds: float
+    timestamp: datetime
+
+    @classmethod
+    def now(
+        cls,
+        *,
+        symbol: str,
+        bar_size: str,
+        use_rth: bool,
+        attempt: int,
+        message: str,
+        retry_in_seconds: float,
+    ) -> "BarStreamRecoveryFailed":
+        return cls(
+            symbol=symbol,
+            bar_size=bar_size,
+            use_rth=use_rth,
+            attempt=attempt,
+            message=message,
+            retry_in_seconds=retry_in_seconds,
+            timestamp=_now(),
+        )
+
+
+@dataclass(frozen=True)
+class BarStreamCompetingSessionBlocked:
+    symbol: str
+    bar_size: str
+    use_rth: bool
+    code: int
+    message: str
+    timestamp: datetime
+
+    @classmethod
+    def now(
+        cls,
+        *,
+        symbol: str,
+        bar_size: str,
+        use_rth: bool,
+        code: int,
+        message: str,
+    ) -> "BarStreamCompetingSessionBlocked":
+        return cls(
+            symbol=symbol,
+            bar_size=bar_size,
+            use_rth=use_rth,
+            code=code,
+            message=message,
+            timestamp=_now(),
+        )
+
+
+@dataclass(frozen=True)
+class BarStreamCompetingSessionCleared:
+    symbol: str
+    bar_size: str
+    use_rth: bool
+    code: int
+    message: str
+    timestamp: datetime
+
+    @classmethod
+    def now(
+        cls,
+        *,
+        symbol: str,
+        bar_size: str,
+        use_rth: bool,
+        code: int,
+        message: str,
+    ) -> "BarStreamCompetingSessionCleared":
+        return cls(
+            symbol=symbol,
+            bar_size=bar_size,
+            use_rth=use_rth,
+            code=code,
+            message=message,
+            timestamp=_now(),
+        )
+
+
+@dataclass(frozen=True)
+class BarStreamRecoveryScanScheduled:
+    reason: str
+    groups: int
+    streams: int
+    timestamp: datetime
+
+    @classmethod
+    def now(
+        cls,
+        *,
+        reason: str,
+        groups: int,
+        streams: int,
+    ) -> "BarStreamRecoveryScanScheduled":
+        return cls(
+            reason=reason,
+            groups=groups,
+            streams=streams,
+            timestamp=_now(),
+        )
+
+
+@dataclass(frozen=True)
 class IbGatewayRawLine:
     line: str
     source_path: str

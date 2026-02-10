@@ -1,3 +1,7 @@
+### Pairs trading or more
+- volume seems to flow to specific stocks so when one stock starts going up another stock was battling it and that drops
+
+
 ### Micro/Macro/Flow
 - Investment analysis
 - options pricing to predict futures on stocks

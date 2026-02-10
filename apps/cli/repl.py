@@ -1672,11 +1672,62 @@ class REPL:
                 extras.append(f"sl={config.stop_loss}")
             if config.tp_reprice_on_fill:
                 extras.append("tp_reprice=on_fill")
+            health_parts = []
+            slow_health = self._stream_health_summary(
+                config.symbol,
+                bar_size=config.bar_size,
+                use_rth=config.use_rth,
+            )
+            if slow_health:
+                health_parts.append(f"slow:{slow_health}")
+            if config.rule.fast_entry.enabled:
+                fast_health = self._stream_health_summary(
+                    config.symbol,
+                    bar_size=config.fast_bar_size,
+                    use_rth=config.use_rth,
+                )
+                if fast_health:
+                    health_parts.append(f"fast:{fast_health}")
+            if health_parts:
+                extras.append(f"health=[{', '.join(health_parts)}]")
             suffix = f" {' '.join(extras)}" if extras else ""
             print(
                 f"{name} symbol={config.symbol} level={config.rule.level} "
                 f"qty={config.qty} state={state}{suffix}"
             )
+
+    def _stream_health_summary(
+        self,
+        symbol: str,
+        *,
+        bar_size: str,
+        use_rth: bool,
+    ) -> Optional[str]:
+        if not self._bar_stream:
+            return None
+        get_stream_health = getattr(self._bar_stream, "get_stream_health", None)
+        if not callable(get_stream_health):
+            return None
+        payload = get_stream_health(symbol, bar_size=bar_size, use_rth=use_rth)
+        if not isinstance(payload, dict):
+            return "inactive"
+        status = str(payload.get("status") or "unknown")
+        silence_value = payload.get("silence_seconds")
+        timeout_value = payload.get("timeout_seconds")
+        blocked_message = payload.get("blocked_message")
+        if status == "blocked_competing_session":
+            if isinstance(blocked_message, str) and blocked_message.strip():
+                return f"blocked({blocked_message.strip()})"
+            return "blocked"
+        if status == "stalled":
+            if isinstance(silence_value, (int, float)) and isinstance(timeout_value, (int, float)):
+                return f"stalled({silence_value:.1f}s>{timeout_value:.1f}s)"
+            return "stalled"
+        if status == "healthy":
+            if isinstance(silence_value, (int, float)):
+                return f"healthy({silence_value:.1f}s)"
+            return "healthy"
+        return status
 
     async def _stop_breakouts(
         self,

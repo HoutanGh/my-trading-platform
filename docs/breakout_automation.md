@@ -208,6 +208,7 @@ Emitted events (relevant groups):
 - TP update: `BreakoutTakeProfitsUpdated`.
 - Orders: `OrderIntent`, `OrderSent`, `OrderIdAssigned`, `OrderStatusChanged`, `OrderFilled`.
 - Bracket/ladder children: `BracketChildOrderStatusChanged`, `BracketChildOrderFilled`.
+- Bar stream health/recovery: `BarStreamStalled`, `BarStreamRecovered`, `BarStreamRecoveryStarted`, `BarStreamRecoveryFailed`, `BarStreamCompetingSessionBlocked`, `BarStreamCompetingSessionCleared`, `BarStreamRecoveryScanScheduled`.
 
 Display behavior:
 - `event_printer` shows `BreakoutTpUpdated` when TP update event is emitted.
@@ -253,6 +254,15 @@ Defaults:
 
 Environment:
 - IBKR connection env vars unchanged (`IB_HOST`, `IB_PORT`, `IB_CLIENT_ID`, `PAPER_ONLY`, etc.).
+- Bar stream health/recovery:
+  - `APPS_BAR_SELF_HEAL_ENABLED` (default `false`)
+  - `APPS_BAR_HEALTH_POLL_SECS`
+  - `APPS_BAR_STALL_MULTIPLIER`
+  - `APPS_BAR_STALL_FLOOR_SECS`
+  - `APPS_BAR_RECOVERY_COOLDOWN_SECS`
+  - `APPS_BAR_RECOVERY_MAX_ATTEMPTS`
+  - `APPS_BAR_RECOVERY_MAX_CONCURRENCY` (default `1`)
+  - `APPS_BAR_RECOVERY_STALL_BURST_COUNT` (default `2`)
 
 ---
 

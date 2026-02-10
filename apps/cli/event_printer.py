@@ -11,7 +11,16 @@ except ImportError:
     readline = None
 
 from apps.core.orders.events import BracketChildOrderFilled, OrderFilled
-from apps.core.ops.events import IbGatewayLog
+from apps.core.ops.events import (
+    BarStreamCompetingSessionBlocked,
+    BarStreamCompetingSessionCleared,
+    BarStreamRecovered,
+    BarStreamRecoveryFailed,
+    BarStreamRecoveryScanScheduled,
+    BarStreamRecoveryStarted,
+    BarStreamStalled,
+    IbGatewayLog,
+)
 from apps.core.strategies.breakout.events import (
     BreakoutBreakDetected,
     BreakoutConfirmed,
@@ -158,6 +167,74 @@ def print_event(event: object) -> bool:
             parts.append("advanced=1")
         parts.append("see=ib_gateway.jsonl")
         _print_line(event.timestamp, label, " ".join(parts))
+        return True
+    if isinstance(event, BarStreamStalled):
+        _print_line(
+            event.timestamp,
+            "BarStreamStalled",
+            (
+                f"{event.symbol} bar={event.bar_size} use_rth={event.use_rth} "
+                f"silence={event.silence_seconds:.1f}s timeout={event.timeout_seconds:.1f}s"
+            ),
+        )
+        return True
+    if isinstance(event, BarStreamRecovered):
+        _print_line(
+            event.timestamp,
+            "BarStreamRecovered",
+            (
+                f"{event.symbol} bar={event.bar_size} use_rth={event.use_rth} "
+                f"downtime={event.downtime_seconds:.1f}s"
+            ),
+        )
+        return True
+    if isinstance(event, BarStreamRecoveryStarted):
+        _print_line(
+            event.timestamp,
+            "BarStreamHeal",
+            (
+                f"{event.symbol} bar={event.bar_size} use_rth={event.use_rth} "
+                f"attempt={event.attempt}"
+            ),
+        )
+        return True
+    if isinstance(event, BarStreamRecoveryFailed):
+        _print_line(
+            event.timestamp,
+            "BarStreamHealFail",
+            (
+                f"{event.symbol} bar={event.bar_size} use_rth={event.use_rth} "
+                f"attempt={event.attempt} retry_in={event.retry_in_seconds:.1f}s "
+                f"msg={_shorten_message(event.message)}"
+            ),
+        )
+        return True
+    if isinstance(event, BarStreamCompetingSessionBlocked):
+        _print_line(
+            event.timestamp,
+            "BarStreamBlocked",
+            (
+                f"{event.symbol} bar={event.bar_size} use_rth={event.use_rth} "
+                f"code={event.code} msg={_shorten_message(event.message)}"
+            ),
+        )
+        return True
+    if isinstance(event, BarStreamCompetingSessionCleared):
+        _print_line(
+            event.timestamp,
+            "BarStreamUnblocked",
+            (
+                f"{event.symbol} bar={event.bar_size} use_rth={event.use_rth} "
+                f"code={event.code} msg={_shorten_message(event.message)}"
+            ),
+        )
+        return True
+    if isinstance(event, BarStreamRecoveryScanScheduled):
+        _print_line(
+            event.timestamp,
+            "BarStreamScan",
+            f"reason={event.reason} groups={event.groups} streams={event.streams}",
+        )
         return True
     if isinstance(event, OrderFilled):
         if not _is_fill_event(event.status, event.filled_qty):
