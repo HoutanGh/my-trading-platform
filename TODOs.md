@@ -12,10 +12,12 @@
 - [ ] how to calulate volume rotation and tie this into stock pairs trading
 
 ### 11/02/26
-- [ ] test breakout
+- [x] test breakout
 - [ ] backtesting start
     - [ ] get a plan going
 - [ ] debugging
+    - [ ] tp
+    - [ ] sl
 - [ ] clean TODOs
 
 ### 10/02/26

@@ -545,21 +545,24 @@ class _LadderStopManager:
                 new_remaining = 0.0
 
             stop_price = self._stop_price
-            stop_price_changed = False
+            tp_leg_completed = False
             if tp_index not in self._processed_tps and capped_fill_qty >= float(state.qty):
                 self._processed_tps.add(tp_index)
                 self._filled_tp_count += 1
+                tp_leg_completed = True
                 if self._filled_tp_count <= len(self._stop_updates):
                     stop_price = self._stop_updates[self._filled_tp_count - 1]
-                    stop_price_changed = True
 
             self._remaining_qty = new_remaining
             if self._remaining_qty <= 0:
                 self._cancel_stop(reason="tp_full_exit")
                 return
+            if not tp_leg_completed:
+                return
             remaining_qty = int(round(self._remaining_qty))
-            if stop_price_changed or remaining_qty != self._stop_qty:
-                self._replace_stop(stop_price, remaining_qty)
+            if remaining_qty == self._stop_qty and stop_price == self._stop_price:
+                return
+            self._replace_stop(stop_price, remaining_qty)
 
     def handle_stop_fill(self, trade_obj: Trade) -> None:
         with self._lock:
