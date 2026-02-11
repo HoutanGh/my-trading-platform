@@ -10,14 +10,22 @@
 - [ ] for breakouts, when first take profit is taken the lowest SL should just be the lowest it can stay to stay green
 - [ ] need kill switch
 - [ ] how to calulate volume rotation and tie this into stock pairs trading
+- [ ] backtesting start
+    - [ ] get a plan going
+- [ ] warm market detection
+
+
+### FOCUSING ON BREAKOUT
+
 
 ### 11/02/26
 - [x] test breakout
-- [ ] backtesting start
-    - [ ] get a plan going
-- [ ] debugging
+- [ ] breakout debugging
     - [ ] tp
     - [ ] sl
+    - [ ] trades cli command
+    - [ ] check orders command
+    - [ ] cleaning
 - [ ] clean TODOs
 
 ### 10/02/26
