@@ -25,7 +25,13 @@ from apps.core.analytics.flow.take_profit import TakeProfitRequest, TakeProfitSe
 from apps.core.active_orders.models import ActiveOrderSnapshot
 from apps.core.active_orders.service import ActiveOrdersService
 from apps.core.market_data.ports import BarStreamPort, QuotePort, QuoteStreamPort
-from apps.core.ops.events import CliErrorLogged
+from apps.core.ops.events import (
+    CliErrorLogged,
+    OrphanExitOrderCancelFailed,
+    OrphanExitOrderCancelled,
+    OrphanExitOrderDetected,
+    OrphanExitReconciliationCompleted,
+)
 from apps.core.orders.events import (
     BracketChildOrderFilled,
     BracketChildOrderStatusChanged,
@@ -141,6 +147,16 @@ class REPL:
         self._tp_reprice_sessions: dict[str, _BreakoutTpRepriceSession] = {}
         self._tp_reprice_tasks: dict[str, asyncio.Task] = {}
         self._pnl_processes: dict[str, asyncio.subprocess.Process] = {}
+        orphan_scope = os.getenv("APPS_ORPHAN_EXIT_SCOPE", "all_clients").strip().lower()
+        orphan_scope = orphan_scope.replace("-", "_")
+        if orphan_scope not in {"client", "all_clients"}:
+            orphan_scope = "all_clients"
+        self._orphan_exit_scope = orphan_scope
+        orphan_action = os.getenv("APPS_ORPHAN_EXIT_ACTION", "warn").strip().lower()
+        if orphan_action not in {"warn", "cancel"}:
+            orphan_action = "warn"
+        self._orphan_exit_action = orphan_action
+        self._orphan_exit_lock = asyncio.Lock()
         self._completion_matches: list[str] = []
         if self._event_bus:
             self._event_bus.subscribe(object, self._handle_tp_reprice_event)
@@ -579,6 +595,7 @@ class REPL:
             f"{cfg.host}:{cfg.port} client_id={cfg.client_id} readonly={cfg.readonly}"
         )
         await self._seed_position_origins()
+        await self._reconcile_orphan_exit_orders(trigger="connection_established")
         await self._maybe_prompt_resume_breakouts(cfg)
 
     def _apply_account_default(self, mode: Optional[str], cfg: object) -> None:
@@ -1697,6 +1714,129 @@ class REPL:
         fallback = self._position_origin_tracker.seed_from_jsonl()
         if fallback:
             print(f"Position tags loaded from event log: {fallback}")
+
+    async def _reconcile_orphan_exit_orders(self, *, trigger: str) -> None:
+        if not self._active_orders_service or not self._positions_service:
+            return
+        if not self._connection.status().get("connected"):
+            return
+
+        async with self._orphan_exit_lock:
+            scope = self._orphan_exit_scope
+            action = self._orphan_exit_action
+            auto_cancel = action == "cancel" and self._order_service is not None
+
+            try:
+                active_orders = await self._active_orders_service.list_active_orders(scope=scope)
+            except Exception as exc:
+                _print_exception("Orphan exit reconciliation failed (active orders)", exc)
+                return
+
+            try:
+                positions = await self._positions_service.list_positions()
+            except Exception as exc:
+                _print_exception("Orphan exit reconciliation failed (positions)", exc)
+                positions = []
+
+            position_qty_by_account_symbol: dict[tuple[str, str], float] = {}
+            position_qty_by_symbol: dict[str, float] = {}
+            for position in positions:
+                symbol = position.symbol.strip().upper()
+                if not symbol:
+                    continue
+                account = _normalize_account_key(position.account)
+                qty = float(position.qty or 0.0)
+                position_qty_by_account_symbol[(account, symbol)] = (
+                    position_qty_by_account_symbol.get((account, symbol), 0.0) + qty
+                )
+                position_qty_by_symbol[symbol] = position_qty_by_symbol.get(symbol, 0.0) + qty
+
+            orphan_orders: list[ActiveOrderSnapshot] = []
+            for order in active_orders:
+                if (order.side or "").strip().upper() != "SELL":
+                    continue
+                if order.parent_order_id is None:
+                    continue
+                symbol = (order.symbol or "").strip().upper()
+                if not symbol:
+                    continue
+                account = _normalize_account_key(order.account)
+                qty = position_qty_by_account_symbol.get((account, symbol))
+                if qty is None:
+                    qty = position_qty_by_symbol.get(symbol, 0.0)
+                if abs(qty) > 1e-9:
+                    continue
+                orphan_orders.append(order)
+                if self._event_bus:
+                    self._event_bus.publish(
+                        OrphanExitOrderDetected.now(
+                            trigger=trigger,
+                            action=action,
+                            scope=scope,
+                            order_id=order.order_id,
+                            parent_order_id=order.parent_order_id,
+                            account=order.account,
+                            symbol=symbol,
+                            status=order.status,
+                            remaining_qty=order.remaining_qty,
+                            client_tag=order.client_tag,
+                        )
+                    )
+
+            cancelled_count = 0
+            cancel_failed_count = 0
+            if auto_cancel:
+                for order in orphan_orders:
+                    if order.order_id is None:
+                        continue
+                    try:
+                        ack = await self._order_service.cancel_order(OrderCancelSpec(order_id=order.order_id))
+                    except Exception as exc:
+                        cancel_failed_count += 1
+                        if self._event_bus:
+                            self._event_bus.publish(
+                                OrphanExitOrderCancelFailed.now(
+                                    trigger=trigger,
+                                    order_id=order.order_id,
+                                    account=order.account,
+                                    symbol=order.symbol,
+                                    error_type=type(exc).__name__,
+                                    message=str(exc),
+                                )
+                            )
+                        continue
+                    cancelled_count += 1
+                    if self._event_bus:
+                        self._event_bus.publish(
+                            OrphanExitOrderCancelled.now(
+                                trigger=trigger,
+                                order_id=order.order_id,
+                                status=ack.status,
+                                account=order.account,
+                                symbol=order.symbol,
+                            )
+                        )
+
+            if orphan_orders:
+                print(
+                    "Orphan exit reconciliation: "
+                    f"found={len(orphan_orders)} action={action} "
+                    f"cancelled={cancelled_count} failed={cancel_failed_count}"
+                )
+
+            if self._event_bus:
+                self._event_bus.publish(
+                    OrphanExitReconciliationCompleted.now(
+                        trigger=trigger,
+                        scope=scope,
+                        action=action,
+                        active_order_count=len(active_orders),
+                        position_count=len(positions),
+                        orphan_count=len(orphan_orders),
+                        cancelled_count=cancelled_count,
+                        cancel_failed_count=cancel_failed_count,
+                    )
+                )
 
     async def _cmd_positions(self, _args: list[str], _kwargs: dict[str, str]) -> None:
         if not self._positions_service:
@@ -2864,6 +3004,12 @@ def _format_int(value: Optional[int]) -> str:
     if value is None:
         return "-"
     return str(value)
+
+
+def _normalize_account_key(value: Optional[str]) -> str:
+    if value is None:
+        return ""
+    return value.strip().rstrip(".")
 
 
 def _format_number(value: Optional[float], *, precision: int = 4) -> str:

@@ -196,6 +196,149 @@ class IbkrConnectionClosed:
 
 
 @dataclass(frozen=True)
+class OrphanExitOrderDetected:
+    trigger: str
+    action: str
+    scope: str
+    order_id: Optional[int]
+    parent_order_id: Optional[int]
+    account: Optional[str]
+    symbol: str
+    status: Optional[str]
+    remaining_qty: Optional[float]
+    client_tag: Optional[str]
+    timestamp: datetime
+
+    @classmethod
+    def now(
+        cls,
+        *,
+        trigger: str,
+        action: str,
+        scope: str,
+        order_id: Optional[int],
+        parent_order_id: Optional[int],
+        account: Optional[str],
+        symbol: str,
+        status: Optional[str],
+        remaining_qty: Optional[float],
+        client_tag: Optional[str],
+    ) -> "OrphanExitOrderDetected":
+        return cls(
+            trigger=trigger,
+            action=action,
+            scope=scope,
+            order_id=order_id,
+            parent_order_id=parent_order_id,
+            account=account,
+            symbol=symbol,
+            status=status,
+            remaining_qty=remaining_qty,
+            client_tag=client_tag,
+            timestamp=_now(),
+        )
+
+
+@dataclass(frozen=True)
+class OrphanExitOrderCancelled:
+    trigger: str
+    order_id: Optional[int]
+    status: Optional[str]
+    account: Optional[str]
+    symbol: str
+    timestamp: datetime
+
+    @classmethod
+    def now(
+        cls,
+        *,
+        trigger: str,
+        order_id: Optional[int],
+        status: Optional[str],
+        account: Optional[str],
+        symbol: str,
+    ) -> "OrphanExitOrderCancelled":
+        return cls(
+            trigger=trigger,
+            order_id=order_id,
+            status=status,
+            account=account,
+            symbol=symbol,
+            timestamp=_now(),
+        )
+
+
+@dataclass(frozen=True)
+class OrphanExitOrderCancelFailed:
+    trigger: str
+    order_id: Optional[int]
+    account: Optional[str]
+    symbol: str
+    error_type: str
+    message: str
+    timestamp: datetime
+
+    @classmethod
+    def now(
+        cls,
+        *,
+        trigger: str,
+        order_id: Optional[int],
+        account: Optional[str],
+        symbol: str,
+        error_type: str,
+        message: str,
+    ) -> "OrphanExitOrderCancelFailed":
+        return cls(
+            trigger=trigger,
+            order_id=order_id,
+            account=account,
+            symbol=symbol,
+            error_type=error_type,
+            message=message,
+            timestamp=_now(),
+        )
+
+
+@dataclass(frozen=True)
+class OrphanExitReconciliationCompleted:
+    trigger: str
+    scope: str
+    action: str
+    active_order_count: int
+    position_count: int
+    orphan_count: int
+    cancelled_count: int
+    cancel_failed_count: int
+    timestamp: datetime
+
+    @classmethod
+    def now(
+        cls,
+        *,
+        trigger: str,
+        scope: str,
+        action: str,
+        active_order_count: int,
+        position_count: int,
+        orphan_count: int,
+        cancelled_count: int,
+        cancel_failed_count: int,
+    ) -> "OrphanExitReconciliationCompleted":
+        return cls(
+            trigger=trigger,
+            scope=scope,
+            action=action,
+            active_order_count=active_order_count,
+            position_count=position_count,
+            orphan_count=orphan_count,
+            cancelled_count=cancelled_count,
+            cancel_failed_count=cancel_failed_count,
+            timestamp=_now(),
+        )
+
+
+@dataclass(frozen=True)
 class BarStreamStarted:
     symbol: str
     bar_size: str

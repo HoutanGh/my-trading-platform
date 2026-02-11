@@ -228,6 +228,82 @@ class LadderStopLossReplaced:
 
 
 @dataclass(frozen=True)
+class LadderStopLossReplaceFailed:
+    symbol: str
+    parent_order_id: Optional[int]
+    old_order_id: Optional[int]
+    attempted_qty: int
+    attempted_price: float
+    status: Optional[str]
+    broker_code: Optional[int]
+    broker_message: Optional[str]
+    client_tag: Optional[str]
+    timestamp: datetime
+
+    @classmethod
+    def now(
+        cls,
+        *,
+        symbol: str,
+        parent_order_id: Optional[int],
+        old_order_id: Optional[int],
+        attempted_qty: int,
+        attempted_price: float,
+        status: Optional[str],
+        broker_code: Optional[int],
+        broker_message: Optional[str],
+        client_tag: Optional[str],
+    ) -> "LadderStopLossReplaceFailed":
+        return cls(
+            symbol=symbol,
+            parent_order_id=parent_order_id,
+            old_order_id=old_order_id,
+            attempted_qty=attempted_qty,
+            attempted_price=attempted_price,
+            status=status,
+            broker_code=broker_code,
+            broker_message=broker_message,
+            client_tag=client_tag,
+            timestamp=_now(),
+        )
+
+
+@dataclass(frozen=True)
+class LadderProtectionStateChanged:
+    symbol: str
+    parent_order_id: Optional[int]
+    state: str
+    reason: str
+    stop_order_id: Optional[int]
+    active_take_profit_order_ids: list[int]
+    client_tag: Optional[str]
+    timestamp: datetime
+
+    @classmethod
+    def now(
+        cls,
+        *,
+        symbol: str,
+        parent_order_id: Optional[int],
+        state: str,
+        reason: str,
+        stop_order_id: Optional[int],
+        active_take_profit_order_ids: list[int],
+        client_tag: Optional[str],
+    ) -> "LadderProtectionStateChanged":
+        return cls(
+            symbol=symbol,
+            parent_order_id=parent_order_id,
+            state=state,
+            reason=reason,
+            stop_order_id=stop_order_id,
+            active_take_profit_order_ids=list(active_take_profit_order_ids),
+            client_tag=client_tag,
+            timestamp=_now(),
+        )
+
+
+@dataclass(frozen=True)
 class LadderStopLossCancelled:
     symbol: str
     parent_order_id: Optional[int]

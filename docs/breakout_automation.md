@@ -208,6 +208,8 @@ Emitted events (relevant groups):
 - TP update: `BreakoutTakeProfitsUpdated`.
 - Orders: `OrderIntent`, `OrderSent`, `OrderIdAssigned`, `OrderStatusChanged`, `OrderFilled`.
 - Bracket/ladder children: `BracketChildOrderStatusChanged`, `BracketChildOrderFilled`.
+- Ladder stop safety: `LadderStopLossReplaced`, `LadderStopLossReplaceFailed`, `LadderStopLossCancelled`, `LadderProtectionStateChanged`.
+- Reconnect orphan-exit reconciliation: `OrphanExitOrderDetected`, `OrphanExitOrderCancelled`, `OrphanExitOrderCancelFailed`, `OrphanExitReconciliationCompleted`.
 - Bar stream health/recovery: `BarStreamStalled`, `BarStreamRecovered`, `BarStreamRecoveryStarted`, `BarStreamRecoveryFailed`, `BarStreamCompetingSessionBlocked`, `BarStreamCompetingSessionCleared`, `BarStreamRecoveryScanScheduled`.
 
 Display behavior:
@@ -263,6 +265,11 @@ Environment:
   - `APPS_BAR_RECOVERY_MAX_ATTEMPTS`
   - `APPS_BAR_RECOVERY_MAX_CONCURRENCY` (default `1`)
   - `APPS_BAR_RECOVERY_STALL_BURST_COUNT` (default `2`)
+- Orphan-exit reconciliation on connect:
+  - `APPS_ORPHAN_EXIT_SCOPE` (`client` or `all_clients`, default `all_clients`)
+  - `APPS_ORPHAN_EXIT_ACTION` (`warn` or `cancel`, default `warn`)
+    - `warn` is monitor-only (safe default).
+    - `cancel` is explicit opt-in and attempts broker-side cancels for detected orphan exits.
 
 ---
 

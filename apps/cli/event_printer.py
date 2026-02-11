@@ -13,7 +13,9 @@ except ImportError:
 
 from apps.core.orders.events import (
     BracketChildOrderFilled,
+    LadderProtectionStateChanged,
     LadderStopLossCancelled,
+    LadderStopLossReplaceFailed,
     LadderStopLossReplaced,
     OrderFilled,
 )
@@ -26,6 +28,10 @@ from apps.core.ops.events import (
     BarStreamRecoveryStarted,
     BarStreamStalled,
     IbGatewayLog,
+    OrphanExitOrderCancelFailed,
+    OrphanExitOrderCancelled,
+    OrphanExitOrderDetected,
+    OrphanExitReconciliationCompleted,
 )
 from apps.core.strategies.breakout.events import (
     BreakoutBreakDetected,
@@ -302,6 +308,34 @@ def print_event(event: object) -> bool:
             ),
         )
         return True
+    if isinstance(event, LadderStopLossReplaceFailed):
+        broker = []
+        if event.broker_code is not None:
+            broker.append(f"code={event.broker_code}")
+        if event.broker_message:
+            broker.append(f"msg={_shorten_message(event.broker_message)}")
+        broker_suffix = f" {' '.join(broker)}" if broker else ""
+        _print_line(
+            event.timestamp,
+            "StopLossReplaceFailed",
+            (
+                f"{event.symbol} order_id={event.old_order_id} "
+                f"attempt_qty={event.attempted_qty} attempt_price={event.attempted_price:g} "
+                f"status={event.status or '-'}{broker_suffix}"
+            ),
+        )
+        return True
+    if isinstance(event, LadderProtectionStateChanged):
+        tp_ids = ",".join(str(order_id) for order_id in event.active_take_profit_order_ids)
+        _print_line(
+            event.timestamp,
+            "StopProtection",
+            (
+                f"{event.symbol} state={event.state} reason={event.reason} "
+                f"stop_order_id={event.stop_order_id} active_tp_ids=[{tp_ids}]"
+            ),
+        )
+        return True
     if isinstance(event, LadderStopLossCancelled):
         _print_line(
             event.timestamp,
@@ -309,6 +343,49 @@ def print_event(event: object) -> bool:
             (
                 f"{event.symbol} reason={event.reason} "
                 f"order_id={event.order_id} qty={event.qty} price={event.price:g}"
+            ),
+        )
+        return True
+    if isinstance(event, OrphanExitOrderDetected):
+        _print_line(
+            event.timestamp,
+            "OrphanExitDetected",
+            (
+                f"{event.symbol} order_id={event.order_id} parent={event.parent_order_id} "
+                f"remaining={event.remaining_qty} status={event.status or '-'} "
+                f"action={event.action} trigger={event.trigger} scope={event.scope}"
+            ),
+        )
+        return True
+    if isinstance(event, OrphanExitOrderCancelled):
+        _print_line(
+            event.timestamp,
+            "OrphanExitCancelled",
+            (
+                f"{event.symbol} order_id={event.order_id} "
+                f"status={event.status or '-'} trigger={event.trigger}"
+            ),
+        )
+        return True
+    if isinstance(event, OrphanExitOrderCancelFailed):
+        _print_line(
+            event.timestamp,
+            "OrphanExitCancelFailed",
+            (
+                f"{event.symbol} order_id={event.order_id} "
+                f"error={event.error_type} msg={_shorten_message(event.message)}"
+            ),
+        )
+        return True
+    if isinstance(event, OrphanExitReconciliationCompleted):
+        _print_line(
+            event.timestamp,
+            "OrphanExitRecon",
+            (
+                f"trigger={event.trigger} scope={event.scope} action={event.action} "
+                f"active_orders={event.active_order_count} positions={event.position_count} "
+                f"orphans={event.orphan_count} cancelled={event.cancelled_count} "
+                f"cancel_failed={event.cancel_failed_count}"
             ),
         )
         return True

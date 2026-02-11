@@ -1,7 +1,9 @@
 from apps.core.orders.events import (
     BracketChildOrderFilled,
     BracketChildOrderStatusChanged,
+    LadderProtectionStateChanged,
     LadderStopLossCancelled,
+    LadderStopLossReplaceFailed,
     LadderStopLossReplaced,
     OrderIdAssigned,
     OrderIntent,
@@ -39,6 +41,8 @@ __all__ = [
     "BracketChildOrderStatusChanged",
     "BracketChildOrderFilled",
     "LadderStopLossReplaced",
+    "LadderStopLossReplaceFailed",
+    "LadderProtectionStateChanged",
     "LadderStopLossCancelled",
     "OrderPort",
     "EventBus",

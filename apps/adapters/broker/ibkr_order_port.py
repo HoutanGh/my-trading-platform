@@ -16,7 +16,9 @@ from apps.adapters.broker.ibkr_connection import IBKRConnection
 from apps.core.orders.events import (
     BracketChildOrderFilled,
     BracketChildOrderStatusChanged,
+    LadderProtectionStateChanged,
     LadderStopLossCancelled,
+    LadderStopLossReplaceFailed,
     LadderStopLossReplaced,
     OrderIdAssigned,
     OrderSent,
@@ -34,6 +36,9 @@ from apps.core.orders.models import (
     OrderType,
 )
 from apps.core.orders.ports import EventBus, OrderPort
+
+_ACCEPTED_ORDER_STATUSES = {"presubmitted", "submitted"}
+_INACTIVE_ORDER_STATUSES = {"inactive", "cancelled", "apicancelled", "filled"}
 
 
 class IBKROrderPort(OrderPort):
@@ -332,6 +337,8 @@ class IBKROrderPort(OrderPort):
             client_tag=spec.client_tag,
             event_bus=self._event_bus,
             loop=loop,
+            gateway_message_subscribe=self._connection.subscribe_gateway_messages,
+            replace_timeout=max(self._connection.config.timeout, 1.0),
         )
         for state in tp_states:
             _attach_ladder_tp_manager(state.trade, tp_index=state.index, manager=manager)
@@ -391,6 +398,22 @@ async def _wait_for_order_status(
     return status or None
 
 
+async def _wait_for_stop_replace_status(
+    trade: Trade,
+    *,
+    timeout: float = 2.0,
+    poll_interval: float = 0.05,
+) -> Optional[str]:
+    status = _normalize_status(getattr(trade.orderStatus, "status", None))
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if status in _ACCEPTED_ORDER_STATUSES or status in _INACTIVE_ORDER_STATUSES:
+            return status
+        await asyncio.sleep(poll_interval)
+        status = _normalize_status(getattr(trade.orderStatus, "status", None))
+    return status
+
+
 def _find_trade_by_order_id(ib: IB, order_id: int) -> Optional[Trade]:
     for trade in ib.trades():
         if getattr(getattr(trade, "order", None), "orderId", None) == order_id:
@@ -419,6 +442,12 @@ async def _find_trade_by_order_id_with_refresh(
     except Exception:
         pass
     return _find_trade_by_order_id(ib, order_id)
+
+
+def _trade_order_id(trade: Optional[Trade]) -> Optional[int]:
+    if trade is None:
+        return None
+    return _maybe_int(getattr(getattr(trade, "order", None), "orderId", None))
 
 
 def _order_spec_from_trade(trade: Trade) -> OrderSpec:
@@ -519,6 +548,13 @@ class _LadderStopManager:
         client_tag: Optional[str],
         event_bus: EventBus | None,
         loop: asyncio.AbstractEventLoop,
+        gateway_message_subscribe: Optional[
+            Callable[
+                [Callable[[Optional[int], Optional[int], Optional[str], Optional[str]], None]],
+                Callable[[], None],
+            ]
+        ],
+        replace_timeout: float,
     ) -> None:
         self._ib = ib
         self._contract = contract
@@ -536,6 +572,8 @@ class _LadderStopManager:
         self._client_tag = client_tag
         self._event_bus = event_bus
         self._loop = loop
+        self._gateway_message_subscribe = gateway_message_subscribe
+        self._replace_timeout = replace_timeout
         self._lock = threading.Lock()
         self._processed_tps: set[int] = set()
         self._filled_tp_count = 0
@@ -544,6 +582,8 @@ class _LadderStopManager:
         self._tp_filled: dict[int, float] = {}
         self._tp_exec_ids: dict[int, set[str]] = {}
         self._stop_filled = False
+        self._protection_state: Optional[str] = None
+        self._emit_protection_state_locked(state="protected", reason="initialized")
 
     def handle_tp_fill(self, tp_index: int, _trade_obj: Trade, fill_obj: object | None) -> None:
         with self._lock:
@@ -600,10 +640,33 @@ class _LadderStopManager:
                 return
             self._stop_filled = True
             self._remaining_qty = 0
+            self._emit_protection_state_locked(state="unprotected", reason="stop_filled")
             for tp_index, state in list(self._tp_states.items()):
                 if tp_index in self._processed_tps:
                     continue
                 self._ib.cancelOrder(state.trade.order)
+            self._processed_tps.update(self._tp_states.keys())
+
+    def handle_stop_status(self, trade_obj: Trade) -> None:
+        with self._lock:
+            if self._stop_filled:
+                return
+            status = _normalize_status(getattr(trade_obj.orderStatus, "status", None))
+            if status not in _INACTIVE_ORDER_STATUSES:
+                return
+            current_order_id = _trade_order_id(self._stop_trade)
+            status_order_id = _trade_order_id(trade_obj)
+            if (
+                current_order_id is not None
+                and status_order_id is not None
+                and current_order_id != status_order_id
+            ):
+                return
+            self._stop_trade = None
+            self._emit_protection_state_locked(
+                state="unprotected",
+                reason=f"stop_{status}",
+            )
 
     def _cancel_stop(self, *, reason: str) -> None:
         if self._stop_trade:
@@ -624,76 +687,115 @@ class _LadderStopManager:
                         client_tag=self._client_tag,
                     )
                 )
+            self._emit_protection_state_locked(state="unprotected", reason=reason)
 
     def _replace_stop(self, stop_price: float, qty: int) -> None:
-        old_order_id: Optional[int] = None
+        if self._stop_trade is None:
+            if self._event_bus:
+                self._event_bus.publish(
+                    LadderStopLossReplaceFailed.now(
+                        symbol=self._symbol,
+                        parent_order_id=self._parent_order_id,
+                        old_order_id=None,
+                        attempted_qty=qty,
+                        attempted_price=stop_price,
+                        status="missing_stop_order",
+                        broker_code=None,
+                        broker_message="No existing stop order available for in-place replace.",
+                        client_tag=self._client_tag,
+                    )
+                )
+            self._emit_protection_state_locked(state="unprotected", reason="replace_failed_no_stop")
+            return
+
+        old_trade = self._stop_trade
+        old_order_id = _trade_order_id(old_trade)
         old_qty = self._stop_qty
         old_price = self._stop_price
-        if self._stop_trade:
-            old_order_id = self._stop_trade.order.orderId
-            self._ib.cancelOrder(self._stop_trade.order)
-        stop_order = _build_stop_limit_order(
-            side=self._child_side,
-            qty=qty,
-            stop_price=stop_price,
-            limit_price=stop_price,
-            tif=self._tif,
-            outside_rth=self._outside_rth,
-            account=self._account,
-            client_tag=self._client_tag,
-        )
+        if old_order_id is None:
+            if self._event_bus:
+                self._event_bus.publish(
+                    LadderStopLossReplaceFailed.now(
+                        symbol=self._symbol,
+                        parent_order_id=self._parent_order_id,
+                        old_order_id=None,
+                        attempted_qty=qty,
+                        attempted_price=stop_price,
+                        status="missing_stop_order_id",
+                        broker_code=None,
+                        broker_message="Existing stop order has no orderId; cannot replace in-place.",
+                        client_tag=self._client_tag,
+                    )
+                )
+            self._emit_protection_state_locked(
+                state="degraded",
+                reason="replace_failed_missing_order_id",
+            )
+            return
+
+        stop_order = copy.copy(old_trade.order)
+        stop_order.orderId = old_order_id
         stop_order.parentId = self._parent_order_id
+        stop_order.totalQuantity = qty
+        stop_order.auxPrice = stop_price
+        stop_order.lmtPrice = stop_price
+        stop_order.tif = self._tif
+        stop_order.outsideRth = self._outside_rth
         stop_order.transmit = True
+        if self._account:
+            stop_order.account = self._account
+        if self._client_tag:
+            stop_order.orderRef = self._client_tag
+
         stop_trade = self._ib.placeOrder(self._contract, stop_order)
         self._stop_trade = stop_trade
         self._stop_qty = qty
         self._stop_price = stop_price
-        if self._event_bus:
-            self._event_bus.publish(
-                LadderStopLossReplaced.now(
+
+        if stop_trade is not old_trade:
+            if self._event_bus:
+                _attach_bracket_child_handlers(
+                    stop_trade,
+                    kind="stop_loss",
                     symbol=self._symbol,
+                    side=self._child_side,
+                    qty=qty,
+                    price=stop_price,
                     parent_order_id=self._parent_order_id,
-                    old_order_id=old_order_id,
-                    new_order_id=stop_trade.order.orderId,
-                    old_qty=old_qty,
-                    new_qty=qty,
-                    old_price=old_price,
-                    new_price=stop_price,
-                    reason=_stop_replace_reason(
-                        old_qty=old_qty,
-                        new_qty=qty,
-                        old_price=old_price,
-                        new_price=stop_price,
-                    ),
                     client_tag=self._client_tag,
+                    event_bus=self._event_bus,
                 )
-            )
-        if self._event_bus:
-            _attach_bracket_child_handlers(
+            _attach_ladder_stop_manager(stop_trade, manager=self)
+            _attach_stop_trigger_reprice(
                 stop_trade,
-                kind="stop_loss",
-                symbol=self._symbol,
+                ib=self._ib,
+                contract=self._contract,
                 side=self._child_side,
                 qty=qty,
-                price=stop_price,
+                stop_price=stop_price,
+                symbol=self._symbol,
                 parent_order_id=self._parent_order_id,
                 client_tag=self._client_tag,
                 event_bus=self._event_bus,
+                loop=self._loop,
+                on_replaced=self.handle_stop_trade_replaced,
             )
-        _attach_ladder_stop_manager(stop_trade, manager=self)
-        _attach_stop_trigger_reprice(
-            stop_trade,
-            ib=self._ib,
-            contract=self._contract,
-            side=self._child_side,
-            qty=qty,
-            stop_price=stop_price,
-            symbol=self._symbol,
-            parent_order_id=self._parent_order_id,
-            client_tag=self._client_tag,
-            event_bus=self._event_bus,
-            loop=self._loop,
-            on_replaced=self.handle_stop_trade_replaced,
+
+        error_capture = _GatewayOrderErrorCapture(
+            self._gateway_message_subscribe,
+            order_id=old_order_id,
+        )
+        _schedule_coroutine(
+            self._loop,
+            self._confirm_stop_replace(
+                stop_trade=stop_trade,
+                old_order_id=old_order_id,
+                old_qty=old_qty,
+                old_price=old_price,
+                attempted_qty=qty,
+                attempted_price=stop_price,
+                error_capture=error_capture,
+            ),
         )
 
     def handle_stop_trade_replaced(self, trade: Trade) -> None:
@@ -712,6 +814,193 @@ class _LadderStopManager:
                 event_bus=self._event_bus,
             )
         _attach_ladder_stop_manager(trade, manager=self)
+
+    async def _confirm_stop_replace(
+        self,
+        *,
+        stop_trade: Trade,
+        old_order_id: Optional[int],
+        old_qty: int,
+        old_price: float,
+        attempted_qty: int,
+        attempted_price: float,
+        error_capture: "_GatewayOrderErrorCapture",
+    ) -> None:
+        status = None
+        try:
+            status = await _wait_for_stop_replace_status(
+                stop_trade,
+                timeout=self._replace_timeout,
+            )
+        finally:
+            error_capture.close()
+
+        broker_code, broker_message = error_capture.snapshot()
+        normalized_status = _normalize_status(status)
+        effective_qty = _maybe_float(getattr(stop_trade.order, "totalQuantity", None))
+        effective_stop_price = _maybe_float(getattr(stop_trade.order, "auxPrice", None))
+        qty_matches = (
+            effective_qty is not None and int(round(effective_qty)) == int(attempted_qty)
+        )
+        price_matches = (
+            effective_stop_price is not None
+            and math.isfinite(effective_stop_price)
+            and abs(effective_stop_price - attempted_price) < 1e-9
+        )
+        replace_accepted = (
+            normalized_status in _ACCEPTED_ORDER_STATUSES
+            and qty_matches
+            and price_matches
+            and broker_code is None
+        )
+        with self._lock:
+            if self._stop_filled:
+                return
+            if replace_accepted:
+                self._stop_trade = stop_trade
+                self._stop_qty = attempted_qty
+                self._stop_price = attempted_price
+                if self._event_bus:
+                    self._event_bus.publish(
+                        LadderStopLossReplaced.now(
+                            symbol=self._symbol,
+                            parent_order_id=self._parent_order_id,
+                            old_order_id=old_order_id,
+                            new_order_id=old_order_id,
+                            old_qty=old_qty,
+                            new_qty=attempted_qty,
+                            old_price=old_price,
+                            new_price=attempted_price,
+                            reason=_stop_replace_reason(
+                                old_qty=old_qty,
+                                new_qty=attempted_qty,
+                                old_price=old_price,
+                                new_price=attempted_price,
+                            ),
+                            client_tag=self._client_tag,
+                        )
+                    )
+                self._emit_protection_state_locked(state="protected", reason="replace_accepted")
+                return
+
+            self._stop_qty = old_qty
+            self._stop_price = old_price
+            if self._event_bus:
+                self._event_bus.publish(
+                    LadderStopLossReplaceFailed.now(
+                        symbol=self._symbol,
+                        parent_order_id=self._parent_order_id,
+                        old_order_id=old_order_id,
+                        attempted_qty=attempted_qty,
+                        attempted_price=attempted_price,
+                        status=status,
+                        broker_code=broker_code,
+                        broker_message=broker_message,
+                        client_tag=self._client_tag,
+                    )
+                )
+
+            if normalized_status in _INACTIVE_ORDER_STATUSES:
+                self._stop_trade = None
+                self._emit_protection_state_locked(
+                    state="unprotected",
+                    reason="replace_failed_no_stop",
+                )
+            else:
+                degraded_reason = (
+                    "replace_not_applied"
+                    if normalized_status in _ACCEPTED_ORDER_STATUSES
+                    else "replace_failed_status_unknown"
+                )
+                self._emit_protection_state_locked(
+                    state="degraded",
+                    reason=degraded_reason,
+                )
+
+    def _active_tp_order_ids_locked(self) -> list[int]:
+        order_ids: list[int] = []
+        for idx, state in self._tp_states.items():
+            if idx in self._processed_tps:
+                continue
+            order_id = getattr(state.trade.order, "orderId", None)
+            if order_id is None:
+                continue
+            order_ids.append(int(order_id))
+        order_ids.sort()
+        return order_ids
+
+    def _emit_protection_state_locked(self, *, state: str, reason: str) -> None:
+        active_tp_order_ids = self._active_tp_order_ids_locked()
+        if not active_tp_order_ids:
+            self._protection_state = None
+            return
+        if self._protection_state == state:
+            return
+        self._protection_state = state
+        if self._event_bus:
+            self._event_bus.publish(
+                LadderProtectionStateChanged.now(
+                    symbol=self._symbol,
+                    parent_order_id=self._parent_order_id,
+                    state=state,
+                    reason=reason,
+                    stop_order_id=_trade_order_id(self._stop_trade),
+                    active_take_profit_order_ids=active_tp_order_ids,
+                    client_tag=self._client_tag,
+                )
+            )
+
+
+class _GatewayOrderErrorCapture:
+    def __init__(
+        self,
+        subscribe: Optional[
+            Callable[
+                [Callable[[Optional[int], Optional[int], Optional[str], Optional[str]], None]],
+                Callable[[], None],
+            ]
+        ],
+        *,
+        order_id: Optional[int],
+    ) -> None:
+        self._order_id = order_id
+        self._code: Optional[int] = None
+        self._message: Optional[str] = None
+        self._lock = threading.Lock()
+        self._unsubscribe: Optional[Callable[[], None]] = None
+        if subscribe is not None and order_id is not None:
+            self._unsubscribe = subscribe(self._handle)
+
+    def _handle(
+        self,
+        req_id: Optional[int],
+        code: Optional[int],
+        message: Optional[str],
+        advanced: Optional[str],
+    ) -> None:
+        if self._order_id is None:
+            return
+        if req_id != self._order_id:
+            return
+        with self._lock:
+            if code is not None:
+                self._code = int(code)
+            if message:
+                self._message = message
+            elif advanced:
+                self._message = advanced
+
+    def snapshot(self) -> tuple[Optional[int], Optional[str]]:
+        with self._lock:
+            return self._code, self._message
+
+    def close(self) -> None:
+        if not self._unsubscribe:
+            return
+        try:
+            self._unsubscribe()
+        finally:
+            self._unsubscribe = None
 
 
 def _build_stop_limit_order(
@@ -925,11 +1214,18 @@ def _attach_stop_trigger_reprice(
             touch_price = await _touch_price_for_stop_limit(ib, contract, side)
             if touch_price is None:
                 return
-            limit_price = _safe_triggered_limit_price(side=side, stop_price=stop_price, touch_price=touch_price)
+            current_stop_price = _maybe_float(getattr(trade_obj.order, "auxPrice", None))
+            if current_stop_price is None or current_stop_price <= 0:
+                current_stop_price = stop_price
+            limit_price = _safe_triggered_limit_price(
+                side=side,
+                stop_price=current_stop_price,
+                touch_price=touch_price,
+            )
             order = copy.copy(trade_obj.order)
             order.orderId = trade_obj.order.orderId
             order.lmtPrice = limit_price
-            order.auxPrice = stop_price
+            order.auxPrice = current_stop_price
             updated_trade = ib.placeOrder(contract, order)
             reprice_applied = True
             if updated_trade is not trade_obj:
@@ -994,6 +1290,10 @@ def _attach_ladder_tp_manager(trade: Trade, *, tp_index: int, manager: _LadderSt
 
 
 def _attach_ladder_stop_manager(trade: Trade, *, manager: _LadderStopManager) -> None:
+    status_event = getattr(trade, "statusEvent", None)
+    if status_event is not None:
+        status_event += lambda trade_obj, *_args: manager.handle_stop_status(trade_obj)
+
     filled_event = getattr(trade, "filledEvent", None)
     if filled_event is not None:
         filled_event += lambda trade_obj, *_args: manager.handle_stop_fill(trade_obj)
