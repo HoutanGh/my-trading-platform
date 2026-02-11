@@ -7,6 +7,7 @@ from apps.adapters.broker.ibkr_connection import (
     IBKRConnection,
     IBKRConnectionConfig,
 )
+from apps.adapters.broker.ibkr_active_orders_port import IBKRActiveOrdersPort
 from apps.adapters.broker.ibkr_order_port import IBKROrderPort
 from apps.adapters.broker.ibkr_positions_port import IBKRPositionsPort
 from apps.adapters.eventbus.in_process import InProcessEventBus
@@ -23,6 +24,7 @@ from apps.cli.order_tracker import OrderTracker
 from apps.cli.position_origin_tracker import PositionOriginTracker
 from apps.cli.repl import REPL
 from apps.core.analytics.flow.take_profit import TakeProfitService
+from apps.core.active_orders.service import ActiveOrdersService
 from apps.core.orders.service import OrderService
 from apps.core.pnl.service import PnlService
 from apps.core.positions.service import PositionsService
@@ -83,6 +85,8 @@ async def _async_main() -> None:
     bus.subscribe(object, position_origin_tracker.handle_event)
     positions_port = IBKRPositionsPort(connection)
     positions_service = PositionsService(positions_port)
+    active_orders_port = IBKRActiveOrdersPort(connection)
+    active_orders_service = ActiveOrdersService(active_orders_port)
     pnl_store = PostgresDailyPnlStore()
     pnl_ingestor = FlexCsvPnlIngestor(pnl_store)
     pnl_service = PnlService(pnl_ingestor, pnl_store, event_bus=bus)
@@ -111,6 +115,7 @@ async def _async_main() -> None:
         order_tracker,
         pnl_service=pnl_service,
         positions_service=positions_service,
+        active_orders_service=active_orders_service,
         position_origin_tracker=position_origin_tracker,
         bar_stream=bar_stream,
         tp_service=tp_service,

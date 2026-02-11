@@ -22,6 +22,8 @@ from apps.adapters.broker.ibkr_connection import IBKRConnection
 from apps.cli.order_tracker import OrderTracker
 from apps.cli.position_origin_tracker import PositionOriginTracker
 from apps.core.analytics.flow.take_profit import TakeProfitRequest, TakeProfitService
+from apps.core.active_orders.models import ActiveOrderSnapshot
+from apps.core.active_orders.service import ActiveOrdersService
 from apps.core.market_data.ports import BarStreamPort, QuotePort, QuoteStreamPort
 from apps.core.ops.events import CliErrorLogged
 from apps.core.orders.events import (
@@ -90,6 +92,7 @@ class REPL:
         order_tracker: Optional[OrderTracker] = None,
         pnl_service: Optional[PnlService] = None,
         positions_service: Optional[PositionsService] = None,
+        active_orders_service: Optional[ActiveOrdersService] = None,
         position_origin_tracker: Optional[PositionOriginTracker] = None,
         bar_stream: Optional[BarStreamPort] = None,
         tp_service: Optional[TakeProfitService] = None,
@@ -108,6 +111,7 @@ class REPL:
         self._order_tracker = order_tracker
         self._pnl_service = pnl_service
         self._positions_service = positions_service
+        self._active_orders_service = active_orders_service
         self._position_origin_tracker = position_origin_tracker
         self._bar_stream = bar_stream
         self._tp_service = tp_service
@@ -254,11 +258,13 @@ class REPL:
             CommandSpec(
                 name="orders",
                 handler=self._cmd_orders,
-                help="Show tracked order statuses or change an order.",
+                help="Show tracked orders, broker active orders, or change an order.",
                 usage=(
                     "orders [pending] "
                     "| orders cancel ORDER_ID "
-                    "| orders replace ORDER_ID [limit=...] [qty=...] [tif=DAY] [outside_rth=true|false]"
+                    "| orders replace ORDER_ID [limit=...] [qty=...] [tif=DAY] [outside_rth=true|false] "
+                    "| orders broker [account=...] [scope=client|all_clients] "
+                    "| orders broker cancel ORDER_ID"
                 ),
             )
         )
@@ -453,7 +459,20 @@ class REPL:
                 "client_tag=",
             ]
         if name == "orders":
-            return ["pending", "cancel", "replace", "limit=", "qty=", "tif=", "outside_rth="]
+            return [
+                "pending",
+                "cancel",
+                "replace",
+                "broker",
+                "all_clients",
+                "client",
+                "limit=",
+                "qty=",
+                "tif=",
+                "outside_rth=",
+                "account=",
+                "scope=",
+            ]
         if name == "positions":
             return ["account="]
         if name == "ingest-flex":
@@ -1345,6 +1364,9 @@ class REPL:
             if subcommand == "replace":
                 await self._cmd_order_replace(_args[1:], _kwargs)
                 return
+            if subcommand == "broker":
+                await self._cmd_order_broker(_args[1:], _kwargs)
+                return
         if not self._order_tracker:
             print("Order tracker not configured.")
             return
@@ -1432,6 +1454,56 @@ class REPL:
             _print_exception("Replace failed", exc)
             return
         print(f"Replace requested: order_id={ack.order_id} status={ack.status}")
+
+    async def _cmd_order_broker(self, args: list[str], kwargs: dict[str, str]) -> None:
+        if args and args[0].strip().lower() == "cancel":
+            await self._cmd_order_cancel(args[1:], kwargs)
+            return
+
+        if not self._active_orders_service:
+            print("Active orders service not configured.")
+            return
+        if not self._connection.status().get("connected"):
+            print("Not connected. Use `connect` before requesting broker orders.")
+            return
+
+        normalized_args = list(args)
+        scope_arg = None
+        if normalized_args:
+            parsed_scope = normalized_args[0].strip().lower().replace("-", "_")
+            if parsed_scope in {"client", "all_clients"}:
+                scope_arg = parsed_scope
+                normalized_args = normalized_args[1:]
+        if normalized_args:
+            print("Usage: orders broker [account=...] [scope=client|all_clients]")
+            return
+
+        account = _coerce_str(kwargs.get("account"))
+        scope_raw = _coerce_str(kwargs.get("scope"))
+        scope = (scope_raw or scope_arg or "client").strip().lower().replace("-", "_")
+        if scope not in {"client", "all_clients"}:
+            print("scope must be 'client' or 'all_clients'")
+            return
+
+        try:
+            snapshots = await self._active_orders_service.list_active_orders(
+                account=account,
+                scope=scope,
+            )
+        except ValueError as exc:
+            print(f"Broker orders rejected: {exc}")
+            return
+        except Exception as exc:
+            _print_exception("Broker orders failed", exc)
+            return
+
+        if not snapshots:
+            print("No active broker orders found.")
+            return
+
+        print(f"Active broker orders (scope={scope})")
+        for line in _format_active_orders_table(snapshots):
+            print(line)
 
     async def _cmd_trades(self, _args: list[str], _kwargs: dict[str, str]) -> None:
         log_path = _resolve_event_log_path()
@@ -2630,6 +2702,8 @@ def _flag_aliases(command: str) -> dict[str, str]:
             "l": "limit",
             "t": "tif",
             "o": "outside_rth",
+            "a": "account",
+            "s": "scope",
         }
     if command == "positions":
         return {"a": "account"}
@@ -2739,6 +2813,57 @@ def _format_positions_table(
     for row in rows:
         lines.append(" | ".join(value.ljust(widths[idx]) for idx, value in enumerate(row)))
     return lines
+
+
+def _format_active_orders_table(orders: list[ActiveOrderSnapshot]) -> list[str]:
+    headers = [
+        "id",
+        "parent",
+        "symbol",
+        "side",
+        "type",
+        "qty",
+        "filled",
+        "remaining",
+        "limit",
+        "stop",
+        "status",
+        "account",
+        "tag",
+    ]
+    rows: list[list[str]] = []
+    for order in sorted(
+        orders,
+        key=lambda item: (
+            item.account or "",
+            item.symbol or "",
+            item.order_id if item.order_id is not None else -1,
+        ),
+    ):
+        rows.append(
+            [
+                _format_int(order.order_id),
+                _format_int(order.parent_order_id),
+                order.symbol or "-",
+                order.side or "-",
+                order.order_type or "-",
+                _format_number(order.qty),
+                _format_number(order.filled_qty),
+                _format_number(order.remaining_qty),
+                _format_number(order.limit_price),
+                _format_number(order.stop_price),
+                order.status or "-",
+                order.account or "-",
+                order.client_tag or "-",
+            ]
+        )
+    return _format_simple_table(headers, rows)
+
+
+def _format_int(value: Optional[int]) -> str:
+    if value is None:
+        return "-"
+    return str(value)
 
 
 def _format_number(value: Optional[float], *, precision: int = 4) -> str:

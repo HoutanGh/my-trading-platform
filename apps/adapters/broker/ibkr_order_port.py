@@ -83,9 +83,14 @@ class IBKROrderPort(OrderPort):
     async def cancel_order(self, spec: OrderCancelSpec) -> OrderAck:
         if not self._ib.isConnected():
             raise RuntimeError("IBKR is not connected")
-        trade = _find_trade_by_order_id(self._ib, spec.order_id)
+        timeout = max(self._connection.config.timeout, 1.0)
+        trade = await _find_trade_by_order_id_with_refresh(
+            self._ib,
+            spec.order_id,
+            timeout=timeout,
+        )
         if trade is None:
-            raise RuntimeError(f"Order {spec.order_id} not found in current session")
+            raise RuntimeError(f"Order {spec.order_id} not found in broker open orders")
         self._ib.cancelOrder(trade.order)
         status = await _wait_for_order_status(trade)
         return OrderAck.now(order_id=spec.order_id, status=status)
@@ -391,6 +396,29 @@ def _find_trade_by_order_id(ib: IB, order_id: int) -> Optional[Trade]:
         if getattr(getattr(trade, "order", None), "orderId", None) == order_id:
             return trade
     return None
+
+
+async def _find_trade_by_order_id_with_refresh(
+    ib: IB,
+    order_id: int,
+    *,
+    timeout: float,
+) -> Optional[Trade]:
+    trade = _find_trade_by_order_id(ib, order_id)
+    if trade is not None:
+        return trade
+    try:
+        await asyncio.wait_for(ib.reqOpenOrdersAsync(), timeout=timeout)
+    except Exception:
+        pass
+    trade = _find_trade_by_order_id(ib, order_id)
+    if trade is not None:
+        return trade
+    try:
+        await asyncio.wait_for(ib.reqAllOpenOrdersAsync(), timeout=timeout)
+    except Exception:
+        pass
+    return _find_trade_by_order_id(ib, order_id)
 
 
 def _order_spec_from_trade(trade: Trade) -> OrderSpec:

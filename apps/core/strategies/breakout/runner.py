@@ -113,6 +113,7 @@ async def run_breakout(
     bars_seen = 0
     decision = asyncio.Event()
     decision_lock = asyncio.Lock()
+    submit_owner_task: asyncio.Task | None = None
     fast_config = config.rule.fast_entry
 
     async def _submit_entry(
@@ -121,12 +122,14 @@ async def run_breakout(
         reason: str,
         fast_thresholds: Optional[FastEntryThresholds] = None,
     ) -> bool:
+        nonlocal submit_owner_task
         if decision.is_set():
             return False
         async with decision_lock:
             if decision.is_set():
                 return False
             decision.set()
+            submit_owner_task = asyncio.current_task()
 
         if event_bus and fast_thresholds is not None:
             event_bus.publish(
@@ -381,10 +384,14 @@ async def run_breakout(
             tasks.append(asyncio.create_task(_watch_fast(), name=f"breakout:fast:{symbol}"))
         done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         for task in pending:
+            if task is submit_owner_task:
+                continue
             task.cancel()
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
-        for task in done:
+        for task in tasks:
+            if task.cancelled():
+                continue
             exc = task.exception()
             if exc:
                 raise exc
