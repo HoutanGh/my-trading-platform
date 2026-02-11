@@ -181,3 +181,82 @@ class BracketChildOrderFilled:
             client_tag=client_tag,
             timestamp=_now(),
         )
+
+
+@dataclass(frozen=True)
+class LadderStopLossReplaced:
+    symbol: str
+    parent_order_id: Optional[int]
+    old_order_id: Optional[int]
+    new_order_id: Optional[int]
+    old_qty: int
+    new_qty: int
+    old_price: float
+    new_price: float
+    reason: str
+    client_tag: Optional[str]
+    timestamp: datetime
+
+    @classmethod
+    def now(
+        cls,
+        *,
+        symbol: str,
+        parent_order_id: Optional[int],
+        old_order_id: Optional[int],
+        new_order_id: Optional[int],
+        old_qty: int,
+        new_qty: int,
+        old_price: float,
+        new_price: float,
+        reason: str,
+        client_tag: Optional[str],
+    ) -> "LadderStopLossReplaced":
+        return cls(
+            symbol=symbol,
+            parent_order_id=parent_order_id,
+            old_order_id=old_order_id,
+            new_order_id=new_order_id,
+            old_qty=old_qty,
+            new_qty=new_qty,
+            old_price=old_price,
+            new_price=new_price,
+            reason=reason,
+            client_tag=client_tag,
+            timestamp=_now(),
+        )
+
+
+@dataclass(frozen=True)
+class LadderStopLossCancelled:
+    symbol: str
+    parent_order_id: Optional[int]
+    order_id: Optional[int]
+    qty: int
+    price: float
+    reason: str
+    client_tag: Optional[str]
+    timestamp: datetime
+
+    @classmethod
+    def now(
+        cls,
+        *,
+        symbol: str,
+        parent_order_id: Optional[int],
+        order_id: Optional[int],
+        qty: int,
+        price: float,
+        reason: str,
+        client_tag: Optional[str],
+    ) -> "LadderStopLossCancelled":
+        return cls(
+            symbol=symbol,
+            parent_order_id=parent_order_id,
+            order_id=order_id,
+            qty=qty,
+            price=price,
+            reason=reason,
+            client_tag=client_tag,
+            timestamp=_now(),
+        )

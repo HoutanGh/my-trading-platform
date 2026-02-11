@@ -16,6 +16,8 @@ from apps.adapters.broker.ibkr_connection import IBKRConnection
 from apps.core.orders.events import (
     BracketChildOrderFilled,
     BracketChildOrderStatusChanged,
+    LadderStopLossCancelled,
+    LadderStopLossReplaced,
     OrderIdAssigned,
     OrderSent,
     OrderStatusChanged,
@@ -512,32 +514,39 @@ class _LadderStopManager:
         self._total_qty = float(stop_qty)
         self._remaining_qty = float(stop_qty)
         self._tp_filled: dict[int, float] = {}
+        self._tp_exec_ids: dict[int, set[str]] = {}
         self._stop_filled = False
 
-    def handle_tp_fill(self, tp_index: int, trade_obj: Trade) -> None:
+    def handle_tp_fill(self, tp_index: int, _trade_obj: Trade, fill_obj: object | None) -> None:
         with self._lock:
             if self._stop_filled:
                 return
             state = self._tp_states.get(tp_index)
             if not state:
                 return
-            order_status = getattr(trade_obj, "orderStatus", None)
-            if not order_status:
+            fill_qty = _extract_execution_shares(fill_obj)
+            if fill_qty is None or fill_qty <= 0:
                 return
-            filled_qty = _maybe_float(getattr(order_status, "filled", None))
-            if filled_qty is None:
+            exec_id = _extract_execution_id(fill_obj)
+            if not exec_id:
                 return
+            seen_exec_ids = self._tp_exec_ids.setdefault(tp_index, set())
+            if exec_id in seen_exec_ids:
+                return
+            seen_exec_ids.add(exec_id)
+
             prev_filled = self._tp_filled.get(tp_index, 0.0)
-            if filled_qty <= prev_filled:
+            capped_fill_qty = min(float(state.qty), prev_filled + fill_qty)
+            if capped_fill_qty <= prev_filled:
                 return
-            self._tp_filled[tp_index] = filled_qty
+            self._tp_filled[tp_index] = capped_fill_qty
             new_remaining = self._total_qty - sum(self._tp_filled.values())
             if new_remaining < 0:
                 new_remaining = 0.0
 
             stop_price = self._stop_price
             stop_price_changed = False
-            if tp_index not in self._processed_tps and filled_qty >= state.qty:
+            if tp_index not in self._processed_tps and capped_fill_qty >= float(state.qty):
                 self._processed_tps.add(tp_index)
                 self._filled_tp_count += 1
                 if self._filled_tp_count <= len(self._stop_updates):
@@ -546,7 +555,7 @@ class _LadderStopManager:
 
             self._remaining_qty = new_remaining
             if self._remaining_qty <= 0:
-                self._cancel_stop()
+                self._cancel_stop(reason="tp_full_exit")
                 return
             remaining_qty = int(round(self._remaining_qty))
             if stop_price_changed or remaining_qty != self._stop_qty:
@@ -565,13 +574,32 @@ class _LadderStopManager:
                     continue
                 self._ib.cancelOrder(state.trade.order)
 
-    def _cancel_stop(self) -> None:
+    def _cancel_stop(self, *, reason: str) -> None:
         if self._stop_trade:
+            old_order_id = self._stop_trade.order.orderId
+            old_qty = self._stop_qty
+            old_price = self._stop_price
             self._ib.cancelOrder(self._stop_trade.order)
             self._stop_trade = None
+            if self._event_bus:
+                self._event_bus.publish(
+                    LadderStopLossCancelled.now(
+                        symbol=self._symbol,
+                        parent_order_id=self._parent_order_id,
+                        order_id=old_order_id,
+                        qty=old_qty,
+                        price=old_price,
+                        reason=reason,
+                        client_tag=self._client_tag,
+                    )
+                )
 
     def _replace_stop(self, stop_price: float, qty: int) -> None:
+        old_order_id: Optional[int] = None
+        old_qty = self._stop_qty
+        old_price = self._stop_price
         if self._stop_trade:
+            old_order_id = self._stop_trade.order.orderId
             self._ib.cancelOrder(self._stop_trade.order)
         stop_order = _build_stop_limit_order(
             side=self._child_side,
@@ -589,6 +617,26 @@ class _LadderStopManager:
         self._stop_trade = stop_trade
         self._stop_qty = qty
         self._stop_price = stop_price
+        if self._event_bus:
+            self._event_bus.publish(
+                LadderStopLossReplaced.now(
+                    symbol=self._symbol,
+                    parent_order_id=self._parent_order_id,
+                    old_order_id=old_order_id,
+                    new_order_id=stop_trade.order.orderId,
+                    old_qty=old_qty,
+                    new_qty=qty,
+                    old_price=old_price,
+                    new_price=stop_price,
+                    reason=_stop_replace_reason(
+                        old_qty=old_qty,
+                        new_qty=qty,
+                        old_price=old_price,
+                        new_price=stop_price,
+                    ),
+                    client_tag=self._client_tag,
+                )
+            )
         if self._event_bus:
             _attach_bracket_child_handlers(
                 stop_trade,
@@ -781,6 +829,10 @@ def _attach_bracket_child_handlers(
         filled_qty = _maybe_float(order_status.filled)
         avg_fill_price = _maybe_float(order_status.avgFillPrice)
         remaining_qty = _maybe_float(order_status.remaining)
+        if filled_qty is not None:
+            filled_qty = min(max(filled_qty, 0.0), float(qty))
+        if remaining_qty is not None:
+            remaining_qty = min(max(remaining_qty, 0.0), float(qty))
         status = order_status.status
         nonlocal last_fill
         snapshot = (filled_qty, avg_fill_price, remaining_qty, status)
@@ -901,13 +953,13 @@ def _attach_stop_trigger_reprice(
 
 
 def _attach_ladder_tp_manager(trade: Trade, *, tp_index: int, manager: _LadderStopManager) -> None:
-    filled_event = getattr(trade, "filledEvent", None)
-    if filled_event is not None:
-        filled_event += lambda trade_obj, *_args: manager.handle_tp_fill(tp_index, trade_obj)
-
     fill_event = getattr(trade, "fillEvent", None)
     if fill_event is not None:
-        fill_event += lambda trade_obj, *_args: manager.handle_tp_fill(tp_index, trade_obj)
+        fill_event += lambda trade_obj, *args: manager.handle_tp_fill(
+            tp_index,
+            trade_obj,
+            args[0] if args else None,
+        )
 
 
 def _attach_ladder_stop_manager(trade: Trade, *, manager: _LadderStopManager) -> None:
@@ -927,6 +979,45 @@ def _maybe_float(value: object) -> Optional[float]:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _extract_execution_id(fill_obj: object | None) -> Optional[str]:
+    if fill_obj is None:
+        return None
+    execution = getattr(fill_obj, "execution", None)
+    if execution is None:
+        return None
+    raw = getattr(execution, "execId", None)
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    return text
+
+
+def _extract_execution_shares(fill_obj: object | None) -> Optional[float]:
+    if fill_obj is None:
+        return None
+    execution = getattr(fill_obj, "execution", None)
+    if execution is None:
+        return None
+    shares = _maybe_float(getattr(execution, "shares", None))
+    if shares is None:
+        return None
+    return shares
+
+
+def _stop_replace_reason(*, old_qty: int, new_qty: int, old_price: float, new_price: float) -> str:
+    qty_changed = old_qty != new_qty
+    price_changed = old_price != new_price
+    if qty_changed and price_changed:
+        return "qty_and_price_update"
+    if qty_changed:
+        return "qty_update"
+    if price_changed:
+        return "price_update"
+    return "replaced"
 
 
 def _normalize_status(value: object) -> Optional[str]:

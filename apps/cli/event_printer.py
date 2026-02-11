@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from time import monotonic
 import sys
 from typing import Optional
 
@@ -10,7 +11,12 @@ try:
 except ImportError:
     readline = None
 
-from apps.core.orders.events import BracketChildOrderFilled, OrderFilled
+from apps.core.orders.events import (
+    BracketChildOrderFilled,
+    LadderStopLossCancelled,
+    LadderStopLossReplaced,
+    OrderFilled,
+)
 from apps.core.ops.events import (
     BarStreamCompetingSessionBlocked,
     BarStreamCompetingSessionCleared,
@@ -35,6 +41,8 @@ from apps.core.strategies.breakout.events import (
 _PROMPT_PREFIX: Optional[str] = None
 _CONFIRMED_BY_TAG: dict[str, "_EntryFillTiming"] = {}
 _MAX_GATEWAY_MSG_LEN = 160
+_BAR_STREAM_INFO_COOLDOWN_SECONDS = 15.0
+_BAR_STREAM_INFO_LAST_PRINTED: dict[tuple[str, str, str, bool], float] = {}
 
 
 @dataclass
@@ -179,6 +187,13 @@ def print_event(event: object) -> bool:
         )
         return True
     if isinstance(event, BarStreamRecovered):
+        if not _should_print_bar_stream_info(
+            kind="recovered",
+            symbol=event.symbol,
+            bar_size=event.bar_size,
+            use_rth=event.use_rth,
+        ):
+            return False
         _print_line(
             event.timestamp,
             "BarStreamRecovered",
@@ -189,6 +204,13 @@ def print_event(event: object) -> bool:
         )
         return True
     if isinstance(event, BarStreamRecoveryStarted):
+        if not _should_print_bar_stream_info(
+            kind="heal",
+            symbol=event.symbol,
+            bar_size=event.bar_size,
+            use_rth=event.use_rth,
+        ):
+            return False
         _print_line(
             event.timestamp,
             "BarStreamHeal",
@@ -265,6 +287,28 @@ def print_event(event: object) -> bool:
             (
                 f"{event.symbol} qty={event.filled_qty or event.qty} "
                 f"price={fill_price}"
+            ),
+        )
+        return True
+    if isinstance(event, LadderStopLossReplaced):
+        _print_line(
+            event.timestamp,
+            "StopLossReplaced",
+            (
+                f"{event.symbol} reason={event.reason} "
+                f"order={event.old_order_id}->{event.new_order_id} "
+                f"qty={event.old_qty}->{event.new_qty} "
+                f"price={event.old_price:g}->{event.new_price:g}"
+            ),
+        )
+        return True
+    if isinstance(event, LadderStopLossCancelled):
+        _print_line(
+            event.timestamp,
+            "StopLossCancelled",
+            (
+                f"{event.symbol} reason={event.reason} "
+                f"order_id={event.order_id} qty={event.qty} price={event.price:g}"
             ),
         )
         return True
@@ -397,6 +441,24 @@ def _normalize_timestamp(timestamp: datetime) -> datetime:
     if timestamp.tzinfo is None:
         return timestamp.replace(tzinfo=timezone.utc)
     return timestamp
+
+
+def _should_print_bar_stream_info(
+    *,
+    kind: str,
+    symbol: str,
+    bar_size: str,
+    use_rth: bool,
+) -> bool:
+    if _BAR_STREAM_INFO_COOLDOWN_SECONDS <= 0:
+        return True
+    key = (kind, symbol.upper(), bar_size, use_rth)
+    now = monotonic()
+    last = _BAR_STREAM_INFO_LAST_PRINTED.get(key)
+    if last is not None and (now - last) < _BAR_STREAM_INFO_COOLDOWN_SECONDS:
+        return False
+    _BAR_STREAM_INFO_LAST_PRINTED[key] = now
+    return True
 
 
 def make_prompting_event_printer(prompt: str):
