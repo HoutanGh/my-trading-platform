@@ -8,7 +8,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from collections.abc import Coroutine
-from typing import Callable, Optional
+from typing import Any, Callable, Optional, cast
 
 from ib_insync import IB, LimitOrder, MarketOrder, Stock, StopLimitOrder, Trade
 
@@ -1623,7 +1623,16 @@ def _maybe_float(value: object) -> Optional[float]:
     if value is None:
         return None
     try:
-        return float(value)
+        return float(cast(Any, value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _maybe_int(value: object) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        return int(cast(Any, value))
     except (TypeError, ValueError):
         return None
 
