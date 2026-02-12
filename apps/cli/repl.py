@@ -700,6 +700,9 @@ class REPL:
         except ValueError:
             print("level must be a number")
             return
+        if level <= 0:
+            print("level must be greater than zero")
+            return
         try:
             qty = int(qty_raw)
         except ValueError:
@@ -814,6 +817,9 @@ class REPL:
             except ValueError:
                 print("entry must be 'limit' (lmt) or 'market' (mkt)")
                 return
+        if entry_type == OrderType.LIMIT and not self._quote_port and not self._quote_stream:
+            print("limit entry requires quote_port or quote_stream to be configured")
+            return
 
         max_bars_raw = kwargs.get("max_bars") or _config_get(self._config, "max_bars")
         max_bars = None
@@ -1011,7 +1017,7 @@ class REPL:
             print(f"  TP{idx}: {level.price:g} ({level.reason.value})")
 
     def _breakout_task_name(self, config: BreakoutRunConfig) -> str:
-        return f"breakout:{config.symbol}:{config.rule.level}"
+        return f"breakout:{config.symbol}:{config.rule.level:g}"
 
     def _launch_breakout(self, config: BreakoutRunConfig, *, source: str) -> bool:
         if not self._bar_stream or not self._order_service:
