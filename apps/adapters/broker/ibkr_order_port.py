@@ -244,8 +244,8 @@ class IBKROrderPort(OrderPort):
         qualified = contracts[0]
         loop = asyncio.get_running_loop()
 
-        if spec.execution_mode == LadderExecutionMode.DETACHED_70_30:
-            return await self._submit_ladder_order_detached_70_30(
+        if spec.execution_mode in {LadderExecutionMode.DETACHED, LadderExecutionMode.DETACHED_70_30}:
+            return await self._submit_ladder_order_detached(
                 spec=spec,
                 qualified=qualified,
                 loop=loop,
@@ -391,7 +391,7 @@ class IBKROrderPort(OrderPort):
             )
         return OrderAck.now(order_id=order_id, status=status)
 
-    async def _submit_ladder_order_detached_70_30(
+    async def _submit_ladder_order_detached(
         self,
         *,
         spec: LadderOrderSpec,
@@ -413,6 +413,10 @@ class IBKROrderPort(OrderPort):
             parent.orderRef = spec.client_tag
 
         child_side = OrderSide.SELL if spec.side == OrderSide.BUY else OrderSide.BUY
+        kind_prefix = (
+            "det70" if spec.execution_mode == LadderExecutionMode.DETACHED_70_30 else "detached"
+        )
+        execution_mode = "detached70" if kind_prefix == "det70" else "detached"
 
         parent_spec = _entry_spec_from_ladder(spec)
         trade = self._ib.placeOrder(qualified, parent)
@@ -438,7 +442,7 @@ class IBKROrderPort(OrderPort):
         if self._event_bus:
             _attach_bracket_child_handlers(
                 stop_trade,
-                kind="det70_stop",
+                kind=f"{kind_prefix}_stop",
                 symbol=spec.symbol,
                 side=child_side,
                 qty=spec.qty,
@@ -460,7 +464,7 @@ class IBKROrderPort(OrderPort):
                 if self._event_bus:
                     _attach_bracket_child_handlers(
                         updated_trade,
-                        kind="det70_stop",
+                        kind=f"{kind_prefix}_stop",
                         symbol=spec.symbol,
                         side=child_side,
                         qty=spec.qty,
@@ -521,7 +525,7 @@ class IBKROrderPort(OrderPort):
                 if self._event_bus:
                     _attach_bracket_child_handlers(
                         tp_trade,
-                        kind=f"det70_tp_{idx}",
+                        kind=f"{kind_prefix}_tp_{idx}",
                         symbol=spec.symbol,
                         side=child_side,
                         qty=tp_qty,
@@ -550,7 +554,7 @@ class IBKROrderPort(OrderPort):
                 loop=loop,
                 gateway_message_subscribe=self._connection.subscribe_gateway_messages,
                 replace_timeout=max(self._connection.config.timeout, 1.0),
-                execution_mode="detached70",
+                execution_mode=execution_mode,
                 link_stop_to_parent=True,
             )
             manager_ref["manager"] = manager
@@ -790,7 +794,12 @@ class _LadderStopManager:
         self._replace_timeout = replace_timeout
         self._execution_mode = execution_mode
         self._link_stop_to_parent = link_stop_to_parent
-        self._stop_kind = "stop_loss" if execution_mode == "attached" else "det70_stop"
+        if execution_mode == "attached":
+            self._stop_kind = "stop_loss"
+        elif execution_mode == "detached70":
+            self._stop_kind = "det70_stop"
+        else:
+            self._stop_kind = "detached_stop"
         self._lock = threading.Lock()
         self._processed_tps: set[int] = set()
         self._filled_tp_count = 0

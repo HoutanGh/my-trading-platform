@@ -18,6 +18,7 @@ class OrderType(str, Enum):
 
 class LadderExecutionMode(str, Enum):
     ATTACHED = "ATTACHED"
+    DETACHED = "DETACHED"
     DETACHED_70_30 = "DETACHED_70_30"
 
 

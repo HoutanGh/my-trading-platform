@@ -262,7 +262,7 @@ class REPL:
                 usage=(
                     "breakout SYMBOL level=... qty=... [tp=...|tp=1.1-1.3|tp=auto tp_count=2|3] [sl=...] [rth=true|false] [bar=1 min] "
                     "[fast=true|false] [fast_bar=1 secs] [max_bars=...] [tif=DAY] [outside_rth=true|false] "
-                    "[entry=limit|market] [quote_age=...] [tp_exec=attached|detached70] [account=...] [client_tag=...] "
+                    "[entry=limit|market] [quote_age=...] [tp_exec=attached|detached|detached70] [account=...] [client_tag=...] "
                     "| breakout SYMBOL LEVEL QTY [TP] [SL] "
                     "| breakout SYMBOL LEVEL QTY tp-2 [SL] "
                     "| breakout status | breakout cancel [SYMBOL ...|ALL]"
@@ -730,10 +730,11 @@ class REPL:
             or _config_get(self._config, "tp_exec")
             or _config_get(self._config, "ladder_exec")
         )
+        tp_exec_explicit = tp_exec_raw is not None and str(tp_exec_raw).strip() != ""
         try:
             ladder_execution_mode = _parse_ladder_execution_mode(tp_exec_raw)
         except ValueError:
-            print("tp_exec must be 'attached' or 'detached70'")
+            print("tp_exec must be 'attached', 'detached', or 'detached70'")
             return
 
         auto_tp_count_from_value = (
@@ -958,6 +959,17 @@ class REPL:
                         except ValueError as exc:
                             print(f"tp_alloc invalid: {exc}")
                             return
+
+        if not tp_exec_explicit and take_profits and len(take_profits) >= 2:
+            ladder_execution_mode = LadderExecutionMode.DETACHED
+
+        if ladder_execution_mode == LadderExecutionMode.DETACHED:
+            if not take_profits or len(take_profits) not in {2, 3}:
+                print("tp_exec=detached requires a 2- or 3-level tp ladder with sl.")
+                return
+            if tp_reprice_on_fill:
+                tp_reprice_on_fill = False
+                print("tp_reprice disabled for tp_exec=detached")
 
         if ladder_execution_mode == LadderExecutionMode.DETACHED_70_30:
             if not take_profits or len(take_profits) != 2:
@@ -2333,7 +2345,7 @@ class REPL:
         print("  buy/sell: tif=DAY outside_rth=false")
         print(
             "  breakout: bar_size=1 min fast=true fast_bar=1 secs use_rth=false "
-            "outside_rth=!use_rth entry=limit tif=DAY quote_age/quote_max_age=2.0 tp_exec=attached"
+            "outside_rth=!use_rth entry=limit tif=DAY quote_age/quote_max_age=2.0 tp_exec=auto(ladder->detached)"
         )
 
     async def _cmd_disconnect(self, _args: list[str], _kwargs: dict[str, str]) -> None:
@@ -2519,12 +2531,16 @@ def _parse_ladder_execution_mode(value: object) -> LadderExecutionMode:
         normalized = value.strip().lower()
         if normalized in {"", "attached"}:
             return LadderExecutionMode.ATTACHED
+        if normalized in {"detached", "det"}:
+            return LadderExecutionMode.DETACHED
         if normalized in {"detached70", "det70", "detached_70_30"}:
             return LadderExecutionMode.DETACHED_70_30
     raise ValueError("invalid ladder execution mode")
 
 
 def _ladder_execution_mode_label(mode: LadderExecutionMode) -> str:
+    if mode == LadderExecutionMode.DETACHED:
+        return "detached"
     if mode == LadderExecutionMode.DETACHED_70_30:
         return "detached70"
     return "attached"
@@ -2816,19 +2832,30 @@ def _deserialize_breakout_config(payload: dict[str, object]) -> Optional[Breakou
     tp_reprice_bar_size = _coerce_str(payload.get("tp_reprice_bar_size")) or bar_size
     tp_reprice_use_rth = _coerce_bool(payload.get("tp_reprice_use_rth"), default=use_rth)
     tp_reprice_timeout_seconds = _coerce_float(payload.get("tp_reprice_timeout_seconds")) or 5.0
-    try:
-        ladder_execution_mode = _parse_ladder_execution_mode(payload.get("ladder_execution_mode"))
-    except ValueError:
-        return None
+    mode_value = payload.get("ladder_execution_mode")
+    if mode_value is None and take_profits and len(take_profits) >= 2:
+        ladder_execution_mode = LadderExecutionMode.DETACHED
+    else:
+        try:
+            ladder_execution_mode = _parse_ladder_execution_mode(mode_value)
+        except ValueError:
+            return None
     if tp_reprice_timeout_seconds <= 0:
         return None
     if tp_reprice_on_fill and not take_profits:
+        return None
+    if (
+        ladder_execution_mode == LadderExecutionMode.DETACHED
+        and (not take_profits or len(take_profits) not in {2, 3})
+    ):
         return None
     if (
         ladder_execution_mode == LadderExecutionMode.DETACHED_70_30
         and (not take_profits or len(take_profits) != 2)
     ):
         return None
+    if ladder_execution_mode == LadderExecutionMode.DETACHED and tp_reprice_on_fill:
+        tp_reprice_on_fill = False
     if ladder_execution_mode == LadderExecutionMode.DETACHED_70_30:
         try:
             expected_qtys = _split_qty_by_ratios(qty, [0.7, 0.3])
@@ -2837,7 +2864,7 @@ def _deserialize_breakout_config(payload: dict[str, object]) -> Optional[Breakou
         if take_profit_qtys != expected_qtys:
             return None
         if tp_reprice_on_fill:
-            return None
+            tp_reprice_on_fill = False
     return BreakoutRunConfig(
         symbol=symbol.strip().upper(),
         qty=qty,

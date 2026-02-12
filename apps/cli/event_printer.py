@@ -284,7 +284,12 @@ def print_event(event: object) -> bool:
         broker_qty = "-"
         if event.broker_order_qty is not None:
             broker_qty = f"{event.broker_order_qty:g}"
-        label = "Det70ChildSnapshot" if event.kind.startswith("det70_") else "ChildOrderSnapshot"
+        if event.kind.startswith("det70_"):
+            label = "Det70ChildSnapshot"
+        elif event.kind.startswith("detached_"):
+            label = "DetachedChildSnapshot"
+        else:
+            label = "ChildOrderSnapshot"
         _print_line(
             event.timestamp,
             label,
@@ -295,7 +300,12 @@ def print_event(event: object) -> bool:
         )
         return True
     if isinstance(event, BracketChildQuantityMismatchDetected):
-        label = "Det70QtyMismatch" if event.kind.startswith("det70_") else "ChildQtyMismatch"
+        if event.kind.startswith("det70_"):
+            label = "Det70QtyMismatch"
+        elif event.kind.startswith("detached_"):
+            label = "DetachedQtyMismatch"
+        else:
+            label = "ChildQtyMismatch"
         _print_line(
             event.timestamp,
             label,
@@ -314,6 +324,11 @@ def print_event(event: object) -> bool:
             label = f"Det70TakeProfit{suffix}Filled"
         elif event.kind == "det70_stop":
             label = "Det70StopLossFilled"
+        elif event.kind.startswith("detached_tp_"):
+            suffix = event.kind.split("_")[-1]
+            label = f"DetachedTakeProfit{suffix}Filled"
+        elif event.kind == "detached_stop":
+            label = "DetachedStopLossFilled"
         elif event.kind.startswith("take_profit"):
             suffix = event.kind.split("_", 2)[-1] if event.kind.startswith("take_profit_") else ""
             label = f"TakeProfit{suffix}Filled" if suffix else "TakeProfitFilled"
@@ -338,11 +353,12 @@ def print_event(event: object) -> bool:
         )
         return True
     if isinstance(event, LadderStopLossReplaced):
-        label = (
-            "Det70StopLossReplaced"
-            if event.execution_mode == "detached70"
-            else "StopLossReplaced"
-        )
+        if event.execution_mode == "detached70":
+            label = "Det70StopLossReplaced"
+        elif event.execution_mode == "detached":
+            label = "DetachedStopLossReplaced"
+        else:
+            label = "StopLossReplaced"
         _print_line(
             event.timestamp,
             label,
@@ -361,11 +377,12 @@ def print_event(event: object) -> bool:
         if event.broker_message:
             broker.append(f"msg={_shorten_message(event.broker_message)}")
         broker_suffix = f" {' '.join(broker)}" if broker else ""
-        label = (
-            "Det70StopLossReplaceFailed"
-            if event.execution_mode == "detached70"
-            else "StopLossReplaceFailed"
-        )
+        if event.execution_mode == "detached70":
+            label = "Det70StopLossReplaceFailed"
+        elif event.execution_mode == "detached":
+            label = "DetachedStopLossReplaceFailed"
+        else:
+            label = "StopLossReplaceFailed"
         _print_line(
             event.timestamp,
             label,
@@ -378,11 +395,12 @@ def print_event(event: object) -> bool:
         return True
     if isinstance(event, LadderProtectionStateChanged):
         tp_ids = ",".join(str(order_id) for order_id in event.active_take_profit_order_ids)
-        label = (
-            "Det70StopProtection"
-            if event.execution_mode == "detached70"
-            else "StopProtection"
-        )
+        if event.execution_mode == "detached70":
+            label = "Det70StopProtection"
+        elif event.execution_mode == "detached":
+            label = "DetachedStopProtection"
+        else:
+            label = "StopProtection"
         _print_line(
             event.timestamp,
             label,
@@ -393,11 +411,12 @@ def print_event(event: object) -> bool:
         )
         return True
     if isinstance(event, LadderStopLossCancelled):
-        label = (
-            "Det70StopLossCancelled"
-            if event.execution_mode == "detached70"
-            else "StopLossCancelled"
-        )
+        if event.execution_mode == "detached70":
+            label = "Det70StopLossCancelled"
+        elif event.execution_mode == "detached":
+            label = "DetachedStopLossCancelled"
+        else:
+            label = "StopLossCancelled"
         _print_line(
             event.timestamp,
             label,
