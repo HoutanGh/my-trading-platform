@@ -6,6 +6,7 @@ from typing import Optional, Type, TypeVar
 from apps.core.orders.events import OrderIntent
 from apps.core.orders.models import (
     BracketOrderSpec,
+    LadderExecutionMode,
     LadderOrderSpec,
     OrderAck,
     OrderCancelSpec,
@@ -162,6 +163,11 @@ class OrderService:
     def _normalize_ladder_spec(self, spec: LadderOrderSpec) -> LadderOrderSpec:
         side = _coerce_enum(OrderSide, spec.side, "side")
         entry_type = _coerce_enum(OrderType, spec.entry_type, "entry_type")
+        execution_mode = _coerce_enum(
+            LadderExecutionMode,
+            spec.execution_mode,
+            "execution_mode",
+        )
         symbol = spec.symbol.strip().upper()
         tif = spec.tif.strip().upper() if spec.tif else "DAY"
         exchange = spec.exchange.strip().upper() if spec.exchange else "SMART"
@@ -172,6 +178,7 @@ class OrderService:
             symbol=symbol,
             side=side,
             entry_type=entry_type,
+            execution_mode=execution_mode,
             tif=tif,
             exchange=exchange,
             currency=currency,
@@ -216,6 +223,16 @@ class OrderService:
             raise OrderValidationError("stop_updates must match take_profit count minus one")
         if any(level <= 0 for level in spec.stop_updates):
             raise OrderValidationError("stop_updates must be greater than zero")
+        if spec.execution_mode == LadderExecutionMode.DETACHED_70_30:
+            if len(spec.take_profits) != 2:
+                raise OrderValidationError(
+                    "execution_mode DETACHED_70_30 requires exactly 2 take_profits"
+                )
+            expected_qtys = _split_qty_by_ratios(spec.qty, [0.7, 0.3])
+            if spec.take_profit_qtys != expected_qtys:
+                raise OrderValidationError(
+                    f"execution_mode DETACHED_70_30 requires take_profit_qtys={expected_qtys}"
+                )
 
 
 def _coerce_enum(enum_cls: Type[_EnumT], value: object, name: str) -> _EnumT:
@@ -260,3 +277,17 @@ def _entry_spec_from_ladder(spec: LadderOrderSpec) -> OrderSpec:
         account=spec.account,
         client_tag=spec.client_tag,
     )
+
+
+def _split_qty_by_ratios(total_qty: int, ratios: list[float]) -> list[int]:
+    total = sum(ratios)
+    normalized = [ratio / total for ratio in ratios]
+    raw = [total_qty * ratio for ratio in normalized]
+    qtys = [int(value) for value in raw]
+    remainder = total_qty - sum(qtys)
+    if remainder > 0:
+        fractions = [(idx, raw[idx] - qtys[idx]) for idx in range(len(qtys))]
+        fractions.sort(key=lambda item: (-item[1], item[0]))
+        for idx, _fraction in fractions[:remainder]:
+            qtys[idx] += 1
+    return qtys

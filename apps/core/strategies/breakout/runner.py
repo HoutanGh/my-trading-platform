@@ -11,6 +11,7 @@ from apps.core.market_data.models import Quote
 from apps.core.market_data.ports import BarStreamPort, QuotePort, QuoteStreamPort
 from apps.core.orders.models import (
     BracketOrderSpec,
+    LadderExecutionMode,
     LadderOrderSpec,
     OrderSide,
     OrderSpec,
@@ -61,6 +62,7 @@ class BreakoutRunConfig:
     tp_reprice_bar_size: str = "1 min"
     tp_reprice_use_rth: bool = False
     tp_reprice_timeout_seconds: float = 5.0
+    ladder_execution_mode: LadderExecutionMode = LadderExecutionMode.ATTACHED
 
 
 async def run_breakout(
@@ -94,6 +96,9 @@ async def run_breakout(
             raise ValueError("take_profit_qtys must sum to qty")
     if config.tp_reprice_timeout_seconds <= 0:
         raise ValueError("tp_reprice_timeout_seconds must be greater than zero")
+    if config.ladder_execution_mode == LadderExecutionMode.DETACHED_70_30:
+        if not config.take_profits or len(config.take_profits) != 2:
+            raise ValueError("DETACHED_70_30 requires exactly 2 take_profits")
     if config.entry_type == OrderType.LIMIT and quote_port is None and quote_stream is None:
         raise ValueError("quote_port is required for limit breakout entries")
 
@@ -257,6 +262,7 @@ async def run_breakout(
                 outside_rth=config.outside_rth,
                 account=config.account,
                 client_tag=client_tag,
+                execution_mode=config.ladder_execution_mode,
             )
             await order_service.submit_ladder(spec)
         elif config.take_profit is not None and config.stop_loss is not None:

@@ -16,6 +16,11 @@ class OrderType(str, Enum):
     LIMIT = "LIMIT"
 
 
+class LadderExecutionMode(str, Enum):
+    ATTACHED = "ATTACHED"
+    DETACHED_70_30 = "DETACHED_70_30"
+
+
 @dataclass(frozen=True)
 class OrderSpec:
     symbol: str
@@ -80,6 +85,7 @@ class LadderOrderSpec:
     currency: str = "USD"
     account: Optional[str] = None
     client_tag: Optional[str] = None
+    execution_mode: LadderExecutionMode = LadderExecutionMode.ATTACHED
 
 
 @dataclass(frozen=True)

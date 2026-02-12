@@ -15,6 +15,8 @@ from ib_insync import IB, LimitOrder, MarketOrder, Stock, StopLimitOrder, Trade
 from apps.adapters.broker.ibkr_connection import IBKRConnection
 from apps.core.orders.events import (
     BracketChildOrderFilled,
+    BracketChildOrderBrokerSnapshot,
+    BracketChildQuantityMismatchDetected,
     BracketChildOrderStatusChanged,
     LadderProtectionStateChanged,
     LadderStopLossCancelled,
@@ -27,6 +29,7 @@ from apps.core.orders.events import (
 )
 from apps.core.orders.models import (
     BracketOrderSpec,
+    LadderExecutionMode,
     LadderOrderSpec,
     OrderAck,
     OrderCancelSpec,
@@ -241,6 +244,25 @@ class IBKROrderPort(OrderPort):
         qualified = contracts[0]
         loop = asyncio.get_running_loop()
 
+        if spec.execution_mode == LadderExecutionMode.DETACHED_70_30:
+            return await self._submit_ladder_order_detached_70_30(
+                spec=spec,
+                qualified=qualified,
+                loop=loop,
+            )
+        return await self._submit_ladder_order_attached(
+            spec=spec,
+            qualified=qualified,
+            loop=loop,
+        )
+
+    async def _submit_ladder_order_attached(
+        self,
+        *,
+        spec: LadderOrderSpec,
+        qualified: Stock,
+        loop: asyncio.AbstractEventLoop,
+    ) -> OrderAck:
         if spec.entry_type == OrderType.MARKET:
             parent = MarketOrder(spec.side.value, spec.qty, tif=spec.tif)
         elif spec.entry_type == OrderType.LIMIT:
@@ -339,6 +361,8 @@ class IBKROrderPort(OrderPort):
             loop=loop,
             gateway_message_subscribe=self._connection.subscribe_gateway_messages,
             replace_timeout=max(self._connection.config.timeout, 1.0),
+            execution_mode="attached",
+            link_stop_to_parent=True,
         )
         for state in tp_states:
             _attach_ladder_tp_manager(state.trade, tp_index=state.index, manager=manager)
@@ -357,6 +381,194 @@ class IBKROrderPort(OrderPort):
             loop=loop,
             on_replaced=manager.handle_stop_trade_replaced,
         )
+
+        if self._event_bus:
+            self._event_bus.publish(OrderIdAssigned.now(parent_spec, order_id))
+        status = await _wait_for_order_status(trade)
+        if self._event_bus:
+            self._event_bus.publish(
+                OrderStatusChanged.now(parent_spec, order_id=order_id, status=status)
+            )
+        return OrderAck.now(order_id=order_id, status=status)
+
+    async def _submit_ladder_order_detached_70_30(
+        self,
+        *,
+        spec: LadderOrderSpec,
+        qualified: Stock,
+        loop: asyncio.AbstractEventLoop,
+    ) -> OrderAck:
+        if spec.entry_type == OrderType.MARKET:
+            parent = MarketOrder(spec.side.value, spec.qty, tif=spec.tif)
+        elif spec.entry_type == OrderType.LIMIT:
+            parent = LimitOrder(spec.side.value, spec.qty, spec.entry_price, tif=spec.tif)
+        else:
+            raise RuntimeError(f"Unsupported entry type: {spec.entry_type}")
+
+        parent.transmit = False
+        parent.outsideRth = spec.outside_rth
+        if spec.account:
+            parent.account = spec.account
+        if spec.client_tag:
+            parent.orderRef = spec.client_tag
+
+        child_side = OrderSide.SELL if spec.side == OrderSide.BUY else OrderSide.BUY
+
+        parent_spec = _entry_spec_from_ladder(spec)
+        trade = self._ib.placeOrder(qualified, parent)
+        if self._event_bus:
+            _attach_trade_handlers(trade, parent_spec, self._event_bus)
+        if self._event_bus:
+            self._event_bus.publish(OrderSent.now(parent_spec))
+        order_id = await _wait_for_order_id(trade)
+
+        stop_order = _build_stop_limit_order(
+            side=child_side,
+            qty=spec.qty,
+            stop_price=spec.stop_loss,
+            limit_price=spec.stop_loss,
+            tif=spec.tif,
+            outside_rth=spec.outside_rth,
+            account=spec.account,
+            client_tag=spec.client_tag,
+        )
+        stop_order.parentId = order_id
+        stop_order.transmit = True
+        stop_trade = self._ib.placeOrder(qualified, stop_order)
+        if self._event_bus:
+            _attach_bracket_child_handlers(
+                stop_trade,
+                kind="det70_stop",
+                symbol=spec.symbol,
+                side=child_side,
+                qty=spec.qty,
+                price=spec.stop_loss,
+                parent_order_id=order_id,
+                client_tag=spec.client_tag,
+                event_bus=self._event_bus,
+            )
+
+        stop_trade_ref: dict[str, Trade] = {"trade": stop_trade}
+        manager_ref: dict[str, Optional[_LadderStopManager]] = {"manager": None}
+        submit_lock = threading.Lock()
+        exits_submitted = False
+
+        def _on_stop_replaced(updated_trade: Trade) -> None:
+            stop_trade_ref["trade"] = updated_trade
+            manager = manager_ref["manager"]
+            if manager is None:
+                if self._event_bus:
+                    _attach_bracket_child_handlers(
+                        updated_trade,
+                        kind="det70_stop",
+                        symbol=spec.symbol,
+                        side=child_side,
+                        qty=spec.qty,
+                        price=spec.stop_loss,
+                        parent_order_id=order_id,
+                        client_tag=spec.client_tag,
+                        event_bus=self._event_bus,
+                    )
+            else:
+                manager.handle_stop_trade_replaced(updated_trade)
+
+        _attach_stop_trigger_reprice(
+            stop_trade,
+            ib=self._ib,
+            contract=qualified,
+            side=child_side,
+            qty=spec.qty,
+            stop_price=spec.stop_loss,
+            symbol=spec.symbol,
+            parent_order_id=order_id,
+            client_tag=spec.client_tag,
+            event_bus=self._event_bus,
+            loop=loop,
+            on_replaced=_on_stop_replaced,
+        )
+
+        def _submit_detached_exits_if_ready(trade_obj: Trade) -> None:
+            nonlocal exits_submitted
+            with submit_lock:
+                if exits_submitted:
+                    return
+                # TODO: add partial-fill detached exit arming; current mode waits for full fill to avoid naked sell legs.
+                if not _is_trade_filled(trade_obj, spec.qty):
+                    return
+                stop_status = _normalize_status(
+                    getattr(stop_trade_ref["trade"].orderStatus, "status", None)
+                )
+                if stop_status in _INACTIVE_ORDER_STATUSES:
+                    exits_submitted = True
+                    return
+                exits_submitted = True
+
+            tp_states: list[_LadderTakeProfitState] = []
+            for idx, (tp_price, tp_qty) in enumerate(
+                zip(spec.take_profits, spec.take_profit_qtys), start=1
+            ):
+                tp_order = LimitOrder(child_side.value, tp_qty, tp_price, tif=spec.tif)
+                tp_order.transmit = True
+                tp_order.outsideRth = spec.outside_rth
+                if spec.account:
+                    tp_order.account = spec.account
+                if spec.client_tag:
+                    tp_order.orderRef = spec.client_tag
+                tp_trade = self._ib.placeOrder(qualified, tp_order)
+                tp_states.append(
+                    _LadderTakeProfitState(index=idx, qty=tp_qty, price=tp_price, trade=tp_trade)
+                )
+                if self._event_bus:
+                    _attach_bracket_child_handlers(
+                        tp_trade,
+                        kind=f"det70_tp_{idx}",
+                        symbol=spec.symbol,
+                        side=child_side,
+                        qty=tp_qty,
+                        price=tp_price,
+                        parent_order_id=order_id,
+                        client_tag=spec.client_tag,
+                        event_bus=self._event_bus,
+                    )
+
+            manager = _LadderStopManager(
+                ib=self._ib,
+                contract=qualified,
+                symbol=spec.symbol,
+                child_side=child_side,
+                parent_order_id=order_id,
+                tp_states=tp_states,
+                stop_trade=stop_trade_ref["trade"],
+                stop_price=spec.stop_loss,
+                stop_qty=spec.qty,
+                stop_updates=spec.stop_updates,
+                tif=spec.tif,
+                outside_rth=spec.outside_rth,
+                account=spec.account,
+                client_tag=spec.client_tag,
+                event_bus=self._event_bus,
+                loop=loop,
+                gateway_message_subscribe=self._connection.subscribe_gateway_messages,
+                replace_timeout=max(self._connection.config.timeout, 1.0),
+                execution_mode="detached70",
+                link_stop_to_parent=True,
+            )
+            manager_ref["manager"] = manager
+
+            for state in tp_states:
+                _attach_ladder_tp_manager(state.trade, tp_index=state.index, manager=manager)
+            _attach_ladder_stop_manager(stop_trade_ref["trade"], manager=manager)
+
+        status_event = getattr(trade, "statusEvent", None)
+        if status_event is not None:
+            status_event += lambda trade_obj, *_args: _submit_detached_exits_if_ready(trade_obj)
+        filled_event = getattr(trade, "filledEvent", None)
+        if filled_event is not None:
+            filled_event += lambda trade_obj, *_args: _submit_detached_exits_if_ready(trade_obj)
+        fill_event = getattr(trade, "fillEvent", None)
+        if fill_event is not None:
+            fill_event += lambda trade_obj, *_args: _submit_detached_exits_if_ready(trade_obj)
+        _submit_detached_exits_if_ready(trade)
 
         if self._event_bus:
             self._event_bus.publish(OrderIdAssigned.now(parent_spec, order_id))
@@ -555,6 +767,8 @@ class _LadderStopManager:
             ]
         ],
         replace_timeout: float,
+        execution_mode: str = "attached",
+        link_stop_to_parent: bool = True,
     ) -> None:
         self._ib = ib
         self._contract = contract
@@ -574,6 +788,9 @@ class _LadderStopManager:
         self._loop = loop
         self._gateway_message_subscribe = gateway_message_subscribe
         self._replace_timeout = replace_timeout
+        self._execution_mode = execution_mode
+        self._link_stop_to_parent = link_stop_to_parent
+        self._stop_kind = "stop_loss" if execution_mode == "attached" else "det70_stop"
         self._lock = threading.Lock()
         self._processed_tps: set[int] = set()
         self._filled_tp_count = 0
@@ -685,6 +902,7 @@ class _LadderStopManager:
                         price=old_price,
                         reason=reason,
                         client_tag=self._client_tag,
+                        execution_mode=self._execution_mode,
                     )
                 )
             self._emit_protection_state_locked(state="unprotected", reason=reason)
@@ -703,6 +921,7 @@ class _LadderStopManager:
                         broker_code=None,
                         broker_message="No existing stop order available for in-place replace.",
                         client_tag=self._client_tag,
+                        execution_mode=self._execution_mode,
                     )
                 )
             self._emit_protection_state_locked(state="unprotected", reason="replace_failed_no_stop")
@@ -725,6 +944,7 @@ class _LadderStopManager:
                         broker_code=None,
                         broker_message="Existing stop order has no orderId; cannot replace in-place.",
                         client_tag=self._client_tag,
+                        execution_mode=self._execution_mode,
                     )
                 )
             self._emit_protection_state_locked(
@@ -735,7 +955,10 @@ class _LadderStopManager:
 
         stop_order = copy.copy(old_trade.order)
         stop_order.orderId = old_order_id
-        stop_order.parentId = self._parent_order_id
+        if self._link_stop_to_parent:
+            stop_order.parentId = self._parent_order_id
+        else:
+            stop_order.parentId = 0
         stop_order.totalQuantity = qty
         stop_order.auxPrice = stop_price
         stop_order.lmtPrice = stop_price
@@ -756,7 +979,7 @@ class _LadderStopManager:
             if self._event_bus:
                 _attach_bracket_child_handlers(
                     stop_trade,
-                    kind="stop_loss",
+                    kind=self._stop_kind,
                     symbol=self._symbol,
                     side=self._child_side,
                     qty=qty,
@@ -804,7 +1027,7 @@ class _LadderStopManager:
         if self._event_bus:
             _attach_bracket_child_handlers(
                 trade,
-                kind="stop_loss",
+                kind=self._stop_kind,
                 symbol=self._symbol,
                 side=self._child_side,
                 qty=self._stop_qty,
@@ -878,6 +1101,7 @@ class _LadderStopManager:
                                 new_price=attempted_price,
                             ),
                             client_tag=self._client_tag,
+                            execution_mode=self._execution_mode,
                         )
                     )
                 self._emit_protection_state_locked(state="protected", reason="replace_accepted")
@@ -897,6 +1121,7 @@ class _LadderStopManager:
                         broker_code=broker_code,
                         broker_message=broker_message,
                         client_tag=self._client_tag,
+                        execution_mode=self._execution_mode,
                     )
                 )
 
@@ -947,6 +1172,7 @@ class _LadderStopManager:
                     stop_order_id=_trade_order_id(self._stop_trade),
                     active_take_profit_order_ids=active_tp_order_ids,
                     client_tag=self._client_tag,
+                    execution_mode=self._execution_mode,
                 )
             )
 
@@ -1122,7 +1348,62 @@ def _attach_bracket_child_handlers(
     event_bus: EventBus,
 ) -> None:
     last_status: Optional[str] = None
-    last_fill: tuple[Optional[float], Optional[float], Optional[float], Optional[str]] | None = None
+    last_fill: (
+        tuple[
+            Optional[float],
+            Optional[float],
+            Optional[float],
+            Optional[float],
+            Optional[float],
+            Optional[str],
+        ]
+        | None
+    ) = None
+    snapshot_reported = False
+    qty_mismatch_reported = False
+    expected_qty = float(qty)
+
+    def _publish_snapshot_if_needed(trade_obj: Trade, *, status: Optional[str]) -> None:
+        nonlocal snapshot_reported
+        if snapshot_reported:
+            return
+        snapshot_reported = True
+        broker_order_qty = _maybe_float(getattr(trade_obj.order, "totalQuantity", None))
+        event_bus.publish(
+            BracketChildOrderBrokerSnapshot.now(
+                kind=kind,
+                symbol=symbol,
+                side=side,
+                expected_qty=expected_qty,
+                broker_order_qty=broker_order_qty,
+                order_id=trade_obj.order.orderId,
+                parent_order_id=parent_order_id,
+                status=status,
+                client_tag=client_tag,
+            )
+        )
+
+    def _publish_mismatch_if_needed(trade_obj: Trade, *, status: Optional[str]) -> None:
+        nonlocal qty_mismatch_reported
+        if qty_mismatch_reported:
+            return
+        broker_order_qty = _maybe_float(getattr(trade_obj.order, "totalQuantity", None))
+        if broker_order_qty is None or not _has_qty_mismatch(expected_qty, broker_order_qty):
+            return
+        qty_mismatch_reported = True
+        event_bus.publish(
+            BracketChildQuantityMismatchDetected.now(
+                kind=kind,
+                symbol=symbol,
+                side=side,
+                expected_qty=expected_qty,
+                broker_order_qty=broker_order_qty,
+                order_id=trade_obj.order.orderId,
+                parent_order_id=parent_order_id,
+                status=status,
+                client_tag=client_tag,
+            )
+        )
 
     def _publish_status(trade_obj: Trade) -> None:
         nonlocal last_status
@@ -1130,6 +1411,8 @@ def _attach_bracket_child_handlers(
         if not status or status == last_status:
             return
         last_status = status
+        _publish_snapshot_if_needed(trade_obj, status=status)
+        _publish_mismatch_if_needed(trade_obj, status=status)
         event_bus.publish(
             BracketChildOrderStatusChanged.now(
                 kind=kind,
@@ -1146,16 +1429,28 @@ def _attach_bracket_child_handlers(
 
     def _publish_fill(trade_obj: Trade) -> None:
         order_status = trade_obj.orderStatus
-        filled_qty = _maybe_float(order_status.filled)
+        broker_order_qty = _maybe_float(getattr(trade_obj.order, "totalQuantity", None))
+        filled_qty_raw = _maybe_float(order_status.filled)
         avg_fill_price = _maybe_float(order_status.avgFillPrice)
-        remaining_qty = _maybe_float(order_status.remaining)
+        remaining_qty_raw = _maybe_float(order_status.remaining)
+        filled_qty = filled_qty_raw
+        remaining_qty = remaining_qty_raw
         if filled_qty is not None:
             filled_qty = min(max(filled_qty, 0.0), float(qty))
         if remaining_qty is not None:
             remaining_qty = min(max(remaining_qty, 0.0), float(qty))
         status = order_status.status
+        _publish_snapshot_if_needed(trade_obj, status=status)
+        _publish_mismatch_if_needed(trade_obj, status=status)
         nonlocal last_fill
-        snapshot = (filled_qty, avg_fill_price, remaining_qty, status)
+        snapshot = (
+            broker_order_qty,
+            filled_qty_raw,
+            avg_fill_price,
+            remaining_qty_raw,
+            filled_qty,
+            status,
+        )
         if snapshot == last_fill:
             return
         last_fill = snapshot
@@ -1169,12 +1464,26 @@ def _attach_bracket_child_handlers(
                 order_id=trade_obj.order.orderId,
                 parent_order_id=parent_order_id,
                 status=status,
+                expected_qty=expected_qty,
+                broker_order_qty=broker_order_qty,
+                broker_filled_qty_raw=filled_qty_raw,
+                broker_remaining_qty_raw=remaining_qty_raw,
                 filled_qty=filled_qty,
                 avg_fill_price=avg_fill_price,
                 remaining_qty=remaining_qty,
                 client_tag=client_tag,
             )
         )
+
+    order_status = getattr(trade, "orderStatus", None)
+    _publish_snapshot_if_needed(
+        trade,
+        status=getattr(order_status, "status", None),
+    )
+    _publish_mismatch_if_needed(
+        trade,
+        status=getattr(order_status, "status", None),
+    )
 
     status_event = getattr(trade, "statusEvent", None)
     if status_event is not None:
@@ -1310,6 +1619,10 @@ def _maybe_float(value: object) -> Optional[float]:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _has_qty_mismatch(expected_qty: float, broker_order_qty: float) -> bool:
+    return abs(expected_qty - broker_order_qty) > 1e-9
 
 
 def _extract_execution_id(fill_obj: object | None) -> Optional[str]:

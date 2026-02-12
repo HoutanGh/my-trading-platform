@@ -143,6 +143,10 @@ class BracketChildOrderFilled:
     order_id: Optional[int]
     parent_order_id: Optional[int]
     status: Optional[str]
+    expected_qty: Optional[float]
+    broker_order_qty: Optional[float]
+    broker_filled_qty_raw: Optional[float]
+    broker_remaining_qty_raw: Optional[float]
     filled_qty: Optional[float]
     avg_fill_price: Optional[float]
     remaining_qty: Optional[float]
@@ -161,6 +165,10 @@ class BracketChildOrderFilled:
         order_id: Optional[int],
         parent_order_id: Optional[int],
         status: Optional[str],
+        expected_qty: Optional[float],
+        broker_order_qty: Optional[float],
+        broker_filled_qty_raw: Optional[float],
+        broker_remaining_qty_raw: Optional[float],
         filled_qty: Optional[float],
         avg_fill_price: Optional[float],
         remaining_qty: Optional[float],
@@ -175,9 +183,95 @@ class BracketChildOrderFilled:
             order_id=order_id,
             parent_order_id=parent_order_id,
             status=status,
+            expected_qty=expected_qty,
+            broker_order_qty=broker_order_qty,
+            broker_filled_qty_raw=broker_filled_qty_raw,
+            broker_remaining_qty_raw=broker_remaining_qty_raw,
             filled_qty=filled_qty,
             avg_fill_price=avg_fill_price,
             remaining_qty=remaining_qty,
+            client_tag=client_tag,
+            timestamp=_now(),
+        )
+
+
+@dataclass(frozen=True)
+class BracketChildOrderBrokerSnapshot:
+    kind: str
+    symbol: str
+    side: OrderSide
+    expected_qty: float
+    broker_order_qty: Optional[float]
+    order_id: Optional[int]
+    parent_order_id: Optional[int]
+    status: Optional[str]
+    client_tag: Optional[str]
+    timestamp: datetime
+
+    @classmethod
+    def now(
+        cls,
+        *,
+        kind: str,
+        symbol: str,
+        side: OrderSide,
+        expected_qty: float,
+        broker_order_qty: Optional[float],
+        order_id: Optional[int],
+        parent_order_id: Optional[int],
+        status: Optional[str],
+        client_tag: Optional[str],
+    ) -> "BracketChildOrderBrokerSnapshot":
+        return cls(
+            kind=kind,
+            symbol=symbol,
+            side=side,
+            expected_qty=expected_qty,
+            broker_order_qty=broker_order_qty,
+            order_id=order_id,
+            parent_order_id=parent_order_id,
+            status=status,
+            client_tag=client_tag,
+            timestamp=_now(),
+        )
+
+
+@dataclass(frozen=True)
+class BracketChildQuantityMismatchDetected:
+    kind: str
+    symbol: str
+    side: OrderSide
+    expected_qty: float
+    broker_order_qty: float
+    order_id: Optional[int]
+    parent_order_id: Optional[int]
+    status: Optional[str]
+    client_tag: Optional[str]
+    timestamp: datetime
+
+    @classmethod
+    def now(
+        cls,
+        *,
+        kind: str,
+        symbol: str,
+        side: OrderSide,
+        expected_qty: float,
+        broker_order_qty: float,
+        order_id: Optional[int],
+        parent_order_id: Optional[int],
+        status: Optional[str],
+        client_tag: Optional[str],
+    ) -> "BracketChildQuantityMismatchDetected":
+        return cls(
+            kind=kind,
+            symbol=symbol,
+            side=side,
+            expected_qty=expected_qty,
+            broker_order_qty=broker_order_qty,
+            order_id=order_id,
+            parent_order_id=parent_order_id,
+            status=status,
             client_tag=client_tag,
             timestamp=_now(),
         )
@@ -195,6 +289,7 @@ class LadderStopLossReplaced:
     new_price: float
     reason: str
     client_tag: Optional[str]
+    execution_mode: str
     timestamp: datetime
 
     @classmethod
@@ -211,6 +306,7 @@ class LadderStopLossReplaced:
         new_price: float,
         reason: str,
         client_tag: Optional[str],
+        execution_mode: str = "attached",
     ) -> "LadderStopLossReplaced":
         return cls(
             symbol=symbol,
@@ -223,6 +319,7 @@ class LadderStopLossReplaced:
             new_price=new_price,
             reason=reason,
             client_tag=client_tag,
+            execution_mode=execution_mode,
             timestamp=_now(),
         )
 
@@ -238,6 +335,7 @@ class LadderStopLossReplaceFailed:
     broker_code: Optional[int]
     broker_message: Optional[str]
     client_tag: Optional[str]
+    execution_mode: str
     timestamp: datetime
 
     @classmethod
@@ -253,6 +351,7 @@ class LadderStopLossReplaceFailed:
         broker_code: Optional[int],
         broker_message: Optional[str],
         client_tag: Optional[str],
+        execution_mode: str = "attached",
     ) -> "LadderStopLossReplaceFailed":
         return cls(
             symbol=symbol,
@@ -264,6 +363,7 @@ class LadderStopLossReplaceFailed:
             broker_code=broker_code,
             broker_message=broker_message,
             client_tag=client_tag,
+            execution_mode=execution_mode,
             timestamp=_now(),
         )
 
@@ -277,6 +377,7 @@ class LadderProtectionStateChanged:
     stop_order_id: Optional[int]
     active_take_profit_order_ids: list[int]
     client_tag: Optional[str]
+    execution_mode: str
     timestamp: datetime
 
     @classmethod
@@ -290,6 +391,7 @@ class LadderProtectionStateChanged:
         stop_order_id: Optional[int],
         active_take_profit_order_ids: list[int],
         client_tag: Optional[str],
+        execution_mode: str = "attached",
     ) -> "LadderProtectionStateChanged":
         return cls(
             symbol=symbol,
@@ -299,6 +401,7 @@ class LadderProtectionStateChanged:
             stop_order_id=stop_order_id,
             active_take_profit_order_ids=list(active_take_profit_order_ids),
             client_tag=client_tag,
+            execution_mode=execution_mode,
             timestamp=_now(),
         )
 
@@ -312,6 +415,7 @@ class LadderStopLossCancelled:
     price: float
     reason: str
     client_tag: Optional[str]
+    execution_mode: str
     timestamp: datetime
 
     @classmethod
@@ -325,6 +429,7 @@ class LadderStopLossCancelled:
         price: float,
         reason: str,
         client_tag: Optional[str],
+        execution_mode: str = "attached",
     ) -> "LadderStopLossCancelled":
         return cls(
             symbol=symbol,
@@ -334,5 +439,6 @@ class LadderStopLossCancelled:
             price=price,
             reason=reason,
             client_tag=client_tag,
+            execution_mode=execution_mode,
             timestamp=_now(),
         )

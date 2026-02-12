@@ -13,6 +13,8 @@ except ImportError:
 
 from apps.core.orders.events import (
     BracketChildOrderFilled,
+    BracketChildOrderBrokerSnapshot,
+    BracketChildQuantityMismatchDetected,
     LadderProtectionStateChanged,
     LadderStopLossCancelled,
     LadderStopLossReplaceFailed,
@@ -278,28 +280,72 @@ def print_event(event: object) -> bool:
             ),
         )
         return True
+    if isinstance(event, BracketChildOrderBrokerSnapshot):
+        broker_qty = "-"
+        if event.broker_order_qty is not None:
+            broker_qty = f"{event.broker_order_qty:g}"
+        label = "Det70ChildSnapshot" if event.kind.startswith("det70_") else "ChildOrderSnapshot"
+        _print_line(
+            event.timestamp,
+            label,
+            (
+                f"{event.symbol} kind={event.kind} order_id={event.order_id} parent={event.parent_order_id} "
+                f"expected={event.expected_qty:g} broker={broker_qty} status={event.status or '-'}"
+            ),
+        )
+        return True
+    if isinstance(event, BracketChildQuantityMismatchDetected):
+        label = "Det70QtyMismatch" if event.kind.startswith("det70_") else "ChildQtyMismatch"
+        _print_line(
+            event.timestamp,
+            label,
+            (
+                f"{event.symbol} kind={event.kind} order_id={event.order_id} parent={event.parent_order_id} "
+                f"expected={event.expected_qty:g} broker={event.broker_order_qty:g} "
+                f"status={event.status or '-'}"
+            ),
+        )
+        return True
     if isinstance(event, BracketChildOrderFilled):
         if not _is_fill_event(event.status, event.filled_qty):
             return False
-        if event.kind.startswith("take_profit"):
+        if event.kind.startswith("det70_tp_"):
+            suffix = event.kind.split("_")[-1]
+            label = f"Det70TakeProfit{suffix}Filled"
+        elif event.kind == "det70_stop":
+            label = "Det70StopLossFilled"
+        elif event.kind.startswith("take_profit"):
             suffix = event.kind.split("_", 2)[-1] if event.kind.startswith("take_profit_") else ""
             label = f"TakeProfit{suffix}Filled" if suffix else "TakeProfitFilled"
         else:
             label = "StopLossFilled"
         fill_price = event.avg_fill_price if event.avg_fill_price is not None else event.price
+        broker_suffix = ""
+        if event.expected_qty is not None and event.broker_order_qty is not None:
+            if abs(event.expected_qty - event.broker_order_qty) > 1e-9:
+                broker_suffix = (
+                    f" QTY_MISMATCH expected={event.expected_qty:g} broker={event.broker_order_qty:g}"
+                )
+            else:
+                broker_suffix = f" expected={event.expected_qty:g} broker={event.broker_order_qty:g}"
         _print_line(
             event.timestamp,
             label,
             (
                 f"{event.symbol} qty={event.filled_qty or event.qty} "
-                f"price={fill_price}"
+                f"price={fill_price}{broker_suffix}"
             ),
         )
         return True
     if isinstance(event, LadderStopLossReplaced):
+        label = (
+            "Det70StopLossReplaced"
+            if event.execution_mode == "detached70"
+            else "StopLossReplaced"
+        )
         _print_line(
             event.timestamp,
-            "StopLossReplaced",
+            label,
             (
                 f"{event.symbol} reason={event.reason} "
                 f"order={event.old_order_id}->{event.new_order_id} "
@@ -315,9 +361,14 @@ def print_event(event: object) -> bool:
         if event.broker_message:
             broker.append(f"msg={_shorten_message(event.broker_message)}")
         broker_suffix = f" {' '.join(broker)}" if broker else ""
+        label = (
+            "Det70StopLossReplaceFailed"
+            if event.execution_mode == "detached70"
+            else "StopLossReplaceFailed"
+        )
         _print_line(
             event.timestamp,
-            "StopLossReplaceFailed",
+            label,
             (
                 f"{event.symbol} order_id={event.old_order_id} "
                 f"attempt_qty={event.attempted_qty} attempt_price={event.attempted_price:g} "
@@ -327,9 +378,14 @@ def print_event(event: object) -> bool:
         return True
     if isinstance(event, LadderProtectionStateChanged):
         tp_ids = ",".join(str(order_id) for order_id in event.active_take_profit_order_ids)
+        label = (
+            "Det70StopProtection"
+            if event.execution_mode == "detached70"
+            else "StopProtection"
+        )
         _print_line(
             event.timestamp,
-            "StopProtection",
+            label,
             (
                 f"{event.symbol} state={event.state} reason={event.reason} "
                 f"stop_order_id={event.stop_order_id} active_tp_ids=[{tp_ids}]"
@@ -337,9 +393,14 @@ def print_event(event: object) -> bool:
         )
         return True
     if isinstance(event, LadderStopLossCancelled):
+        label = (
+            "Det70StopLossCancelled"
+            if event.execution_mode == "detached70"
+            else "StopLossCancelled"
+        )
         _print_line(
             event.timestamp,
-            "StopLossCancelled",
+            label,
             (
                 f"{event.symbol} reason={event.reason} "
                 f"order_id={event.order_id} qty={event.qty} price={event.price:g}"
