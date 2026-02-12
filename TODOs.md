@@ -32,7 +32,9 @@
     - [ ] cleaning
     - detached and attached, keep attached for single take profit
     - Biggest unknown: exact IB behavior during partial parent fills in fast conditions; I’d treat that as a mode-specific TODO and lock first version to a clearly defined partial-fill policy.
+    - [ ] understand order of this new method, where there are overlaps etc.
 - [ ] clean TODOs
+- [ ] what is this possitions thing at the start
 
 ### 10/02/26
 - [x] fix breakout streaming failure defect
@@ -51,6 +53,7 @@ how is the take profit set up? that seems to always trigger instantly and reliab
     - [x] update README.md
     - [ ] general cleanup
     - [ ] what sensitive data i have currently
+- [ ] when can-trading the error shows i cnt trade but the command says i can
 
 ### 09/02/26
 - did nothing

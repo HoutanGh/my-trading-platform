@@ -18,6 +18,8 @@ try:
 except ImportError:
     readline = None
 
+from ib_insync import MarketOrder, Stock
+
 from apps.adapters.broker.ibkr_connection import IBKRConnection
 from apps.cli.order_tracker import OrderTracker
 from apps.cli.position_origin_tracker import PositionOriginTracker
@@ -68,6 +70,18 @@ _REPLACE_ACCEPTED_STATUSES = {
     "partiallyfilled",
     "partially_filled",
 }
+_TRADE_BLOCKING_WARNING_TERMS = (
+    "not eligible",
+    "not allowed",
+    "no trading permissions",
+    "trading permissions for this contract",
+    "trading permissions for this instrument",
+    "not available for trading",
+    "restricted",
+    "prohibited",
+    "invalid destination",
+    "outside regular trading hours",
+)
 
 
 @dataclass
@@ -251,6 +265,18 @@ class REPL:
                 usage=(
                     "sell SYMBOL qty=... [limit=...] [tif=DAY] [outside_rth=true|false] [account=...] [client_tag=...] "
                     "| sell SYMBOL QTY [limit=...]"
+                ),
+            )
+        )
+        self._register(
+            CommandSpec(
+                name="can-trade",
+                handler=self._cmd_can_trade,
+                help="Check if IBKR currently accepts a what-if order for symbols.",
+                usage=(
+                    "can-trade SYMBOL [SYMBOL ...] [side=BUY|SELL] [qty=1] [tif=DAY] "
+                    "[outside_rth=true|false] [exchange=SMART] [currency=USD] [account=...] "
+                    "| can-trade symbol=AAPL,TSLA"
                 ),
             )
         )
@@ -459,6 +485,18 @@ class REPL:
                 "readonly=",
                 "timeout=",
             ]
+        if name == "can-trade":
+            return [
+                "symbol=",
+                "symbols=",
+                "side=",
+                "qty=",
+                "tif=",
+                "outside_rth=",
+                "exchange=",
+                "currency=",
+                "account=",
+            ]
         if name == "breakout":
             return [
                 "status",
@@ -629,6 +667,119 @@ class REPL:
 
     async def _cmd_sell(self, args: list[str], kwargs: dict[str, str]) -> None:
         await self._submit_order(OrderSide.SELL, args, kwargs)
+
+    async def _cmd_can_trade(self, args: list[str], kwargs: dict[str, str]) -> None:
+        if not self._connection.status().get("connected"):
+            print("Not connected. Use `connect` before checking symbols.")
+            return
+
+        symbols = _parse_symbol_tokens(
+            args=args,
+            symbol_value=kwargs.get("symbol") or kwargs.get("symbols"),
+            default_symbol=_config_get(self._config, "symbol"),
+        )
+        if not symbols:
+            print(self._commands["can-trade"].usage)
+            return
+
+        side_raw = kwargs.get("side", "BUY")
+        side = side_raw.strip().upper()
+        if side not in {"BUY", "SELL"}:
+            print("side must be BUY or SELL")
+            return
+
+        qty_raw = kwargs.get("qty") or "1"
+        try:
+            qty = int(qty_raw)
+        except ValueError:
+            print("qty must be an integer")
+            return
+        if qty <= 0:
+            print("qty must be greater than zero")
+            return
+
+        tif = (kwargs.get("tif") or _config_get(self._config, "tif") or "DAY").strip().upper()
+        outside_rth_value = kwargs.get("outside_rth") or _config_get(self._config, "outside_rth")
+        outside_rth = _parse_bool(outside_rth_value) if outside_rth_value is not None else False
+        exchange = (kwargs.get("exchange") or "SMART").strip().upper()
+        currency = (kwargs.get("currency") or "USD").strip().upper()
+        account = kwargs.get("account") or _config_get(self._config, "account")
+        timeout = max(self._connection.config.timeout, 1.0)
+
+        account_label = account if account else "(default)"
+        print(
+            "Running IBKR what-if checks "
+            f"(side={side} qty={qty} tif={tif} outside_rth={outside_rth} "
+            f"exchange={exchange} currency={currency} account={account_label})"
+        )
+
+        for symbol in symbols:
+            eligible, detail = await self._check_trade_eligibility(
+                symbol=symbol,
+                side=side,
+                qty=qty,
+                tif=tif,
+                outside_rth=outside_rth,
+                exchange=exchange,
+                currency=currency,
+                account=account,
+                timeout=timeout,
+            )
+            label = "ELIGIBLE" if eligible else "BLOCKED"
+            print(f"{symbol:<8} {label:<8} {detail}")
+
+    async def _check_trade_eligibility(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        qty: int,
+        tif: str,
+        outside_rth: bool,
+        exchange: str,
+        currency: str,
+        account: Optional[str],
+        timeout: float,
+    ) -> tuple[bool, str]:
+        ib = self._connection.ib
+        contract = Stock(symbol, exchange, currency)
+        try:
+            contracts = await asyncio.wait_for(ib.qualifyContractsAsync(contract), timeout=timeout)
+        except asyncio.TimeoutError:
+            return False, f"contract qualification timed out after {timeout:.1f}s"
+        except Exception as exc:
+            return False, f"contract qualification failed: {exc}"
+        if not contracts:
+            return False, "contract qualification returned no match"
+
+        order = MarketOrder(side, qty, tif=tif)
+        order.whatIf = True
+        order.outsideRth = outside_rth
+        if account:
+            order.account = account
+
+        try:
+            state = await asyncio.wait_for(ib.whatIfOrderAsync(contracts[0], order), timeout=timeout)
+        except asyncio.TimeoutError:
+            return False, f"what-if timed out after {timeout:.1f}s"
+        except Exception as exc:
+            return False, f"what-if rejected: {exc}"
+
+        status = str(getattr(state, "status", "") or "").strip()
+        warning = str(getattr(state, "warningText", "") or "").strip()
+        if warning and _is_trade_blocking_warning(warning):
+            return False, warning
+
+        normalized_status = status.lower()
+        if normalized_status in {"inactive", "cancelled", "apicancelled", "rejected"}:
+            if warning:
+                return False, f"{status}: {warning}"
+            return False, f"what-if status={status}"
+        if warning:
+            return True, f"warning: {warning}"
+        if status:
+            return True, f"what-if status={status}"
+        return True, "what-if accepted"
 
     async def _cmd_breakout(self, args: list[str], kwargs: dict[str, str]) -> None:
         if not self._bar_stream or not self._order_service:
@@ -2935,6 +3086,35 @@ def _config_get(config: dict[str, str], key: str) -> Optional[str]:
     return config.get(key)
 
 
+def _parse_symbol_tokens(
+    *,
+    args: list[str],
+    symbol_value: Optional[str],
+    default_symbol: Optional[str],
+) -> list[str]:
+    raw_tokens: list[str] = list(args)
+    if symbol_value:
+        raw_tokens.extend(symbol_value.split(","))
+    if not raw_tokens and default_symbol:
+        raw_tokens.append(default_symbol)
+
+    symbols: list[str] = []
+    seen: set[str] = set()
+    for token in raw_tokens:
+        for raw_symbol in token.split(","):
+            symbol = raw_symbol.strip().upper()
+            if not symbol or symbol in seen:
+                continue
+            seen.add(symbol)
+            symbols.append(symbol)
+    return symbols
+
+
+def _is_trade_blocking_warning(message: str) -> bool:
+    normalized = message.strip().lower()
+    return any(term in normalized for term in _TRADE_BLOCKING_WARNING_TERMS)
+
+
 def _flag_aliases(command: str) -> dict[str, str]:
     if command in {"buy", "sell"}:
         return {
@@ -2945,6 +3125,16 @@ def _flag_aliases(command: str) -> dict[str, str]:
             "a": "account",
             "c": "client_tag",
             "s": "symbol",
+        }
+    if command == "can-trade":
+        return {
+            "s": "symbol",
+            "q": "qty",
+            "t": "tif",
+            "o": "outside_rth",
+            "e": "exchange",
+            "c": "currency",
+            "a": "account",
         }
     if command == "connect":
         return {

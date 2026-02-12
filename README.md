@@ -143,6 +143,7 @@ Commands (current):
 - status
 - buy SYMBOL qty=... [limit=...] [tif=DAY] [outside_rth=true|false]
 - sell SYMBOL qty=... [limit=...] [tif=DAY] [outside_rth=true|false]
+- can-trade SYMBOL [SYMBOL ...] [side=BUY|SELL] [qty=1] [tif=DAY] [outside_rth=true|false] [exchange=SMART] [currency=USD] [account=...]
 - breakout SYMBOL level=... qty=... [tp=...] [sl=...] [rth=true|false] [bar=1 min] [max_bars=...]
 - orders [pending]
 - ingest-flex csv=... account=... [source=flex]
@@ -164,6 +165,7 @@ connect paper --host 127.0.0.1 --port 7497 -c 1001
 set symbol=AAPL qty=5 tif=DAY
 buy AAPL qty=5 limit=189.50
 sell --symbol TSLA -q 2 -l 242.10
+can-trade AAPL TSLA side=BUY qty=1
 breakout AAPL level=190 qty=1 tp=195 sl=187
 orders --pending
 ingest-flex csv=data/raw/Daily_PL.csv account=DU123456
@@ -173,6 +175,7 @@ Notes:
 
 - orders shows the in-memory tracker fed by events (no broker query yet).
 - buy/sell default symbol/qty/tif/etc from `set` if you omit them.
+- can-trade runs an IBKR what-if check and reports whether the broker accepts the symbol for the requested side/account/session settings.
 - ingest-flex reads a Flex CSV, aggregates daily P&L, and upserts into Postgres.
 
 ## PnL ingestion + calendar
