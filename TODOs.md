@@ -13,7 +13,11 @@
 - [ ] backtesting start
     - [ ] get a plan going
 - [ ] warm market detection
-
+- [ ] scanner that takes into accout suddent volume and small percentage going up
+1. fix breakout
+2. understand breakout
+3. calculate breakouts on my own
+- [ ] check if i have trading permissions for stocks
 
 ### FOCUSING ON BREAKOUT
 
@@ -26,6 +30,8 @@
     - [ ] trades cli command
     - [ ] check orders command
     - [ ] cleaning
+    - detached and attached, keep attached for single take profit
+    - Biggest unknown: exact IB behavior during partial parent fills in fast conditions; I’d treat that as a mode-specific TODO and lock first version to a clearly defined partial-fill policy.
 - [ ] clean TODOs
 
 ### 10/02/26

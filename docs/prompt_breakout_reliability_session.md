@@ -85,3 +85,39 @@ Suggested analysis workflow:
 4. Propose minimum instrumentation to close the ambiguity.
 5. Only then propose behavior changes.
 
+## JDZG RCA Snapshot (2026-02-12)
+
+Incident:
+- `client_tag=breakout:JDZG:2`
+- Operator-observed broker truth (`orders broker`): TP children at `2.1` and `2.2` both showed `qty=100` (not `70/30`).
+
+Broker truth policy for this case:
+- Treat `orders broker` as the source of truth for active order quantity.
+- Use app events as secondary evidence only.
+
+Confirmed facts:
+- Parent entry intended and filled `qty=100` (`OrderIntent` / `OrderFilled`).
+- App child events report intended split quantities (`take_profit_1 qty=70`, `take_profit_2 qty=30`).
+- Despite that, broker-side active order view showed both TP children as `100`.
+- Local ib_insync behavior is pass-through for order size:
+  - `LimitOrder(action, totalQuantity, lmtPrice, ...)` writes `order.totalQuantity`.
+  - `Client.placeOrder` serializes and sends `order.totalQuantity` directly.
+
+Most likely root cause:
+- Effective child order sizing at the broker did not match intended ladder split.
+- This is consistent with attached/bracket semantics where child sizing can behave as parent-sized exits unless explicitly modeled and validated as independent partial exits.
+
+Critical observability gap:
+- Current child event payloads can mask broker-effective size because they use app-expected qty fields.
+- Child fill logging clamps filled quantity to expected child qty, which can make logs look like `70/30` even when broker-effective child quantity is larger.
+
+Why this caused fast/full exits:
+- If TP1 is marketable and broker-effective size is `100`, TP1 can flatten the full position immediately.
+- TP2 then appears as pending-cancel/cancelled via OCA flow.
+
+Session handoff checklist (for next debugging session):
+1. Capture raw broker child order payload (`orderId`, `parentId`, `orderType`, `totalQuantity`, `lmtPrice`, `auxPrice`, `status`) at submit time and on every child status change.
+2. Emit an explicit mismatch event when `broker_child.totalQuantity != intended_tp_qty`.
+3. Preserve raw broker fill shares (unclamped) alongside any normalized/app-interpreted fill fields.
+4. Verify a paper test where intended split is `70/30` and assert broker open orders are exactly `70` and `30`.
+5. If broker still returns `100/100`, redesign exit architecture to submit independent partial exits instead of parent-attached children for ladder targets.

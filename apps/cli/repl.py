@@ -960,8 +960,11 @@ class REPL:
                             print(f"tp_alloc invalid: {exc}")
                             return
 
-        if not tp_exec_explicit and take_profits and len(take_profits) >= 2:
-            ladder_execution_mode = LadderExecutionMode.DETACHED
+        if not tp_exec_explicit and take_profits:
+            if len(take_profits) == 2:
+                ladder_execution_mode = LadderExecutionMode.DETACHED_70_30
+            elif len(take_profits) == 3:
+                ladder_execution_mode = LadderExecutionMode.DETACHED
 
         if ladder_execution_mode == LadderExecutionMode.DETACHED:
             if not take_profits or len(take_profits) not in {2, 3}:
@@ -2345,7 +2348,8 @@ class REPL:
         print("  buy/sell: tif=DAY outside_rth=false")
         print(
             "  breakout: bar_size=1 min fast=true fast_bar=1 secs use_rth=false "
-            "outside_rth=!use_rth entry=limit tif=DAY quote_age/quote_max_age=2.0 tp_exec=auto(ladder->detached)"
+            "outside_rth=!use_rth entry=limit tif=DAY quote_age/quote_max_age=2.0 "
+            "tp_exec=auto(tp2->detached70,tp3->detached)"
         )
 
     async def _cmd_disconnect(self, _args: list[str], _kwargs: dict[str, str]) -> None:
@@ -2833,8 +2837,20 @@ def _deserialize_breakout_config(payload: dict[str, object]) -> Optional[Breakou
     tp_reprice_use_rth = _coerce_bool(payload.get("tp_reprice_use_rth"), default=use_rth)
     tp_reprice_timeout_seconds = _coerce_float(payload.get("tp_reprice_timeout_seconds")) or 5.0
     mode_value = payload.get("ladder_execution_mode")
-    if mode_value is None and take_profits and len(take_profits) >= 2:
-        ladder_execution_mode = LadderExecutionMode.DETACHED
+    if mode_value is None and take_profits:
+        if len(take_profits) == 2:
+            try:
+                expected_two = _split_qty_by_ratios(qty, [0.7, 0.3])
+            except ValueError:
+                return None
+            if take_profit_qtys == expected_two:
+                ladder_execution_mode = LadderExecutionMode.DETACHED_70_30
+            else:
+                ladder_execution_mode = LadderExecutionMode.DETACHED
+        elif len(take_profits) == 3:
+            ladder_execution_mode = LadderExecutionMode.DETACHED
+        else:
+            ladder_execution_mode = LadderExecutionMode.ATTACHED
     else:
         try:
             ladder_execution_mode = _parse_ladder_execution_mode(mode_value)
