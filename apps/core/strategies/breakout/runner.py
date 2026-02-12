@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from dataclasses import dataclass
 from typing import Optional
 
-from apps.core.market_data.models import Quote
+from apps.core.market_data.models import Bar, Quote
 from apps.core.market_data.ports import BarStreamPort, QuotePort, QuoteStreamPort
 from apps.core.orders.models import (
     BracketOrderSpec,
