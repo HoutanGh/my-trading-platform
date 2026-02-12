@@ -19,10 +19,16 @@
 3. calculate breakouts on my own
 - [ ] check if i have trading permissions for stocks
 
+### 13/02/26
+- [ ] clean up TODOs
+- [ ] test breakout
+
 ### FOCUSING ON BREAKOUT
+- [ ] breakout gap: if orderfilled price is higher than tp1 you will have a loss
+- [ ] stop loss got cancelled even though only one tp1 got taken
 
 
-### 11/02/26
+### 11and12/02/26
 - [x] test breakout
 - [ ] breakout debugging
     - [ ] tp
@@ -54,6 +60,29 @@ how is the take profit set up? that seems to always trigger instantly and reliab
     - [ ] general cleanup
     - [ ] what sensitive data i have currently
 - [ ] when can-trading the error shows i cnt trade but the command says i can
+- Det70StopLossFilled: RIME qty=100.0 price=1.25 expected=100 broker=100 - two stop losses were filled not 1
+- rename to 7030
+- error apps> Breakout watcher finished: breakout:RIME:1.25
+apps> Value (Trade(contract=Stock(conId=759914622, symbol='RIME', exchange='SMART', primaryExchange='NASDAQ', currency='USD', localSymbol='RIME', tradingClass='SCM'), order=LimitOrder(orderId=705, clientId=1001, permId=1779274344, action='BUY', totalQuantity=100.0, lmtPrice=1.32, auxPrice=0.0, tif='DAY', orderRef='breakout:RIME:1.25', transmit=False, outsideRth=True, account='DUH631912'), orderStatus=OrderStatus(orderId=705, status='PreSubmitted', filled=0.0, remaining=100.0, avgFillPrice=0.0, permId=1779274344, parentId=0, lastFillPrice=0.0, clientId=1001, whyHeld='', mktCapPrice=0.0), fills=[Fill(contract=Stock(conId=759914622, symbol='RIME', exchange='SMART', primaryExchange='NASDAQ', currency='USD', localSymbol='RIME', tradingClass='SCM'), execution=Execution(execId='00025b49.698fb4f1.01.01', time=datetime.datetime(2026, 2, 12, 18, 31, 5, tzinfo=datetime.timezone.utc), acctNumber='DUH631912', exchange='NASDAQ', side='BOT', shares=100.0, price=1.32, permId=1779274344, clientId=1001, orderId=705, liquidation=0, cumQty=100.0, avgPrice=1.32, orderRef='breakout:RIME:1.25', evRule='', evMultiplier=0.0, modelCode='', lastLiquidity=2), commissionReport=CommissionReport(execId='', commission=0.0, currency='', realizedPNL=0.0, yield_=0.0, yieldRedemptionDate=0), time=datetime.datetime(2026, 2, 12, 18, 31, 5, 985214, tzinfo=datetime.timezone.utc))], log=[TradeLogEntry(time=datetime.datetime(2026, 2, 12, 18, 31, 5, 771654, tzinfo=datetime.timezone.utc), status='PendingSubmit', message='', errorCode=0), TradeLogEntry(time=datetime.datetime(2026, 2, 12, 18, 31, 5, 981265, tzinfo=datetime.timezone.utc), status='PreSubmitted', message='', errorCode=0), TradeLogEntry(time=datetime.datetime(2026, 2, 12, 18, 31, 5, 985214, tzinfo=datetime.timezone.utc), status='PreSubmitted', message='Fill 100.0@1.32', errorCode=0)], advancedError=''), Fill(contract=Stock(conId=759914622, symbol='RIME', exchange='SMART', primaryExchange='NASDAQ', currency='USD', localSymbol='RIME', tradingClass='SCM'), execution=Execution(execId='00025b49.698fb4f1.01.01', time=datetime.datetime(2026, 2, 12, 18, 31, 5, tzinfo=datetime.timezone.utc), acctNumber='DUH631912', exchange='NASDAQ', side='BOT', shares=100.0, price=1.32, permId=1779274344, clientId=1001, orderId=705, liquidation=0, cumQty=100.0, avgPrice=1.32, orderRef='breakout:RIME:1.25', evRule='', evMultiplier=0.0, modelCode='', lastLiquidity=2), commissionReport=CommissionReport(execId='', commission=0.0, currency='', realizedPNL=0.0, yield_=0.0, yieldRedemptionDate=0), time=datetime.datetime(2026, 2, 12, 18, 31, 5, 985214, tzinfo=datetime.timezone.utc))) caused exception for event Event<fillEvent, [[None, None, <function _attach_trade_handlers.<locals>.<lambda> at 0x7aadb23e5940>], [None, None, <function IBKROrderPort._submit_ladder_order_detached.<locals>.<lambda> at 0x7aadb23e6480>]]>
+Traceback (most recent call last):
+  File "/home/houtang/GitHub/my-trading-platform/.venv/lib/python3.11/site-packages/eventkit/event.py", line 202, in emit
+    result = func(*args)
+             ^^^^^^^^^^^
+  File "/home/houtang/GitHub/my-trading-platform/apps/adapters/broker/ibkr_order_port.py", line 571, in <lambda>
+    fill_event += lambda trade_obj, *_args: _submit_detached_exits_if_ready(trade_obj)
+                                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/houtang/GitHub/my-trading-platform/apps/adapters/broker/ibkr_order_port.py", line 538, in _submit_detached_exits_if_ready
+    manager = _LadderStopManager(
+              ^^^^^^^^^^^^^^^^^^^
+  File "/home/houtang/GitHub/my-trading-platform/apps/adapters/broker/ibkr_order_port.py", line 808, in __init__
+    self._emit_protection_state_locked(state="protected", reason="initialized")
+  File "/home/houtang/GitHub/my-trading-platform/apps/adapters/broker/ibkr_order_port.py", line 1177, in _emit_protection_state_locked
+    stop_order_id=_trade_order_id(self._stop_trade),
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/houtang/GitHub/my-trading-platform/apps/adapters/broker/ibkr_order_port.py", line 662, in _trade_order_id
+    return _maybe_int(getattr(getattr(trade, "order", None), "orderId", None))
+           ^^^^^^^^^^
+NameError: name '_maybe_int' is not defined
 
 ### 09/02/26
 - did nothing
