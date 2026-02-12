@@ -563,16 +563,12 @@ class IBKROrderPort(OrderPort):
                 _attach_ladder_tp_manager(state.trade, tp_index=state.index, manager=manager)
             _attach_ladder_stop_manager(stop_trade_ref["trade"], manager=manager)
 
-        status_event = getattr(trade, "statusEvent", None)
-        if status_event is not None:
-            status_event += lambda trade_obj, *_args: _submit_detached_exits_if_ready(trade_obj)
         filled_event = getattr(trade, "filledEvent", None)
         if filled_event is not None:
             filled_event += lambda trade_obj, *_args: _submit_detached_exits_if_ready(trade_obj)
         fill_event = getattr(trade, "fillEvent", None)
         if fill_event is not None:
             fill_event += lambda trade_obj, *_args: _submit_detached_exits_if_ready(trade_obj)
-        _submit_detached_exits_if_ready(trade)
 
         if self._event_bus:
             self._event_bus.publish(OrderIdAssigned.now(parent_spec, order_id))
@@ -1268,12 +1264,14 @@ def _is_trade_filled(trade_obj: Trade, expected_qty: int) -> bool:
     status = getattr(order_status, "status", None)
     if status and str(status).strip().lower() == "filled":
         return True
-    remaining = _maybe_float(getattr(order_status, "remaining", None))
-    if remaining is not None and remaining <= 0:
-        return True
     filled = _maybe_float(getattr(order_status, "filled", None))
     if filled is not None and filled >= expected_qty:
         return True
+    filled_fn = getattr(trade_obj, "filled", None)
+    if callable(filled_fn):
+        executed_qty = _maybe_float(filled_fn())
+        if executed_qty is not None and executed_qty >= expected_qty:
+            return True
     return False
 
 
