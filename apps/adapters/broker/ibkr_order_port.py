@@ -507,41 +507,13 @@ class IBKROrderPort(OrderPort):
                     return
                 exits_submitted = True
 
-            tp_states: list[_LadderTakeProfitState] = []
-            for idx, (tp_price, tp_qty) in enumerate(
-                zip(spec.take_profits, spec.take_profit_qtys), start=1
-            ):
-                tp_order = LimitOrder(child_side.value, tp_qty, tp_price, tif=spec.tif)
-                tp_order.transmit = True
-                tp_order.outsideRth = spec.outside_rth
-                if spec.account:
-                    tp_order.account = spec.account
-                if spec.client_tag:
-                    tp_order.orderRef = spec.client_tag
-                tp_trade = self._ib.placeOrder(qualified, tp_order)
-                tp_states.append(
-                    _LadderTakeProfitState(index=idx, qty=tp_qty, price=tp_price, trade=tp_trade)
-                )
-                if self._event_bus:
-                    _attach_bracket_child_handlers(
-                        tp_trade,
-                        kind=f"{kind_prefix}_tp_{idx}",
-                        symbol=spec.symbol,
-                        side=child_side,
-                        qty=tp_qty,
-                        price=tp_price,
-                        parent_order_id=order_id,
-                        client_tag=spec.client_tag,
-                        event_bus=self._event_bus,
-                    )
-
             manager = _LadderStopManager(
                 ib=self._ib,
                 contract=qualified,
                 symbol=spec.symbol,
                 child_side=child_side,
                 parent_order_id=order_id,
-                tp_states=tp_states,
+                tp_states=[],
                 stop_trade=stop_trade_ref["trade"],
                 stop_price=spec.stop_loss,
                 stop_qty=spec.qty,
@@ -558,10 +530,35 @@ class IBKROrderPort(OrderPort):
                 link_stop_to_parent=True,
             )
             manager_ref["manager"] = manager
-
-            for state in tp_states:
-                _attach_ladder_tp_manager(state.trade, tp_index=state.index, manager=manager)
             _attach_ladder_stop_manager(stop_trade_ref["trade"], manager=manager)
+
+            for idx, (tp_price, tp_qty) in enumerate(
+                zip(spec.take_profits, spec.take_profit_qtys), start=1
+            ):
+                tp_order = LimitOrder(child_side.value, tp_qty, tp_price, tif=spec.tif)
+                tp_order.transmit = True
+                tp_order.outsideRth = spec.outside_rth
+                if spec.account:
+                    tp_order.account = spec.account
+                if spec.client_tag:
+                    tp_order.orderRef = spec.client_tag
+                tp_trade = self._ib.placeOrder(qualified, tp_order)
+                state = _LadderTakeProfitState(index=idx, qty=tp_qty, price=tp_price, trade=tp_trade)
+                manager.register_tp_state(state)
+                _attach_ladder_tp_manager(tp_trade, tp_index=idx, manager=manager)
+                _replay_ladder_tp_fills(tp_trade, tp_index=idx, manager=manager)
+                if self._event_bus:
+                    _attach_bracket_child_handlers(
+                        tp_trade,
+                        kind=f"{kind_prefix}_tp_{idx}",
+                        symbol=spec.symbol,
+                        side=child_side,
+                        qty=tp_qty,
+                        price=tp_price,
+                        parent_order_id=order_id,
+                        client_tag=spec.client_tag,
+                        event_bus=self._event_bus,
+                    )
 
         filled_event = getattr(trade, "filledEvent", None)
         if filled_event is not None:
@@ -806,6 +803,11 @@ class _LadderStopManager:
         self._stop_filled = False
         self._protection_state: Optional[str] = None
         self._emit_protection_state_locked(state="protected", reason="initialized")
+
+    def register_tp_state(self, state: _LadderTakeProfitState) -> None:
+        with self._lock:
+            self._tp_states[state.index] = state
+            self._emit_protection_state_locked(state="protected", reason="tp_registered")
 
     def handle_tp_fill(self, tp_index: int, _trade_obj: Trade, fill_obj: object | None) -> None:
         with self._lock:
@@ -1603,6 +1605,14 @@ def _attach_ladder_tp_manager(trade: Trade, *, tp_index: int, manager: _LadderSt
             trade_obj,
             args[0] if args else None,
         )
+
+
+def _replay_ladder_tp_fills(trade: Trade, *, tp_index: int, manager: _LadderStopManager) -> None:
+    fills = getattr(trade, "fills", None)
+    if not fills:
+        return
+    for fill_obj in list(fills):
+        manager.handle_tp_fill(tp_index, trade, fill_obj)
 
 
 def _attach_ladder_stop_manager(trade: Trade, *, manager: _LadderStopManager) -> None:
