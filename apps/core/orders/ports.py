@@ -16,6 +16,20 @@ EventHandler = Callable[[EventT], Awaitable[None] | None]
 
 
 class OrderPort(Protocol):
+    async def prewarm_session_phase(
+        self,
+        *,
+        symbol: str,
+        exchange: str = "SMART",
+        currency: str = "USD",
+    ) -> None:
+        """Preload broker session windows used for RTH/outside-RTH detection."""
+        raise NotImplementedError
+
+    def clear_session_phase_cache(self) -> None:
+        """Clear cached broker session windows."""
+        raise NotImplementedError
+
     async def submit_order(self, spec: OrderSpec) -> OrderAck:
         """Submit an order to the broker and return an acknowledgement."""
         raise NotImplementedError

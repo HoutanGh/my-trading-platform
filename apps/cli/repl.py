@@ -167,6 +167,7 @@ class REPL:
         self._breakout_tasks: dict[str, tuple[BreakoutRunConfig, asyncio.Task]] = {}
         self._tp_reprice_sessions: dict[str, _BreakoutTpRepriceSession] = {}
         self._tp_reprice_tasks: dict[str, asyncio.Task] = {}
+        self._session_phase_prewarm_tasks: dict[str, asyncio.Task] = {}
         self._pnl_processes: dict[str, asyncio.subprocess.Process] = {}
         orphan_scope = os.getenv("APPS_ORPHAN_EXIT_SCOPE", "all_clients").strip().lower()
         orphan_scope = orphan_scope.replace("-", "_")
@@ -634,6 +635,8 @@ class REPL:
             overrides["timeout"] = float(kwargs["timeout"])
 
         cfg = await self._connection.connect(mode=mode, **overrides)
+        if self._order_service:
+            self._order_service.clear_session_phase_cache()
         self._apply_account_default(mode, cfg)
         print(
             "Connected: "
@@ -1245,6 +1248,7 @@ class REPL:
             name=task_name,
         )
         self._breakout_tasks[task_name] = (config, task)
+        self._schedule_session_phase_prewarm(config)
         self._register_tp_reprice_session(config)
         task.add_done_callback(lambda t: self._on_breakout_done(task_name, t))
         if source == "resume":
@@ -1253,6 +1257,32 @@ class REPL:
             print(f"Breakout watcher started: {task_name}")
         self._persist_breakout_state()
         return True
+
+    def _schedule_session_phase_prewarm(self, config: BreakoutRunConfig) -> None:
+        if not self._order_service:
+            return
+        symbol = config.symbol.strip().upper()
+        if not symbol:
+            return
+        existing = self._session_phase_prewarm_tasks.get(symbol)
+        if existing is not None and not existing.done():
+            return
+        task = asyncio.create_task(
+            self._order_service.prewarm_session_phase(symbol=symbol),
+            name=f"session-phase-prewarm:{symbol}",
+        )
+        self._session_phase_prewarm_tasks[symbol] = task
+        task.add_done_callback(lambda done_task, sym=symbol: self._on_session_phase_prewarm_done(sym, done_task))
+
+    def _on_session_phase_prewarm_done(self, symbol: str, task: asyncio.Task) -> None:
+        current = self._session_phase_prewarm_tasks.get(symbol)
+        if current is task:
+            self._session_phase_prewarm_tasks.pop(symbol, None)
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc:
+            _print_exception(f"Session phase prewarm failed: {symbol}", exc)
 
     def _register_tp_reprice_session(self, config: BreakoutRunConfig) -> None:
         if not config.tp_reprice_on_fill:

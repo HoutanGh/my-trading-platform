@@ -196,6 +196,47 @@ class BracketChildOrderFilled:
 
 
 @dataclass(frozen=True)
+class OrderStopModeSelected:
+    symbol: str
+    parent_order_id: Optional[int]
+    order_id: Optional[int]
+    session_phase: str
+    stop_kind: str
+    stop_price: float
+    limit_price: Optional[float]
+    execution_mode: Optional[str]
+    client_tag: Optional[str]
+    timestamp: datetime
+
+    @classmethod
+    def now(
+        cls,
+        *,
+        symbol: str,
+        parent_order_id: Optional[int],
+        order_id: Optional[int],
+        session_phase: str,
+        stop_kind: str,
+        stop_price: float,
+        limit_price: Optional[float],
+        execution_mode: Optional[str],
+        client_tag: Optional[str],
+    ) -> "OrderStopModeSelected":
+        return cls(
+            symbol=symbol,
+            parent_order_id=parent_order_id,
+            order_id=order_id,
+            session_phase=session_phase,
+            stop_kind=stop_kind,
+            stop_price=stop_price,
+            limit_price=limit_price,
+            execution_mode=execution_mode,
+            client_tag=client_tag,
+            timestamp=_now(),
+        )
+
+
+@dataclass(frozen=True)
 class BracketChildOrderBrokerSnapshot:
     kind: str
     symbol: str
@@ -273,6 +314,111 @@ class BracketChildQuantityMismatchDetected:
             parent_order_id=parent_order_id,
             status=status,
             client_tag=client_tag,
+            timestamp=_now(),
+        )
+
+
+@dataclass(frozen=True)
+class OrderSessionPhasePrewarmed:
+    symbol: str
+    exchange: str
+    currency: str
+    timezone_id: str
+    trading_session_count: int
+    liquid_session_count: int
+    cache_key: str
+    expires_at: datetime
+    timestamp: datetime
+
+    @classmethod
+    def now(
+        cls,
+        *,
+        symbol: str,
+        exchange: str,
+        currency: str,
+        timezone_id: str,
+        trading_session_count: int,
+        liquid_session_count: int,
+        cache_key: str,
+        expires_at: datetime,
+    ) -> "OrderSessionPhasePrewarmed":
+        return cls(
+            symbol=symbol,
+            exchange=exchange,
+            currency=currency,
+            timezone_id=timezone_id,
+            trading_session_count=trading_session_count,
+            liquid_session_count=liquid_session_count,
+            cache_key=cache_key,
+            expires_at=expires_at,
+            timestamp=_now(),
+        )
+
+
+@dataclass(frozen=True)
+class OrderSessionPhasePrewarmFailed:
+    symbol: str
+    exchange: str
+    currency: str
+    cache_key: str
+    error_type: str
+    message: str
+    timestamp: datetime
+
+    @classmethod
+    def now(
+        cls,
+        *,
+        symbol: str,
+        exchange: str,
+        currency: str,
+        cache_key: str,
+        error_type: str,
+        message: str,
+    ) -> "OrderSessionPhasePrewarmFailed":
+        return cls(
+            symbol=symbol,
+            exchange=exchange,
+            currency=currency,
+            cache_key=cache_key,
+            error_type=error_type,
+            message=message,
+            timestamp=_now(),
+        )
+
+
+@dataclass(frozen=True)
+class OrderSessionPhaseResolved:
+    symbol: str
+    exchange: str
+    currency: str
+    cache_key: str
+    phase: str
+    cache_hit: bool
+    fallback_used: bool
+    timestamp: datetime
+
+    @classmethod
+    def now(
+        cls,
+        *,
+        symbol: str,
+        exchange: str,
+        currency: str,
+        cache_key: str,
+        phase: str,
+        cache_hit: bool,
+        fallback_used: bool,
+    ) -> "OrderSessionPhaseResolved":
+        return cls(
+            symbol=symbol,
+            exchange=exchange,
+            currency=currency,
+            cache_key=cache_key,
+            phase=phase,
+            cache_hit=cache_hit,
+            fallback_used=fallback_used,
             timestamp=_now(),
         )
 

@@ -36,6 +36,22 @@ class OrderService:
             self._event_bus.publish(OrderIntent.now(normalized))
         return await self._order_port.submit_order(normalized)
 
+    async def prewarm_session_phase(
+        self,
+        *,
+        symbol: str,
+        exchange: str = "SMART",
+        currency: str = "USD",
+    ) -> None:
+        await self._order_port.prewarm_session_phase(
+            symbol=symbol,
+            exchange=exchange,
+            currency=currency,
+        )
+
+    def clear_session_phase_cache(self) -> None:
+        self._order_port.clear_session_phase_cache()
+
     async def cancel_order(self, spec: OrderCancelSpec) -> OrderAck:
         normalized = self._normalize_cancel_spec(spec)
         self._validate_cancel(normalized)

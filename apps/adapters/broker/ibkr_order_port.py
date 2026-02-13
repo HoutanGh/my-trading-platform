@@ -3,16 +3,18 @@ from __future__ import annotations
 import asyncio
 import copy
 import math
+import os
 import threading
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from collections.abc import Coroutine
 from typing import Any, Callable, Optional, cast
 
-from ib_insync import IB, LimitOrder, MarketOrder, Stock, StopLimitOrder, Trade
+from ib_insync import IB, LimitOrder, MarketOrder, StopOrder, Stock, StopLimitOrder, Trade
 
 from apps.adapters.broker.ibkr_connection import IBKRConnection
+from apps.adapters.broker.ibkr_session_phase import IBKRSessionPhaseResolver, SessionPhase
 from apps.core.orders.events import (
     BracketChildOrderFilled,
     BracketChildOrderBrokerSnapshot,
@@ -22,6 +24,7 @@ from apps.core.orders.events import (
     LadderStopLossCancelled,
     LadderStopLossReplaceFailed,
     LadderStopLossReplaced,
+    OrderStopModeSelected,
     OrderIdAssigned,
     OrderSent,
     OrderStatusChanged,
@@ -49,6 +52,27 @@ class IBKROrderPort(OrderPort):
         self._connection = connection
         self._ib: IB = connection.ib
         self._event_bus = event_bus
+        self._outside_rth_stop_limit_buffer_pct = _outside_rth_stop_limit_buffer_pct_from_env()
+        self._session_phase_resolver = IBKRSessionPhaseResolver(
+            self._ib,
+            event_bus=event_bus,
+        )
+
+    async def prewarm_session_phase(
+        self,
+        *,
+        symbol: str,
+        exchange: str = "SMART",
+        currency: str = "USD",
+    ) -> None:
+        await self._session_phase_resolver.prewarm(
+            symbol=symbol,
+            exchange=exchange,
+            currency=currency,
+        )
+
+    def clear_session_phase_cache(self) -> None:
+        self._session_phase_resolver.clear_cache()
 
     async def submit_order(self, spec: OrderSpec) -> OrderAck:
         if not self._ib.isConnected():
@@ -138,6 +162,8 @@ class IBKROrderPort(OrderPort):
             raise RuntimeError(f"Could not qualify contract for {spec.symbol}")
         qualified = contracts[0]
         loop = asyncio.get_running_loop()
+        session_phase = self._session_phase_resolver.resolve_phase(qualified)
+        spec = replace(spec, outside_rth=_outside_rth_for_session_phase(session_phase))
 
         if spec.entry_type == OrderType.MARKET:
             parent = MarketOrder(spec.side.value, spec.qty, tif=spec.tif)
@@ -164,7 +190,8 @@ class IBKROrderPort(OrderPort):
         if spec.client_tag:
             take_profit.orderRef = spec.client_tag
 
-        stop_loss = _build_stop_limit_order(
+        use_stop_limit = _uses_stop_limit(spec.outside_rth)
+        stop_loss = _build_protective_stop_order(
             side=child_side,
             qty=spec.qty,
             stop_price=spec.stop_loss,
@@ -173,6 +200,8 @@ class IBKROrderPort(OrderPort):
             outside_rth=spec.outside_rth,
             account=spec.account,
             client_tag=spec.client_tag,
+            use_stop_limit=use_stop_limit,
+            stop_limit_buffer_pct=self._outside_rth_stop_limit_buffer_pct,
         )
         stop_loss.ocaGroup = oca_group
         stop_loss.transmit = True
@@ -188,6 +217,16 @@ class IBKROrderPort(OrderPort):
         stop_loss.parentId = order_id
         tp_trade = self._ib.placeOrder(qualified, take_profit)
         sl_trade = self._ib.placeOrder(qualified, stop_loss)
+        _publish_stop_mode_selected(
+            event_bus=self._event_bus,
+            symbol=spec.symbol,
+            parent_order_id=order_id,
+            trade=sl_trade,
+            session_phase=session_phase,
+            stop_price=spec.stop_loss,
+            execution_mode="attached",
+            client_tag=spec.client_tag,
+        )
         if self._event_bus:
             _attach_bracket_child_handlers(
                 tp_trade,
@@ -211,19 +250,20 @@ class IBKROrderPort(OrderPort):
                 client_tag=spec.client_tag,
                 event_bus=self._event_bus,
             )
-        _attach_stop_trigger_reprice(
-            sl_trade,
-            ib=self._ib,
-            contract=qualified,
-            side=child_side,
-            qty=spec.qty,
-            stop_price=spec.stop_loss,
-            symbol=spec.symbol,
-            parent_order_id=order_id,
-            client_tag=spec.client_tag,
-            event_bus=self._event_bus,
-            loop=loop,
-        )
+        if use_stop_limit:
+            _attach_stop_trigger_reprice(
+                sl_trade,
+                ib=self._ib,
+                contract=qualified,
+                side=child_side,
+                qty=spec.qty,
+                stop_price=spec.stop_loss,
+                symbol=spec.symbol,
+                parent_order_id=order_id,
+                client_tag=spec.client_tag,
+                event_bus=self._event_bus,
+                loop=loop,
+            )
         if self._event_bus:
             self._event_bus.publish(OrderIdAssigned.now(parent_spec, order_id))
         status = await _wait_for_order_status(trade)
@@ -243,6 +283,8 @@ class IBKROrderPort(OrderPort):
             raise RuntimeError(f"Could not qualify contract for {spec.symbol}")
         qualified = contracts[0]
         loop = asyncio.get_running_loop()
+        session_phase = self._session_phase_resolver.resolve_phase(qualified)
+        spec = replace(spec, outside_rth=_outside_rth_for_session_phase(session_phase))
 
         if spec.execution_mode in {LadderExecutionMode.DETACHED, LadderExecutionMode.DETACHED_70_30}:
             return await self._submit_ladder_order_detached(
@@ -316,7 +358,8 @@ class IBKROrderPort(OrderPort):
                     event_bus=self._event_bus,
                 )
 
-        stop_order = _build_stop_limit_order(
+        use_stop_limit = _uses_stop_limit(spec.outside_rth)
+        stop_order = _build_protective_stop_order(
             side=child_side,
             qty=spec.qty,
             stop_price=spec.stop_loss,
@@ -325,10 +368,22 @@ class IBKROrderPort(OrderPort):
             outside_rth=spec.outside_rth,
             account=spec.account,
             client_tag=spec.client_tag,
+            use_stop_limit=use_stop_limit,
+            stop_limit_buffer_pct=self._outside_rth_stop_limit_buffer_pct,
         )
         stop_order.parentId = order_id
         stop_order.transmit = True
         stop_trade = self._ib.placeOrder(qualified, stop_order)
+        _publish_stop_mode_selected(
+            event_bus=self._event_bus,
+            symbol=spec.symbol,
+            parent_order_id=order_id,
+            trade=stop_trade,
+            session_phase=SessionPhase.RTH if not spec.outside_rth else SessionPhase.OUTSIDE_RTH,
+            stop_price=spec.stop_loss,
+            execution_mode="attached",
+            client_tag=spec.client_tag,
+        )
         if self._event_bus:
             _attach_bracket_child_handlers(
                 stop_trade,
@@ -363,24 +418,26 @@ class IBKROrderPort(OrderPort):
             replace_timeout=max(self._connection.config.timeout, 1.0),
             execution_mode="attached",
             link_stop_to_parent=True,
+            stop_limit_buffer_pct=self._outside_rth_stop_limit_buffer_pct,
         )
         for state in tp_states:
             _attach_ladder_tp_manager(state.trade, tp_index=state.index, manager=manager)
         _attach_ladder_stop_manager(stop_trade, manager=manager)
-        _attach_stop_trigger_reprice(
-            stop_trade,
-            ib=self._ib,
-            contract=qualified,
-            side=child_side,
-            qty=spec.qty,
-            stop_price=spec.stop_loss,
-            symbol=spec.symbol,
-            parent_order_id=order_id,
-            client_tag=spec.client_tag,
-            event_bus=self._event_bus,
-            loop=loop,
-            on_replaced=manager.handle_stop_trade_replaced,
-        )
+        if use_stop_limit:
+            _attach_stop_trigger_reprice(
+                stop_trade,
+                ib=self._ib,
+                contract=qualified,
+                side=child_side,
+                qty=spec.qty,
+                stop_price=spec.stop_loss,
+                symbol=spec.symbol,
+                parent_order_id=order_id,
+                client_tag=spec.client_tag,
+                event_bus=self._event_bus,
+                loop=loop,
+                on_replaced=manager.handle_stop_trade_replaced,
+            )
 
         if self._event_bus:
             self._event_bus.publish(OrderIdAssigned.now(parent_spec, order_id))
@@ -426,7 +483,8 @@ class IBKROrderPort(OrderPort):
             self._event_bus.publish(OrderSent.now(parent_spec))
         order_id = await _wait_for_order_id(trade)
 
-        stop_order = _build_stop_limit_order(
+        use_stop_limit = _uses_stop_limit(spec.outside_rth)
+        stop_order = _build_protective_stop_order(
             side=child_side,
             qty=spec.qty,
             stop_price=spec.stop_loss,
@@ -435,10 +493,22 @@ class IBKROrderPort(OrderPort):
             outside_rth=spec.outside_rth,
             account=spec.account,
             client_tag=spec.client_tag,
+            use_stop_limit=use_stop_limit,
+            stop_limit_buffer_pct=self._outside_rth_stop_limit_buffer_pct,
         )
         stop_order.parentId = order_id
         stop_order.transmit = True
         stop_trade = self._ib.placeOrder(qualified, stop_order)
+        _publish_stop_mode_selected(
+            event_bus=self._event_bus,
+            symbol=spec.symbol,
+            parent_order_id=order_id,
+            trade=stop_trade,
+            session_phase=SessionPhase.RTH if not spec.outside_rth else SessionPhase.OUTSIDE_RTH,
+            stop_price=spec.stop_loss,
+            execution_mode=execution_mode,
+            client_tag=spec.client_tag,
+        )
         if self._event_bus:
             _attach_bracket_child_handlers(
                 stop_trade,
@@ -476,20 +546,21 @@ class IBKROrderPort(OrderPort):
             else:
                 manager.handle_stop_trade_replaced(updated_trade)
 
-        _attach_stop_trigger_reprice(
-            stop_trade,
-            ib=self._ib,
-            contract=qualified,
-            side=child_side,
-            qty=spec.qty,
-            stop_price=spec.stop_loss,
-            symbol=spec.symbol,
-            parent_order_id=order_id,
-            client_tag=spec.client_tag,
-            event_bus=self._event_bus,
-            loop=loop,
-            on_replaced=_on_stop_replaced,
-        )
+        if use_stop_limit:
+            _attach_stop_trigger_reprice(
+                stop_trade,
+                ib=self._ib,
+                contract=qualified,
+                side=child_side,
+                qty=spec.qty,
+                stop_price=spec.stop_loss,
+                symbol=spec.symbol,
+                parent_order_id=order_id,
+                client_tag=spec.client_tag,
+                event_bus=self._event_bus,
+                loop=loop,
+                on_replaced=_on_stop_replaced,
+            )
 
         def _submit_detached_exits_if_ready(trade_obj: Trade) -> None:
             nonlocal exits_submitted
@@ -528,6 +599,7 @@ class IBKROrderPort(OrderPort):
                 replace_timeout=max(self._connection.config.timeout, 1.0),
                 execution_mode=execution_mode,
                 link_stop_to_parent=True,
+                stop_limit_buffer_pct=self._outside_rth_stop_limit_buffer_pct,
             )
             manager_ref["manager"] = manager
             _attach_ladder_stop_manager(stop_trade_ref["trade"], manager=manager)
@@ -766,6 +838,7 @@ class _LadderStopManager:
         replace_timeout: float,
         execution_mode: str = "attached",
         link_stop_to_parent: bool = True,
+        stop_limit_buffer_pct: float = 0.0,
     ) -> None:
         self._ib = ib
         self._contract = contract
@@ -787,6 +860,7 @@ class _LadderStopManager:
         self._replace_timeout = replace_timeout
         self._execution_mode = execution_mode
         self._link_stop_to_parent = link_stop_to_parent
+        self._stop_limit_buffer_pct = max(stop_limit_buffer_pct, 0.0)
         if execution_mode == "attached":
             self._stop_kind = "stop_loss"
         elif execution_mode == "detached70":
@@ -962,13 +1036,19 @@ class _LadderStopManager:
 
         stop_order = copy.copy(old_trade.order)
         stop_order.orderId = old_order_id
+        is_stop_limit = _is_stop_limit_order(old_trade.order)
         if self._link_stop_to_parent:
             stop_order.parentId = self._parent_order_id
         else:
             stop_order.parentId = 0
         stop_order.totalQuantity = qty
         stop_order.auxPrice = stop_price
-        stop_order.lmtPrice = stop_price
+        if is_stop_limit:
+            stop_order.lmtPrice = _outside_rth_stop_limit_price(
+                side=self._child_side,
+                stop_price=stop_price,
+                buffer_pct=self._stop_limit_buffer_pct,
+            )
         stop_order.tif = self._tif
         stop_order.outsideRth = self._outside_rth
         stop_order.transmit = True
@@ -996,20 +1076,21 @@ class _LadderStopManager:
                     event_bus=self._event_bus,
                 )
             _attach_ladder_stop_manager(stop_trade, manager=self)
-            _attach_stop_trigger_reprice(
-                stop_trade,
-                ib=self._ib,
-                contract=self._contract,
-                side=self._child_side,
-                qty=qty,
-                stop_price=stop_price,
-                symbol=self._symbol,
-                parent_order_id=self._parent_order_id,
-                client_tag=self._client_tag,
-                event_bus=self._event_bus,
-                loop=self._loop,
-                on_replaced=self.handle_stop_trade_replaced,
-            )
+            if is_stop_limit:
+                _attach_stop_trigger_reprice(
+                    stop_trade,
+                    ib=self._ib,
+                    contract=self._contract,
+                    side=self._child_side,
+                    qty=qty,
+                    stop_price=stop_price,
+                    symbol=self._symbol,
+                    parent_order_id=self._parent_order_id,
+                    client_tag=self._client_tag,
+                    event_bus=self._event_bus,
+                    loop=self._loop,
+                    on_replaced=self.handle_stop_trade_replaced,
+                )
 
         error_capture = _GatewayOrderErrorCapture(
             self._gateway_message_subscribe,
@@ -1257,6 +1338,143 @@ def _build_stop_limit_order(
     if client_tag:
         order.orderRef = client_tag
     return order
+
+
+def _build_stop_order(
+    *,
+    side: OrderSide,
+    qty: int,
+    stop_price: float,
+    tif: str,
+    outside_rth: bool,
+    account: Optional[str],
+    client_tag: Optional[str],
+) -> StopOrder:
+    order = StopOrder(side.value, qty, stop_price, tif=tif)
+    order.auxPrice = stop_price
+    order.outsideRth = outside_rth
+    if account:
+        order.account = account
+    if client_tag:
+        order.orderRef = client_tag
+    return order
+
+
+def _build_protective_stop_order(
+    *,
+    side: OrderSide,
+    qty: int,
+    stop_price: float,
+    limit_price: Optional[float],
+    tif: str,
+    outside_rth: bool,
+    account: Optional[str],
+    client_tag: Optional[str],
+    use_stop_limit: bool,
+    stop_limit_buffer_pct: float,
+) -> StopOrder | StopLimitOrder:
+    if use_stop_limit:
+        resolved_limit_price = (
+            limit_price
+            if limit_price is not None and abs(limit_price - stop_price) > 1e-9
+            else _outside_rth_stop_limit_price(
+                side=side,
+                stop_price=stop_price,
+                buffer_pct=stop_limit_buffer_pct,
+            )
+        )
+        return _build_stop_limit_order(
+            side=side,
+            qty=qty,
+            stop_price=stop_price,
+            limit_price=resolved_limit_price,
+            tif=tif,
+            outside_rth=outside_rth,
+            account=account,
+            client_tag=client_tag,
+        )
+    return _build_stop_order(
+        side=side,
+        qty=qty,
+        stop_price=stop_price,
+        tif=tif,
+        outside_rth=outside_rth,
+        account=account,
+        client_tag=client_tag,
+    )
+
+
+def _is_stop_limit_order(order_obj: object) -> bool:
+    order_type = getattr(order_obj, "orderType", None)
+    if order_type is None:
+        return False
+    normalized = str(order_type).strip().upper().replace(" ", "")
+    return normalized in {"STPLMT", "STOPLIMIT"}
+
+
+def _stop_kind(order_obj: object) -> str:
+    return "STP_LMT" if _is_stop_limit_order(order_obj) else "STP"
+
+
+def _uses_stop_limit(outside_rth: bool) -> bool:
+    return bool(outside_rth)
+
+
+def _outside_rth_stop_limit_price(*, side: OrderSide, stop_price: float, buffer_pct: float) -> float:
+    normalized_pct = max(buffer_pct, 0.0)
+    if normalized_pct <= 0:
+        return stop_price
+    delta = stop_price * normalized_pct
+    if side == OrderSide.SELL:
+        candidate = stop_price - delta
+    else:
+        candidate = stop_price + delta
+    if not math.isfinite(candidate) or candidate <= 0:
+        return stop_price
+    return candidate
+
+
+def _outside_rth_stop_limit_buffer_pct_from_env() -> float:
+    raw = os.getenv("APPS_OUTSIDE_RTH_STOP_BUFFER_PCT", "0.01")
+    try:
+        parsed = float(raw)
+    except ValueError:
+        return 0.01
+    if not math.isfinite(parsed):
+        return 0.01
+    if parsed < 0:
+        return 0.0
+    return parsed
+
+
+def _publish_stop_mode_selected(
+    *,
+    event_bus: EventBus | None,
+    symbol: str,
+    parent_order_id: Optional[int],
+    trade: Trade,
+    session_phase: SessionPhase,
+    stop_price: float,
+    execution_mode: Optional[str],
+    client_tag: Optional[str],
+) -> None:
+    if event_bus is None:
+        return
+    order = getattr(trade, "order", None)
+    limit_price = _maybe_float(getattr(order, "lmtPrice", None)) if order is not None else None
+    event_bus.publish(
+        OrderStopModeSelected.now(
+            symbol=symbol,
+            parent_order_id=parent_order_id,
+            order_id=_trade_order_id(trade),
+            session_phase=session_phase.value,
+            stop_kind=_stop_kind(order),
+            stop_price=stop_price,
+            limit_price=limit_price,
+            execution_mode=execution_mode,
+            client_tag=client_tag,
+        )
+    )
 
 
 def _is_trade_filled(trade_obj: Trade, expected_qty: int) -> bool:
@@ -1695,6 +1913,10 @@ def _normalize_status(value: object) -> Optional[str]:
         return None
     normalized = str(value).strip().lower()
     return normalized or None
+
+
+def _outside_rth_for_session_phase(phase: SessionPhase) -> bool:
+    return phase != SessionPhase.RTH
 
 
 def _schedule_coroutine(loop: asyncio.AbstractEventLoop, coro: Coroutine[object, object, None]) -> None:
