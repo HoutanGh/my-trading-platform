@@ -1,46 +1,61 @@
 ## GENERAL TODOs
-- [ ] how to calculate breakouts for stocks
-- [ ] understand how a backtesting framework would also work for this
-- [ ] research more on investment analysis approach
-- [ ] research on caclulating breakouts
-- [ ] research on options pricing prediction
-- [ ] same tp and sl functionality for normally buying
-- [ ] research having multiple sessions open
-- [ ] maybe have dry-runs
-- [ ] for breakouts, when first take profit is taken the lowest SL should just be the lowest it can stay to stay green
-- [ ] need kill switch
+- [ ] Investment Analysis
+    - [ ] Research
+- [ ] Calculating breakouts
+    - [ ] Research
+- [ ] Options Pricing Prediction
+    - [ ] Research
+- [ ] Improving normal BUY/SELL LMT/MKTs
+- [ ] Multiple Sessions Open
+    - [ ] Research
+- [ ] Dry-runs
+    - [ ]  Research
+- [ ] Kill Switch
+    - [ ] Research
 - [ ] how to calulate volume rotation and tie this into stock pairs trading
 - [ ] backtesting start
     - [ ] get a plan going
 - [ ] warm market detection
 - [ ] scanner that takes into accout suddent volume and small percentage going up
-1. fix breakout
-2. understand breakout
-3. calculate breakouts on my own
-- [ ] check if i have trading permissions for stocks
+- [ ] Clean CLI
+    - [ ] CLI
+    - [ ] backend code
+- [ ] MAYBE: for breakouts, when first take profit is taken the lowest SL should just be the lowest it can stay to stay green
+- [ ] cancel multipel orders in one line
 
-### 13/02/26
-- [ ] clean up TODOs
+
+
+1. fix breakout - 13/02/26
+2. understand breakout - 14 and 15/02/26
+3. calculate breakouts on my own
+
+### NEXT WEEK
+- [ ] check how is latency calculated - would like to know for take profits
+- [ ] clean up the error for stock trading eligiblity
 - [ ] test breakout
 
-### FOCUSING ON BREAKOUT
-- [ ] breakout gap: if orderfilled price is higher than tp1 you will have a loss
-- [ ] stop loss got cancelled even though only one tp1 got taken
+### 14/02/26
+- [ ] look into ib_async
+- [ ] start learning breakout_automation
+    - [ ] is sell lmts placed after filling?
+- [ ] what is this positions thing at the start
+
+
+### 13/02/26
+- [x] clean up TODOs
+- [x] test breakout
+- [x] stop loss got cancelled even though only one tp1 got taken
+- [x] stop MKT for RTH for breakout
 
 
 ### 11and12/02/26
 - [x] test breakout
-- [ ] breakout debugging
-    - [ ] tp
-    - [ ] sl
-    - [ ] trades cli command
-    - [ ] check orders command
-    - [ ] cleaning
+- [x] breakout debugging
     - detached and attached, keep attached for single take profit
     - Biggest unknown: exact IB behavior during partial parent fills in fast conditions; I’d treat that as a mode-specific TODO and lock first version to a clearly defined partial-fill policy.
-    - [ ] understand order of this new method, where there are overlaps etc.
-- [ ] clean TODOs
-- [ ] what is this possitions thing at the start
+    
+- [x] check if i have trading permissions for stocks
+
 
 ### 10/02/26
 - [x] fix breakout streaming failure defect
