@@ -33,9 +33,13 @@
 - [ ] check how is latency calculated - would like to know for take profits
 - [ ] clean up the error for stock trading eligiblity
 - [ ] test breakout
+- [ ] ib_async migration
+- [ ] research multiple sessions/popups all working together
+    - when i type just a stock session pops up for that stock
+- [ ] ====== breakout took 1.7 seconds to fill ======= (fill bar)
 
 ### 14/02/26
-- [ ] look into ib_async
+- [x] look into ib_async
 - [ ] start learning breakout_automation
     - [ ] is sell lmts placed after filling?
 - [ ] what is this positions thing at the start
