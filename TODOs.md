@@ -37,6 +37,7 @@
 - [ ] research multiple sessions/popups all working together
     - when i type just a stock session pops up for that stock
 - [ ] ====== breakout took 1.7 seconds to fill ======= (fill bar)
+- [ ] get all the errors possible then cleanup
 
 ### 14/02/26
 - [x] look into ib_async
