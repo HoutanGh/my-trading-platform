@@ -32,12 +32,16 @@
 ### NEXT WEEK
 - [ ] check how is latency calculated - would like to know for take profits
 - [ ] clean up the error for stock trading eligiblity
-- [ ] test breakout
 - [ ] ib_async migration
 - [ ] research multiple sessions/popups all working together
     - when i type just a stock session pops up for that stock
 - [ ] ====== breakout took 1.7 seconds to fill ======= (fill bar)
 - [ ] get all the errors possible then cleanup
+
+### 17/02/25
+- [ ] 1 hour understanding breakout
+- [ ] test breakout
+- [ ] look into the steps of ib_async migration
 
 ### 14/02/26
 - [x] look into ib_async
