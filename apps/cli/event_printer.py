@@ -49,8 +49,25 @@ from apps.core.strategies.breakout.events import (
 _PROMPT_PREFIX: Optional[str] = None
 _CONFIRMED_BY_TAG: dict[str, "_EntryFillTiming"] = {}
 _MAX_GATEWAY_MSG_LEN = 160
+_MAX_GATEWAY_PREVIEW_LEN = 72
 _BAR_STREAM_INFO_COOLDOWN_SECONDS = 15.0
 _BAR_STREAM_INFO_LAST_PRINTED: dict[tuple[str, str, str, bool], float] = {}
+_GATEWAY_CODE_ALIASES = {
+    10197: "competing_session",
+    2104: "md_ok",
+    2107: "hmds_inactive",
+    2106: "hmds_ok",
+    2158: "secdef_ok",
+    1102: "restored",
+}
+_GATEWAY_CODE_SHORT_MESSAGES = {
+    10197: "competing live session",
+    2104: "market data farm ok",
+    2107: "historical data farm inactive",
+    2106: "historical data farm ok",
+    2158: "sec-def data farm ok",
+    1102: "connectivity restored",
+}
 
 
 @dataclass
@@ -174,14 +191,14 @@ def print_event(event: object) -> bool:
         label = _gateway_label(event)
         parts = []
         if event.code is not None:
-            parts.append(f"code={event.code}")
-        if event.req_id is not None:
-            parts.append(f"req_id={event.req_id}")
-        if event.message:
-            parts.append(f"msg={_shorten_message(event.message)}")
+            parts.append(_format_gateway_code(event.code))
+        if event.req_id is not None and event.req_id >= 0:
+            parts.append(f"req={event.req_id}")
+        message = _gateway_message_for_display(event)
+        if message:
+            parts.append(_shorten_message(message, max_len=_MAX_GATEWAY_PREVIEW_LEN))
         if event.advanced:
-            parts.append("advanced=1")
-        parts.append("see=ib_gateway.jsonl")
+            parts.append("adv")
         _print_line(event.timestamp, label, " ".join(parts))
         return True
     if isinstance(event, BarStreamStalled):
@@ -462,10 +479,10 @@ def print_event(event: object) -> bool:
             event.timestamp,
             "OrphanExitRecon",
             (
-                f"trigger={event.trigger} scope={event.scope} action={event.action} "
-                f"active_orders={event.active_order_count} positions={event.position_count} "
-                f"orphans={event.orphan_count} cancelled={event.cancelled_count} "
-                f"cancel_failed={event.cancel_failed_count}"
+                f"{event.trigger} {event.scope}/{event.action} "
+                f"active={event.active_order_count} pos={event.position_count} "
+                f"orphan={event.orphan_count} cancelled={event.cancelled_count} "
+                f"failed={event.cancel_failed_count}"
             ),
         )
         return True
@@ -529,6 +546,20 @@ def _should_hide_gateway_log(event: IbGatewayLog) -> bool:
     return "query cancel" in message
 
 
+def _format_gateway_code(code: int) -> str:
+    alias = _GATEWAY_CODE_ALIASES.get(code)
+    if not alias:
+        return str(code)
+    return f"{code}/{alias}"
+
+
+def _gateway_message_for_display(event: IbGatewayLog) -> str:
+    code = event.code
+    if code in _GATEWAY_CODE_SHORT_MESSAGES:
+        return _GATEWAY_CODE_SHORT_MESSAGES[code]
+    return " ".join(str(event.message or "").split())
+
+
 def _print_line(timestamp, label: str, message: str) -> None:
     prefix = f"{_PROMPT_PREFIX} " if _PROMPT_PREFIX else ""
     if timestamp:
@@ -539,12 +570,7 @@ def _print_line(timestamp, label: str, message: str) -> None:
 
 
 def _format_time(timestamp) -> str:
-    if getattr(timestamp, "tzinfo", None) is None:
-        return timestamp.strftime("%H:%M:%S.%f")
-    offset = timestamp.strftime("%z")
-    if offset:
-        offset = f"{offset[:3]}:{offset[3:]}"
-    return f"{timestamp.strftime('%H:%M:%S.%f')}{offset}"
+    return timestamp.strftime("%H:%M:%S")
 
 
 def _is_fill_event(status: Optional[str], filled_qty: Optional[float]) -> bool:
