@@ -475,6 +475,8 @@ def print_event(event: object) -> bool:
         )
         return True
     if isinstance(event, OrphanExitReconciliationCompleted):
+        if event.orphan_count <= 0:
+            return False
         _print_line(
             event.timestamp,
             "OrphanExitRecon",
