@@ -16,10 +16,15 @@ These labels are printed only for `IbGatewayLog` events:
 
 Printed line fields:
 
+- compact message preview first (to prioritize reason)
 - `<ib_error_code>` or `<code>/<alias>` (if present)
 - `req=<ib_req_id>` (only when req id is non-negative)
-- compact message preview (if present)
 - `adv` (if advanced reject payload is present)
+
+Preview lengths:
+
+- `IbStatus` / `IbWarn`: compact preview (short)
+- `IbError`: longer preview (so reject reason is less likely to be cut off)
 
 Compact aliases currently used:
 

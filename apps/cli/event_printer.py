@@ -50,6 +50,7 @@ _PROMPT_PREFIX: Optional[str] = None
 _CONFIRMED_BY_TAG: dict[str, "_EntryFillTiming"] = {}
 _MAX_GATEWAY_MSG_LEN = 160
 _MAX_GATEWAY_PREVIEW_LEN = 72
+_MAX_GATEWAY_ERROR_PREVIEW_LEN = 140
 _BAR_STREAM_INFO_COOLDOWN_SECONDS = 15.0
 _BAR_STREAM_INFO_LAST_PRINTED: dict[tuple[str, str, str, bool], float] = {}
 _GATEWAY_CODE_ALIASES = {
@@ -190,13 +191,14 @@ def print_event(event: object) -> bool:
             return False
         label = _gateway_label(event)
         parts = []
+        message = _gateway_message_for_display(event)
+        if message:
+            max_len = _gateway_message_preview_len(label)
+            parts.append(_shorten_message(message, max_len=max_len))
         if event.code is not None:
             parts.append(_format_gateway_code(event.code))
         if event.req_id is not None and event.req_id >= 0:
             parts.append(f"req={event.req_id}")
-        message = _gateway_message_for_display(event)
-        if message:
-            parts.append(_shorten_message(message, max_len=_MAX_GATEWAY_PREVIEW_LEN))
         if event.advanced:
             parts.append("adv")
         _print_line(event.timestamp, label, " ".join(parts))
@@ -560,6 +562,12 @@ def _gateway_message_for_display(event: IbGatewayLog) -> str:
     if code in _GATEWAY_CODE_SHORT_MESSAGES:
         return _GATEWAY_CODE_SHORT_MESSAGES[code]
     return " ".join(str(event.message or "").split())
+
+
+def _gateway_message_preview_len(label: str) -> int:
+    if label == "IbError":
+        return _MAX_GATEWAY_ERROR_PREVIEW_LEN
+    return _MAX_GATEWAY_PREVIEW_LEN
 
 
 def _print_line(timestamp, label: str, message: str) -> None:
