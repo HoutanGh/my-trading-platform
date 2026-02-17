@@ -9,10 +9,11 @@ import time
 import uuid
 from dataclasses import dataclass, replace
 from collections.abc import Coroutine
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any, Callable, Optional, cast
 
 from ib_insync import IB, LimitOrder, MarketOrder, StopOrder, Stock, StopLimitOrder, Trade
+from ib_insync.util import UNSET_DOUBLE
 
 from apps.adapters.broker.ibkr_connection import IBKRConnection
 from apps.adapters.broker.ibkr_session_phase import IBKRSessionPhaseResolver, SessionPhase
@@ -1326,11 +1327,21 @@ def _place_order_sanitized(ib: IB, contract: object, order: object) -> Trade:
 
 def _sanitize_order_prices(order: object, *, contract: object) -> None:
     lmt_price = _maybe_float(getattr(order, "lmtPrice", None))
-    if lmt_price is not None and math.isfinite(lmt_price) and lmt_price > 0:
+    if (
+        lmt_price is not None
+        and math.isfinite(lmt_price)
+        and lmt_price > 0
+        and not _is_ib_unset_double(lmt_price)
+    ):
         setattr(order, "lmtPrice", _snap_price(lmt_price, contract=contract))
 
     aux_price = _maybe_float(getattr(order, "auxPrice", None))
-    if aux_price is not None and math.isfinite(aux_price) and aux_price > 0:
+    if (
+        aux_price is not None
+        and math.isfinite(aux_price)
+        and aux_price > 0
+        and not _is_ib_unset_double(aux_price)
+    ):
         setattr(order, "auxPrice", _snap_price(aux_price, contract=contract))
 
     if _is_stop_limit_order(order):
@@ -1357,7 +1368,12 @@ def _snap_price(price: float, *, contract: object) -> float:
 
 def _tick_size_for_contract(contract: object, *, price: float) -> float:
     contract_tick = _maybe_float(getattr(contract, "minTick", None))
-    if contract_tick is not None and math.isfinite(contract_tick) and contract_tick > 0:
+    if (
+        contract_tick is not None
+        and math.isfinite(contract_tick)
+        and contract_tick > 0
+        and not _is_ib_unset_double(contract_tick)
+    ):
         return contract_tick
     # TODO: use IB market-rule price increments when available; fallback keeps current behavior predictable.
     return _tick_size_for_price(price)
@@ -1374,11 +1390,18 @@ def _tick_size_for_price(price: float) -> float:
 def _round_to_tick(price: float, *, tick: float) -> float:
     if not math.isfinite(price) or not math.isfinite(tick) or tick <= 0:
         return price
-    tick_dec = Decimal(str(tick))
-    price_dec = Decimal(str(price))
-    steps = (price_dec / tick_dec).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
-    rounded = steps * tick_dec
-    return float(rounded)
+    try:
+        tick_dec = Decimal(str(tick))
+        price_dec = Decimal(str(price))
+        steps = (price_dec / tick_dec).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+        rounded = steps * tick_dec
+        return float(rounded)
+    except (InvalidOperation, OverflowError, ValueError):
+        return price
+
+
+def _is_ib_unset_double(value: float) -> bool:
+    return value == UNSET_DOUBLE
 
 
 def _build_stop_limit_order(
