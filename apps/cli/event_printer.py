@@ -56,6 +56,7 @@ _BAR_STREAM_INFO_LAST_PRINTED: dict[tuple[str, str, str, bool], float] = {}
 _SUPPRESSED_GATEWAY_REQ_IDS: dict[int, float] = {}
 _GATEWAY_REQ_SUPPRESS_TTL_SECONDS = 10.0
 _GATEWAY_CODE_ALIASES = {
+    202: "order_canceled",
     10197: "competing_session",
     2104: "md_ok",
     2107: "hmds_inactive",
@@ -64,6 +65,7 @@ _GATEWAY_CODE_ALIASES = {
     1102: "restored",
 }
 _GATEWAY_CODE_SHORT_MESSAGES = {
+    202: "order canceled",
     10197: "competing live session",
     2104: "market data farm ok",
     2107: "historical data farm inactive",
@@ -537,6 +539,8 @@ def _shorten_message(message: str, max_len: int = _MAX_GATEWAY_MSG_LEN) -> str:
 
 
 def _gateway_label(event: IbGatewayLog) -> str:
+    if event.code == 202:
+        return "IbStatus"
     message = str(event.message or "").lower()
     if "is ok" in message:
         return "IbStatus"

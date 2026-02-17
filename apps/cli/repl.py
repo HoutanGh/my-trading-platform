@@ -319,7 +319,8 @@ class REPL:
                     "| orders cancel ORDER_ID "
                     "| orders replace ORDER_ID [limit=...] [qty=...] [tif=DAY] [outside_rth=true|false] "
                     "| orders broker [account=...] [scope=client|all_clients] "
-                    "| orders broker cancel ORDER_ID"
+                    "| orders broker cancel ORDER_ID "
+                    "| orders broker cancel all [account=...] [scope=client|all_clients]"
                 ),
             )
         )
@@ -531,6 +532,8 @@ class REPL:
                 "cancel",
                 "replace",
                 "broker",
+                "all",
+                "ALL",
                 "all_clients",
                 "client",
                 "limit=",
@@ -1766,7 +1769,11 @@ class REPL:
 
     async def _cmd_order_broker(self, args: list[str], kwargs: dict[str, str]) -> None:
         if args and args[0].strip().lower() == "cancel":
-            await self._cmd_order_cancel(args[1:], kwargs)
+            cancel_args = list(args[1:])
+            if cancel_args and cancel_args[0].strip().lower() == "all":
+                await self._cmd_order_broker_cancel_all(cancel_args[1:], kwargs)
+                return
+            await self._cmd_order_cancel(cancel_args, kwargs)
             return
 
         if not self._active_orders_service:
@@ -1813,6 +1820,123 @@ class REPL:
         print(f"Active broker orders (scope={scope})")
         for line in _format_active_orders_table(snapshots):
             print(line)
+
+    async def _cmd_order_broker_cancel_all(self, args: list[str], kwargs: dict[str, str]) -> None:
+        if not self._order_service:
+            print("Order service not configured.")
+            return
+        if not self._active_orders_service:
+            print("Active orders service not configured.")
+            return
+        if not self._connection.status().get("connected"):
+            print("Not connected. Use `connect` before requesting broker orders.")
+            return
+
+        normalized_args = list(args)
+        scope_arg = None
+        if normalized_args:
+            parsed_scope = normalized_args[0].strip().lower().replace("-", "_")
+            if parsed_scope in {"client", "all_clients"}:
+                scope_arg = parsed_scope
+                normalized_args = normalized_args[1:]
+        if normalized_args:
+            print("Usage: orders broker cancel all [account=...] [scope=client|all_clients]")
+            return
+
+        account = _coerce_str(kwargs.get("account"))
+        scope_raw = _coerce_str(kwargs.get("scope"))
+        scope = (scope_raw or scope_arg or "client").strip().lower().replace("-", "_")
+        if scope not in {"client", "all_clients"}:
+            print("scope must be 'client' or 'all_clients'")
+            return
+
+        try:
+            snapshots = await self._active_orders_service.list_active_orders(
+                account=account,
+                scope=scope,
+            )
+        except ValueError as exc:
+            print(f"Broker cancel-all rejected: {exc}")
+            return
+        except Exception as exc:
+            _print_exception("Broker cancel-all failed", exc)
+            return
+
+        if not snapshots:
+            print("No active broker orders found.")
+            return
+
+        order_ids: list[int] = []
+        seen_order_ids: set[int] = set()
+        for snapshot in snapshots:
+            order_id = snapshot.order_id
+            if order_id is None or order_id <= 0:
+                continue
+            if order_id in seen_order_ids:
+                continue
+            seen_order_ids.add(order_id)
+            order_ids.append(order_id)
+
+        if not order_ids:
+            print("No cancelable broker orders found (missing order_id).")
+            return
+
+        requested_ids: list[int] = []
+        failed_lines: list[str] = []
+        print(f"Cancelling {len(order_ids)} active broker order(s) (scope={scope})")
+        for order_id in order_ids:
+            try:
+                await self._order_service.cancel_order(OrderCancelSpec(order_id=order_id))
+            except OrderValidationError as exc:
+                failed_lines.append(f"order_id={order_id} rejected={exc}")
+                continue
+            except Exception as exc:
+                failed_lines.append(f"order_id={order_id} error={exc}")
+                continue
+            requested_ids.append(order_id)
+
+        print(
+            "Broker cancel-all requested: "
+            f"requested={len(requested_ids)} failed={len(failed_lines)} scope={scope}"
+        )
+        for line in failed_lines:
+            print(f"Cancel failed: {line}")
+
+        if not requested_ids:
+            return
+
+        # Give broker status callbacks a brief moment, then reconcile what remains active.
+        await asyncio.sleep(0.3)
+        try:
+            remaining = await self._active_orders_service.list_active_orders(
+                account=account,
+                scope=scope,
+            )
+        except Exception as exc:
+            print(f"Broker cancel-all verification skipped: {exc}")
+            return
+
+        remaining_by_id: dict[int, ActiveOrderSnapshot] = {}
+        for snapshot in remaining:
+            order_id = snapshot.order_id
+            if order_id is None or order_id <= 0:
+                continue
+            if order_id not in requested_ids:
+                continue
+            remaining_by_id[order_id] = snapshot
+
+        if not remaining_by_id:
+            print("Broker cancel-all result: all requested orders are no longer active.")
+            return
+
+        detail = ", ".join(
+            f"{order_id}:{(remaining_by_id[order_id].status or '-').strip() or '-'}"
+            for order_id in sorted(remaining_by_id)
+        )
+        print(
+            "Broker cancel-all result: "
+            f"still_active={len(remaining_by_id)} ids=[{detail}]"
+        )
 
     async def _cmd_trades(self, _args: list[str], _kwargs: dict[str, str]) -> None:
         log_path = _resolve_event_log_path()
