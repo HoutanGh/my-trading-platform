@@ -53,6 +53,8 @@ _MAX_GATEWAY_PREVIEW_LEN = 72
 _MAX_GATEWAY_ERROR_PREVIEW_LEN = 140
 _BAR_STREAM_INFO_COOLDOWN_SECONDS = 15.0
 _BAR_STREAM_INFO_LAST_PRINTED: dict[tuple[str, str, str, bool], float] = {}
+_SUPPRESSED_GATEWAY_REQ_IDS: dict[int, float] = {}
+_GATEWAY_REQ_SUPPRESS_TTL_SECONDS = 10.0
 _GATEWAY_CODE_ALIASES = {
     10197: "competing_session",
     2104: "md_ok",
@@ -544,6 +546,8 @@ def _gateway_label(event: IbGatewayLog) -> str:
 
 
 def _should_hide_gateway_log(event: IbGatewayLog) -> bool:
+    if _is_gateway_req_suppressed(event.req_id):
+        return True
     if event.code != 162:
         return False
     message = str(event.message or "").lower()
@@ -683,3 +687,38 @@ def make_prompting_event_printer(prompt: str):
 def _set_prompt_prefix(prompt: str) -> None:
     global _PROMPT_PREFIX
     _PROMPT_PREFIX = prompt.strip()
+
+
+def suppress_gateway_req_id(
+    req_id: int,
+    *,
+    ttl_seconds: float = _GATEWAY_REQ_SUPPRESS_TTL_SECONDS,
+) -> None:
+    if req_id < 0:
+        return
+    ttl = ttl_seconds if ttl_seconds > 0 else _GATEWAY_REQ_SUPPRESS_TTL_SECONDS
+    now = monotonic()
+    _SUPPRESSED_GATEWAY_REQ_IDS[req_id] = now + ttl
+    _prune_suppressed_gateway_req_ids(now)
+
+
+def _is_gateway_req_suppressed(req_id: Optional[int]) -> bool:
+    if req_id is None or req_id < 0:
+        return False
+    now = monotonic()
+    _prune_suppressed_gateway_req_ids(now)
+    expiry = _SUPPRESSED_GATEWAY_REQ_IDS.get(req_id)
+    if expiry is None:
+        return False
+    return now <= expiry
+
+
+def _prune_suppressed_gateway_req_ids(now: Optional[float] = None) -> None:
+    current = monotonic() if now is None else now
+    expired = [
+        req_id
+        for req_id, expiry in _SUPPRESSED_GATEWAY_REQ_IDS.items()
+        if expiry < current
+    ]
+    for req_id in expired:
+        _SUPPRESSED_GATEWAY_REQ_IDS.pop(req_id, None)

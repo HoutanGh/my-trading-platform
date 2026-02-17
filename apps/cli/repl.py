@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import os
 import re
@@ -21,6 +22,7 @@ except ImportError:
 from ib_insync import MarketOrder, Stock
 
 from apps.adapters.broker.ibkr_connection import IBKRConnection
+from apps.cli.event_printer import suppress_gateway_req_id
 from apps.cli.order_tracker import OrderTracker
 from apps.cli.position_origin_tracker import PositionOriginTracker
 from apps.core.analytics.flow.take_profit import TakeProfitRequest, TakeProfitService
@@ -73,7 +75,9 @@ _REPLACE_ACCEPTED_STATUSES = {
 _TRADE_BLOCKING_WARNING_TERMS = (
     "not eligible",
     "not allowed",
+    "no trading permission",
     "no trading permissions",
+    "no opening trades",
     "trading permissions for this contract",
     "trading permissions for this instrument",
     "not available for trading",
@@ -81,6 +85,7 @@ _TRADE_BLOCKING_WARNING_TERMS = (
     "prohibited",
     "invalid destination",
     "outside regular trading hours",
+    "closing-only status",
 )
 
 
@@ -729,7 +734,7 @@ class REPL:
                 timeout=timeout,
             )
             label = "ELIGIBLE" if eligible else "BLOCKED"
-            print(f"{symbol:<8} {label:<8} {detail}")
+            print(f"{symbol} {label} {detail}")
 
     async def _check_trade_eligibility(
         self,
@@ -761,12 +766,49 @@ class REPL:
         if account:
             order.account = account
 
+        expected_req_id: Optional[int] = None
+        captured_gateway_messages: list[
+            tuple[Optional[int], Optional[int], Optional[str], Optional[str]]
+        ] = []
+        unsubscribe_gateway: Optional[Callable[[], None]] = None
+        subscribe_gateway = getattr(self._connection, "subscribe_gateway_messages", None)
+        if callable(subscribe_gateway):
+            def _capture_gateway_message(
+                req_id: Optional[int],
+                code: Optional[int],
+                message: Optional[str],
+                advanced: Optional[str],
+            ) -> None:
+                if req_id is not None and req_id < 0:
+                    return
+                captured_gateway_messages.append((req_id, code, message, advanced))
+
+            unsubscribe_gateway = subscribe_gateway(_capture_gateway_message)
+
         try:
-            state = await asyncio.wait_for(ib.whatIfOrderAsync(contracts[0], order), timeout=timeout)
+            state_awaitable: Awaitable[object]
+            client = getattr(ib, "client", None)
+            wrapper = getattr(ib, "wrapper", None)
+            get_req_id = getattr(client, "getReqId", None) if client is not None else None
+            start_req = getattr(wrapper, "startReq", None) if wrapper is not None else None
+            place_order = getattr(client, "placeOrder", None) if client is not None else None
+            if callable(get_req_id) and callable(start_req) and callable(place_order):
+                expected_req_id = int(get_req_id())
+                suppress_gateway_req_id(expected_req_id)
+                what_if_order = copy.copy(order)
+                what_if_order.whatIf = True
+                state_awaitable = start_req(expected_req_id, contracts[0])
+                place_order(expected_req_id, contracts[0], what_if_order)
+            else:
+                state_awaitable = ib.whatIfOrderAsync(contracts[0], order)
+            state = await asyncio.wait_for(state_awaitable, timeout=timeout)
         except asyncio.TimeoutError:
             return False, f"what-if timed out after {timeout:.1f}s"
         except Exception as exc:
             return False, f"what-if rejected: {exc}"
+        finally:
+            if unsubscribe_gateway is not None:
+                unsubscribe_gateway()
 
         status = str(getattr(state, "status", "") or "").strip()
         warning = str(getattr(state, "warningText", "") or "").strip()
@@ -778,6 +820,12 @@ class REPL:
             if warning:
                 return False, f"{status}: {warning}"
             return False, f"what-if status={status}"
+        gateway_reject = _find_trade_blocking_gateway_reject(
+            captured_gateway_messages,
+            expected_req_id=expected_req_id,
+        )
+        if gateway_reject:
+            return False, gateway_reject
         if warning:
             return True, f"warning: {warning}"
         if status:
@@ -3143,6 +3191,42 @@ def _parse_symbol_tokens(
 def _is_trade_blocking_warning(message: str) -> bool:
     normalized = message.strip().lower()
     return any(term in normalized for term in _TRADE_BLOCKING_WARNING_TERMS)
+
+
+def _find_trade_blocking_gateway_reject(
+    messages: list[tuple[Optional[int], Optional[int], Optional[str], Optional[str]]],
+    *,
+    expected_req_id: Optional[int],
+) -> Optional[str]:
+    if expected_req_id is not None:
+        matched = _find_trade_blocking_gateway_reject_for_req(
+            messages, req_id_filter=expected_req_id
+        )
+        if matched:
+            return matched
+    return _find_trade_blocking_gateway_reject_for_req(messages, req_id_filter=None)
+
+
+def _find_trade_blocking_gateway_reject_for_req(
+    messages: list[tuple[Optional[int], Optional[int], Optional[str], Optional[str]]],
+    *,
+    req_id_filter: Optional[int],
+) -> Optional[str]:
+    for req_id, code, message, advanced in reversed(messages):
+        if req_id_filter is not None and req_id != req_id_filter:
+            continue
+        text = (message or "").strip()
+        if not text:
+            text = (advanced or "").strip()
+        if not text:
+            continue
+        normalized = text.lower()
+        if code != 201 and "order rejected" not in normalized and not _is_trade_blocking_warning(text):
+            continue
+        code_label = f"ib code {int(code)}" if code is not None else "ib reject"
+        req_label = f" req={req_id}" if req_id is not None and req_id >= 0 else ""
+        return f"{code_label}{req_label}: {text}"
+    return None
 
 
 def _flag_aliases(command: str) -> dict[str, str]:
