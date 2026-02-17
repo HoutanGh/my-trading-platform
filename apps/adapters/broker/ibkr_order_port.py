@@ -634,6 +634,9 @@ class IBKROrderPort(OrderPort):
                         event_bus=self._event_bus,
                     )
 
+        status_event = getattr(trade, "statusEvent", None)
+        if status_event is not None:
+            status_event += lambda trade_obj, *_args: _submit_detached_exits_if_ready(trade_obj)
         filled_event = getattr(trade, "filledEvent", None)
         if filled_event is not None:
             filled_event += lambda trade_obj, *_args: _submit_detached_exits_if_ready(trade_obj)
@@ -1568,18 +1571,16 @@ def _is_trade_filled(trade_obj: Trade, expected_qty: int) -> bool:
     order_status = getattr(trade_obj, "orderStatus", None)
     if not order_status:
         return False
-    status = getattr(order_status, "status", None)
-    if status and str(status).strip().lower() == "filled":
-        return True
+    status = _normalize_status(getattr(order_status, "status", None))
+    if status != "filled":
+        return False
     filled = _maybe_float(getattr(order_status, "filled", None))
-    if filled is not None and filled >= expected_qty:
-        return True
-    filled_fn = getattr(trade_obj, "filled", None)
-    if callable(filled_fn):
-        executed_qty = _maybe_float(filled_fn())
-        if executed_qty is not None and executed_qty >= expected_qty:
-            return True
-    return False
+    if filled is not None and filled < float(expected_qty):
+        return False
+    remaining = _maybe_float(getattr(order_status, "remaining", None))
+    if remaining is not None and remaining > 0:
+        return False
+    return True
 
 
 def _is_trade_inactive(trade_obj: Trade) -> bool:

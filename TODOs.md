@@ -22,6 +22,7 @@
     - [ ] backend code
 - [ ] MAYBE: for breakouts, when first take profit is taken the lowest SL should just be the lowest it can stay to stay green
 - [ ] cancel multipel orders in one line
+- [ ] you type in the stock and gives you best breakout prices, etc.
 
 
 
@@ -39,8 +40,13 @@
 - [ ] get all the errors possible then cleanup
 
 ### 17/02/25
-- [ ] 1 hour understanding breakout
 - [ ] test breakout
+- [x] cancel ALL orders cli command
+- [ ] trades for breakouts
+- [ ] the stop LMT amount have to change depending on take profit quantities?
+- [ ] update the prices by increment if above the breakout significantly
+- [ ] breakout status should be shown as a table
+- [ ] 1 hour understanding breakout
 - [ ] look into the steps of ib_async migration
 
 ### 14/02/26

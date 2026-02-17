@@ -128,8 +128,14 @@ class IBKRBarStream(BarStreamPort):
         self._next_stream_id += 1
 
         expected_interval = _bar_interval_seconds(bar_size)
+        # IB keepUpToDate historical streams can arrive on a ~5s cadence even when
+        # requesting sub-5s bars; treat that as the floor for stall detection.
+        stall_expected_interval = expected_interval
+        normalized_bar_size = bar_size.strip().lower()
+        if stall_expected_interval is not None and "sec" in normalized_bar_size:
+            stall_expected_interval = max(stall_expected_interval, 5.0)
         timeout_seconds = _stall_timeout_seconds(
-            expected_interval_seconds=expected_interval,
+            expected_interval_seconds=stall_expected_interval,
             multiplier=self._stall_multiplier,
             floor_seconds=self._stall_floor_seconds,
         )
