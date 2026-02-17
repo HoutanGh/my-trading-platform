@@ -1582,6 +1582,14 @@ def _is_trade_filled(trade_obj: Trade, expected_qty: int) -> bool:
     return False
 
 
+def _is_trade_inactive(trade_obj: Trade) -> bool:
+    order_status = getattr(trade_obj, "orderStatus", None)
+    if order_status is None:
+        return False
+    status = _normalize_status(getattr(order_status, "status", None))
+    return status in _INACTIVE_ORDER_STATUSES
+
+
 def _has_any_fill(trade_obj: Trade) -> bool:
     order_status = getattr(trade_obj, "orderStatus", None)
     if not order_status:
@@ -1834,6 +1842,9 @@ def _attach_stop_trigger_reprice(
     async def _reprice(trade_obj: Trade) -> None:
         nonlocal reprice_pending, reprice_applied
         try:
+            if _is_trade_inactive(trade_obj):
+                reprice_applied = True
+                return
             touch_price = await _touch_price_for_stop_limit(ib, contract, side)
             if touch_price is None:
                 return
@@ -1849,7 +1860,14 @@ def _attach_stop_trigger_reprice(
             order.orderId = trade_obj.order.orderId
             order.lmtPrice = limit_price
             order.auxPrice = current_stop_price
-            updated_trade = _place_order_sanitized(ib, contract, order)
+            if _is_trade_inactive(trade_obj):
+                reprice_applied = True
+                return
+            try:
+                updated_trade = _place_order_sanitized(ib, contract, order)
+            except AssertionError:
+                reprice_applied = True
+                return
             reprice_applied = True
             if updated_trade is not trade_obj:
                 if on_replaced is not None:
