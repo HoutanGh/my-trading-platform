@@ -476,6 +476,8 @@ class IBKROrderPort(OrderPort):
             "det70" if spec.execution_mode == LadderExecutionMode.DETACHED_70_30 else "detached"
         )
         execution_mode = "detached70" if kind_prefix == "det70" else "detached"
+        exit_oca_group = f"DETEXIT-{uuid.uuid4().hex[:10]}"
+        exit_oca_type = 2
 
         parent_spec = _entry_spec_from_ladder(spec)
         trade = _place_order_sanitized(self._ib, qualified, parent)
@@ -498,6 +500,7 @@ class IBKROrderPort(OrderPort):
             use_stop_limit=use_stop_limit,
             stop_limit_buffer_pct=self._outside_rth_stop_limit_buffer_pct,
         )
+        _apply_oca(stop_order, group=exit_oca_group, oca_type=exit_oca_type)
         stop_order.parentId = order_id
         stop_order.transmit = True
         stop_trade = _place_order_sanitized(self._ib, qualified, stop_order)
@@ -602,6 +605,8 @@ class IBKROrderPort(OrderPort):
                 execution_mode=execution_mode,
                 link_stop_to_parent=True,
                 stop_limit_buffer_pct=self._outside_rth_stop_limit_buffer_pct,
+                exit_oca_group=exit_oca_group,
+                exit_oca_type=exit_oca_type,
             )
             manager_ref["manager"] = manager
             _attach_ladder_stop_manager(stop_trade_ref["trade"], manager=manager)
@@ -610,6 +615,7 @@ class IBKROrderPort(OrderPort):
                 zip(spec.take_profits, spec.take_profit_qtys), start=1
             ):
                 tp_order = LimitOrder(child_side.value, tp_qty, tp_price, tif=spec.tif)
+                _apply_oca(tp_order, group=exit_oca_group, oca_type=exit_oca_type)
                 tp_order.transmit = True
                 tp_order.outsideRth = spec.outside_rth
                 if spec.account:
@@ -844,6 +850,8 @@ class _LadderStopManager:
         execution_mode: str = "attached",
         link_stop_to_parent: bool = True,
         stop_limit_buffer_pct: float = 0.0,
+        exit_oca_group: Optional[str] = None,
+        exit_oca_type: Optional[int] = None,
     ) -> None:
         self._ib = ib
         self._contract = contract
@@ -866,6 +874,8 @@ class _LadderStopManager:
         self._execution_mode = execution_mode
         self._link_stop_to_parent = link_stop_to_parent
         self._stop_limit_buffer_pct = max(stop_limit_buffer_pct, 0.0)
+        self._exit_oca_group = exit_oca_group
+        self._exit_oca_type = exit_oca_type
         if execution_mode == "attached":
             self._stop_kind = "stop_loss"
         elif execution_mode == "detached70":
@@ -1054,6 +1064,12 @@ class _LadderStopManager:
                 side=self._child_side,
                 stop_price=stop_price,
                 buffer_pct=self._stop_limit_buffer_pct,
+            )
+        if self._exit_oca_group:
+            _apply_oca(
+                stop_order,
+                group=self._exit_oca_group,
+                oca_type=self._exit_oca_type if self._exit_oca_type is not None else 2,
             )
         stop_order.tif = self._tif
         stop_order.outsideRth = self._outside_rth
@@ -1401,6 +1417,13 @@ def _round_to_tick(price: float, *, tick: float) -> float:
         return float(rounded)
     except (InvalidOperation, OverflowError, ValueError):
         return price
+
+
+def _apply_oca(order_obj: object, *, group: str, oca_type: int) -> None:
+    if not group:
+        return
+    setattr(order_obj, "ocaGroup", group)
+    setattr(order_obj, "ocaType", int(oca_type))
 
 
 def _is_ib_unset_double(value: float) -> bool:
