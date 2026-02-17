@@ -9,6 +9,7 @@ import time
 import uuid
 from dataclasses import dataclass, replace
 from collections.abc import Coroutine
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Callable, Optional, cast
 
 from ib_insync import IB, LimitOrder, MarketOrder, StopOrder, Stock, StopLimitOrder, Trade
@@ -97,7 +98,7 @@ class IBKROrderPort(OrderPort):
         if spec.client_tag:
             order.orderRef = spec.client_tag
 
-        trade = self._ib.placeOrder(qualified, order)
+        trade = _place_order_sanitized(self._ib, qualified, order)
         if self._event_bus:
             _attach_trade_handlers(trade, spec, self._event_bus)
         if self._event_bus:
@@ -146,7 +147,7 @@ class IBKROrderPort(OrderPort):
         if spec.outside_rth is not None:
             order.outsideRth = spec.outside_rth
         order.orderId = trade.order.orderId
-        updated_trade = self._ib.placeOrder(trade.contract, order)
+        updated_trade = _place_order_sanitized(self._ib, trade.contract, order)
         if self._event_bus and updated_trade is not trade:
             _attach_trade_handlers(updated_trade, _order_spec_from_trade(updated_trade), self._event_bus)
         status = await _wait_for_order_status(updated_trade)
@@ -207,7 +208,7 @@ class IBKROrderPort(OrderPort):
         stop_loss.transmit = True
 
         parent_spec = _entry_spec_from_bracket(spec)
-        trade = self._ib.placeOrder(qualified, parent)
+        trade = _place_order_sanitized(self._ib, qualified, parent)
         if self._event_bus:
             _attach_trade_handlers(trade, parent_spec, self._event_bus)
         if self._event_bus:
@@ -215,8 +216,8 @@ class IBKROrderPort(OrderPort):
         order_id = await _wait_for_order_id(trade)
         take_profit.parentId = order_id
         stop_loss.parentId = order_id
-        tp_trade = self._ib.placeOrder(qualified, take_profit)
-        sl_trade = self._ib.placeOrder(qualified, stop_loss)
+        tp_trade = _place_order_sanitized(self._ib, qualified, take_profit)
+        sl_trade = _place_order_sanitized(self._ib, qualified, stop_loss)
         _publish_stop_mode_selected(
             event_bus=self._event_bus,
             symbol=spec.symbol,
@@ -322,7 +323,7 @@ class IBKROrderPort(OrderPort):
         child_side = OrderSide.SELL if spec.side == OrderSide.BUY else OrderSide.BUY
 
         parent_spec = _entry_spec_from_ladder(spec)
-        trade = self._ib.placeOrder(qualified, parent)
+        trade = _place_order_sanitized(self._ib, qualified, parent)
         if self._event_bus:
             _attach_trade_handlers(trade, parent_spec, self._event_bus)
         if self._event_bus:
@@ -341,7 +342,7 @@ class IBKROrderPort(OrderPort):
                 take_profit.account = spec.account
             if spec.client_tag:
                 take_profit.orderRef = spec.client_tag
-            tp_trade = self._ib.placeOrder(qualified, take_profit)
+            tp_trade = _place_order_sanitized(self._ib, qualified, take_profit)
             tp_states.append(
                 _LadderTakeProfitState(index=idx, qty=tp_qty, price=tp_price, trade=tp_trade)
             )
@@ -373,7 +374,7 @@ class IBKROrderPort(OrderPort):
         )
         stop_order.parentId = order_id
         stop_order.transmit = True
-        stop_trade = self._ib.placeOrder(qualified, stop_order)
+        stop_trade = _place_order_sanitized(self._ib, qualified, stop_order)
         _publish_stop_mode_selected(
             event_bus=self._event_bus,
             symbol=spec.symbol,
@@ -476,7 +477,7 @@ class IBKROrderPort(OrderPort):
         execution_mode = "detached70" if kind_prefix == "det70" else "detached"
 
         parent_spec = _entry_spec_from_ladder(spec)
-        trade = self._ib.placeOrder(qualified, parent)
+        trade = _place_order_sanitized(self._ib, qualified, parent)
         if self._event_bus:
             _attach_trade_handlers(trade, parent_spec, self._event_bus)
         if self._event_bus:
@@ -498,7 +499,7 @@ class IBKROrderPort(OrderPort):
         )
         stop_order.parentId = order_id
         stop_order.transmit = True
-        stop_trade = self._ib.placeOrder(qualified, stop_order)
+        stop_trade = _place_order_sanitized(self._ib, qualified, stop_order)
         _publish_stop_mode_selected(
             event_bus=self._event_bus,
             symbol=spec.symbol,
@@ -614,7 +615,7 @@ class IBKROrderPort(OrderPort):
                     tp_order.account = spec.account
                 if spec.client_tag:
                     tp_order.orderRef = spec.client_tag
-                tp_trade = self._ib.placeOrder(qualified, tp_order)
+                tp_trade = _place_order_sanitized(self._ib, qualified, tp_order)
                 state = _LadderTakeProfitState(index=idx, qty=tp_qty, price=tp_price, trade=tp_trade)
                 manager.register_tp_state(state)
                 _attach_ladder_tp_manager(tp_trade, tp_index=idx, manager=manager)
@@ -989,6 +990,7 @@ class _LadderStopManager:
             self._emit_protection_state_locked(state="unprotected", reason=reason)
 
     def _replace_stop(self, stop_price: float, qty: int) -> None:
+        stop_price = _snap_price(stop_price, contract=self._contract)
         if self._stop_trade is None:
             if self._event_bus:
                 self._event_bus.publish(
@@ -1057,7 +1059,7 @@ class _LadderStopManager:
         if self._client_tag:
             stop_order.orderRef = self._client_tag
 
-        stop_trade = self._ib.placeOrder(self._contract, stop_order)
+        stop_trade = _place_order_sanitized(self._ib, self._contract, stop_order)
         self._stop_trade = stop_trade
         self._stop_qty = qty
         self._stop_price = stop_price
@@ -1315,6 +1317,68 @@ class _GatewayOrderErrorCapture:
             self._unsubscribe()
         finally:
             self._unsubscribe = None
+
+
+def _place_order_sanitized(ib: IB, contract: object, order: object) -> Trade:
+    _sanitize_order_prices(order, contract=contract)
+    return ib.placeOrder(contract, order)
+
+
+def _sanitize_order_prices(order: object, *, contract: object) -> None:
+    lmt_price = _maybe_float(getattr(order, "lmtPrice", None))
+    if lmt_price is not None and math.isfinite(lmt_price) and lmt_price > 0:
+        setattr(order, "lmtPrice", _snap_price(lmt_price, contract=contract))
+
+    aux_price = _maybe_float(getattr(order, "auxPrice", None))
+    if aux_price is not None and math.isfinite(aux_price) and aux_price > 0:
+        setattr(order, "auxPrice", _snap_price(aux_price, contract=contract))
+
+    if _is_stop_limit_order(order):
+        _sanitize_stop_limit_prices(order)
+
+
+def _sanitize_stop_limit_prices(order: object) -> None:
+    lmt_price = _maybe_float(getattr(order, "lmtPrice", None))
+    aux_price = _maybe_float(getattr(order, "auxPrice", None))
+    if lmt_price is None or aux_price is None:
+        return
+    action = str(getattr(order, "action", "")).strip().upper()
+    if action == "SELL" and lmt_price > aux_price:
+        setattr(order, "lmtPrice", aux_price)
+        return
+    if action == "BUY" and lmt_price < aux_price:
+        setattr(order, "lmtPrice", aux_price)
+
+
+def _snap_price(price: float, *, contract: object) -> float:
+    tick_size = _tick_size_for_contract(contract, price=price)
+    return _round_to_tick(price, tick=tick_size)
+
+
+def _tick_size_for_contract(contract: object, *, price: float) -> float:
+    contract_tick = _maybe_float(getattr(contract, "minTick", None))
+    if contract_tick is not None and math.isfinite(contract_tick) and contract_tick > 0:
+        return contract_tick
+    # TODO: use IB market-rule price increments when available; fallback keeps current behavior predictable.
+    return _tick_size_for_price(price)
+
+
+def _tick_size_for_price(price: float) -> float:
+    if not math.isfinite(price) or price <= 0:
+        return 0.01
+    if price < 1.0:
+        return 0.0001
+    return 0.01
+
+
+def _round_to_tick(price: float, *, tick: float) -> float:
+    if not math.isfinite(price) or not math.isfinite(tick) or tick <= 0:
+        return price
+    tick_dec = Decimal(str(tick))
+    price_dec = Decimal(str(price))
+    steps = (price_dec / tick_dec).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    rounded = steps * tick_dec
+    return float(rounded)
 
 
 def _build_stop_limit_order(
@@ -1762,7 +1826,7 @@ def _attach_stop_trigger_reprice(
             order.orderId = trade_obj.order.orderId
             order.lmtPrice = limit_price
             order.auxPrice = current_stop_price
-            updated_trade = ib.placeOrder(contract, order)
+            updated_trade = _place_order_sanitized(ib, contract, order)
             reprice_applied = True
             if updated_trade is not trade_obj:
                 if on_replaced is not None:
