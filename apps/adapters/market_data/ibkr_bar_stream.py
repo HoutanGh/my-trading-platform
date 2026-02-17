@@ -173,12 +173,12 @@ class IBKRBarStream(BarStreamPort):
             while True:
                 ib_bar = await queue.get()
                 bar = _to_bar(ib_bar)
-                self._mark_stream_bar(stream_id, bar.timestamp)
                 bar_ts = _normalize_timestamp(bar.timestamp)
                 if stream.last_emitted_bar_timestamp is not None:
                     if bar_ts <= _normalize_timestamp(stream.last_emitted_bar_timestamp):
                         continue
                 stream.last_emitted_bar_timestamp = bar_ts
+                self._mark_stream_bar(stream_id, bar.timestamp)
                 if expected_interval:
                     if last_bar_ts is not None:
                         actual_interval = (_normalize_timestamp(bar.timestamp) - _normalize_timestamp(last_bar_ts)).total_seconds()
@@ -407,6 +407,9 @@ class IBKRBarStream(BarStreamPort):
             if stream.closed:
                 continue
             if stream.status == "blocked_competing_session":
+                continue
+            # Keep group-level queueing, but only resubscribe streams that are not healthy.
+            if stream.status not in {"stalled", "recovering", "failed"}:
                 continue
             if now < stream.next_retry_monotonic:
                 continue
