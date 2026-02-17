@@ -107,6 +107,43 @@ class _BreakoutTpRepriceSession:
     reprice_started: bool = False
 
 
+@dataclass
+class _BreakoutTradesSession:
+    key: str
+    tag: str
+    symbol: str
+    level: Optional[float] = None
+    configured_tps: list[float] = field(default_factory=list)
+    configured_sl: Optional[float] = None
+    confirm_time: Optional[datetime] = None
+    watcher_stop_time: Optional[datetime] = None
+    watcher_stop_reason: Optional[str] = None
+    entry_order_id: Optional[int] = None
+    entry_side: Optional[str] = None
+    planned_entry_qty: Optional[float] = None
+    entry_filled_qty: float = 0.0
+    entry_notional: float = 0.0
+    entry_avg_price: Optional[float] = None
+    entry_remaining_qty: Optional[float] = None
+    entry_last_status: Optional[str] = None
+    entry_first_fill_time: Optional[datetime] = None
+    tp_expected_by_kind: dict[str, float] = field(default_factory=dict)
+    child_status_by_kind: dict[str, str] = field(default_factory=dict)
+    protection_state: Optional[str] = None
+    protection_reason: Optional[str] = None
+    tp_filled_qty: float = 0.0
+    tp_notional: float = 0.0
+    stop_filled_qty: float = 0.0
+    stop_notional: float = 0.0
+    first_exit_time: Optional[datetime] = None
+    last_exit_time: Optional[datetime] = None
+    replace_failed_count: int = 0
+    last_replace_failed_status: Optional[str] = None
+    last_replace_failed_code: Optional[int] = None
+    last_replace_failed_message: Optional[str] = None
+    issues: list[str] = field(default_factory=list)
+
+
 @dataclass(frozen=True)
 class CommandSpec:
     name: str
@@ -1950,9 +1987,111 @@ class REPL:
         local_tz = datetime.now().astimezone().tzinfo or timezone.utc
         today = datetime.now().astimezone().date()
         fills_rows: list[list[str]] = []
+        lifecycle_rows: list[list[str]] = []
         completed_rows: list[list[str]] = []
-        entries_by_tag: dict[str, list[dict[str, object]]] = {}
-        unmatched_exits = 0
+
+        tracked_types = {
+            "BreakoutConfirmed",
+            "BreakoutStopped",
+            "OrderIdAssigned",
+            "OrderStatusChanged",
+            "OrderFilled",
+            "BracketChildOrderBrokerSnapshot",
+            "BracketChildOrderStatusChanged",
+            "BracketChildOrderFilled",
+            "LadderProtectionStateChanged",
+            "LadderStopLossReplaceFailed",
+            "LadderStopLossReplaced",
+            "IbGatewayLog",
+        }
+        sessions_by_key: dict[str, _BreakoutTradesSession] = {}
+        session_keys_by_tag: dict[str, list[str]] = {}
+        next_session_index_by_tag: dict[str, int] = {}
+        unassigned_session_key_by_tag: dict[str, str] = {}
+        session_key_by_entry_order_id: dict[int, str] = {}
+        session_key_by_child_order_id: dict[int, str] = {}
+        entry_filled_cumulative_by_order_id: dict[int, float] = {}
+        child_filled_cumulative_by_order_id: dict[int, float] = {}
+
+        def _new_session(tag: str, symbol: str, timestamp_local: datetime) -> _BreakoutTradesSession:
+            next_index = next_session_index_by_tag.get(tag, 0) + 1
+            next_session_index_by_tag[tag] = next_index
+            key = f"{tag}#{next_index}"
+            session = _BreakoutTradesSession(
+                key=key,
+                tag=tag,
+                symbol=symbol or "-",
+                confirm_time=timestamp_local,
+            )
+            sessions_by_key[key] = session
+            session_keys_by_tag.setdefault(tag, []).append(key)
+            unassigned_session_key_by_tag[tag] = key
+            return session
+
+        def _latest_session_for_tag(tag: str) -> Optional[_BreakoutTradesSession]:
+            keys = session_keys_by_tag.get(tag)
+            if not keys:
+                return None
+            return sessions_by_key.get(keys[-1])
+
+        def _resolve_session(
+            *,
+            tag: Optional[str],
+            symbol: str,
+            timestamp_local: datetime,
+            order_id: Optional[int] = None,
+            parent_order_id: Optional[int] = None,
+            create_if_missing: bool = False,
+        ) -> Optional[_BreakoutTradesSession]:
+            if order_id is not None:
+                key = session_key_by_entry_order_id.get(order_id) or session_key_by_child_order_id.get(order_id)
+                if key:
+                    return sessions_by_key.get(key)
+            if parent_order_id is not None:
+                key = session_key_by_entry_order_id.get(parent_order_id)
+                if key:
+                    return sessions_by_key.get(key)
+            if not tag or not _is_breakout_client_tag(tag):
+                return None
+            unassigned_key = unassigned_session_key_by_tag.get(tag)
+            if unassigned_key:
+                unassigned = sessions_by_key.get(unassigned_key)
+                if unassigned is not None:
+                    return unassigned
+            existing = _latest_session_for_tag(tag)
+            if existing is not None:
+                return existing
+            if not create_if_missing:
+                return None
+            return _new_session(tag=tag, symbol=symbol, timestamp_local=timestamp_local)
+
+        def _record_fill_row(
+            *,
+            timestamp_local: datetime,
+            fill_type: str,
+            symbol: object,
+            side: object,
+            qty: Optional[float],
+            price: Optional[float],
+            status: object,
+            order_id: object,
+            tag: object,
+        ) -> None:
+            if qty is None or qty <= 0:
+                return
+            fills_rows.append(
+                [
+                    timestamp_local.strftime("%H:%M:%S"),
+                    str(fill_type),
+                    str(symbol or "-"),
+                    str(side or "-"),
+                    _format_number(qty),
+                    _format_number(price),
+                    str(status or "-"),
+                    str(order_id or "-"),
+                    str(tag or "-"),
+                ]
+            )
 
         with open(log_path, "r", encoding="utf-8") as handle:
             for line in handle:
@@ -1964,7 +2103,7 @@ class REPL:
                 except json.JSONDecodeError:
                     continue
                 event_type = payload.get("event_type")
-                if event_type not in {"OrderFilled", "BracketChildOrderFilled"}:
+                if event_type not in tracked_types:
                     continue
                 event = payload.get("event")
                 if not isinstance(event, dict):
@@ -1976,99 +2115,448 @@ class REPL:
                 if timestamp_local.date() != today:
                     continue
 
-                if event_type == "OrderFilled":
-                    if not _is_fill_event(event.get("status"), event.get("filled_qty")):
+                if event_type == "BreakoutConfirmed":
+                    tag_value = event.get("client_tag")
+                    if not _is_breakout_client_tag(tag_value):
                         continue
+                    tag = str(tag_value)
+                    symbol = str(event.get("symbol") or "-")
+                    session = _new_session(tag=tag, symbol=symbol, timestamp_local=timestamp_local)
+                    session.level = _maybe_float(event.get("level"))
+                    parsed_tps = _coerce_float_list(event.get("take_profits"))
+                    if parsed_tps:
+                        session.configured_tps = parsed_tps
+                    else:
+                        single_tp = _maybe_float(event.get("take_profit"))
+                        if single_tp is not None:
+                            session.configured_tps = [single_tp]
+                    session.configured_sl = _maybe_float(event.get("stop_loss"))
+                    continue
+
+                if event_type == "BreakoutStopped":
+                    tag_value = event.get("client_tag")
+                    if not _is_breakout_client_tag(tag_value):
+                        continue
+                    tag = str(tag_value)
+                    symbol = str(event.get("symbol") or "-")
+                    session = _resolve_session(
+                        tag=tag,
+                        symbol=symbol,
+                        timestamp_local=timestamp_local,
+                        create_if_missing=True,
+                    )
+                    if session is None:
+                        continue
+                    session.watcher_stop_time = timestamp_local
+                    if event.get("reason"):
+                        session.watcher_stop_reason = str(event.get("reason"))
+                    continue
+
+                if event_type == "OrderIdAssigned":
+                    spec = event.get("spec")
+                    if not isinstance(spec, dict):
+                        spec = {}
+                    tag_value = spec.get("client_tag")
+                    if not _is_breakout_client_tag(tag_value):
+                        continue
+                    tag = str(tag_value)
+                    symbol = str(spec.get("symbol") or "-")
+                    order_id = _maybe_int(event.get("order_id"))
+                    session = _resolve_session(
+                        tag=tag,
+                        symbol=symbol,
+                        timestamp_local=timestamp_local,
+                        create_if_missing=True,
+                    )
+                    if session is None:
+                        continue
+                    session.symbol = symbol
+                    session.entry_side = str(spec.get("side") or session.entry_side or "")
+                    planned_qty = _maybe_float(spec.get("qty"))
+                    if planned_qty is not None and planned_qty > 0:
+                        session.planned_entry_qty = planned_qty
+                    if order_id is not None:
+                        session.entry_order_id = order_id
+                        session_key_by_entry_order_id[order_id] = session.key
+                    unassigned_session_key_by_tag.pop(tag, None)
+                    continue
+
+                if event_type == "OrderStatusChanged":
+                    spec = event.get("spec")
+                    if not isinstance(spec, dict):
+                        spec = {}
+                    tag_value = spec.get("client_tag")
+                    if not _is_breakout_client_tag(tag_value):
+                        continue
+                    tag = str(tag_value)
+                    symbol = str(spec.get("symbol") or "-")
+                    order_id = _maybe_int(event.get("order_id"))
+                    session = _resolve_session(
+                        tag=tag,
+                        symbol=symbol,
+                        timestamp_local=timestamp_local,
+                        order_id=order_id,
+                        create_if_missing=True,
+                    )
+                    if session is None:
+                        continue
+                    session.symbol = symbol
+                    if order_id is not None and session.entry_order_id is None:
+                        session.entry_order_id = order_id
+                        session_key_by_entry_order_id[order_id] = session.key
+                    if event.get("status"):
+                        session.entry_last_status = str(event.get("status"))
+                    continue
+
+                if event_type == "OrderFilled":
                     spec = event.get("spec")
                     if not isinstance(spec, dict):
                         spec = {}
                     symbol = spec.get("symbol") or "-"
                     side = spec.get("side") or "-"
-                    qty = _coalesce_number(event.get("filled_qty"), spec.get("qty"))
                     price = _coalesce_number(event.get("avg_fill_price"), spec.get("limit_price"))
                     status = event.get("status") or "-"
                     order_id = event.get("order_id") or "-"
                     tag = spec.get("client_tag") or "-"
-                    time_str = timestamp_local.strftime("%H:%M:%S")
-                    fills_rows.append(
-                        [
-                            time_str,
-                            "entry",
-                            str(symbol),
-                            str(side),
-                            _format_number(qty),
-                            _format_number(price),
-                            str(status),
-                            str(order_id),
-                            str(tag),
-                        ]
+                    order_id_int = _maybe_int(event.get("order_id"))
+                    cumulative_qty = _maybe_float(event.get("filled_qty"))
+                    delta_qty = None
+                    if _is_fill_event(status, cumulative_qty):
+                        delta_qty = _delta_from_cumulative(
+                            cumulative_qty,
+                            order_id=order_id_int,
+                            snapshots_by_order_id=entry_filled_cumulative_by_order_id,
+                        )
+                    _record_fill_row(
+                        timestamp_local=timestamp_local,
+                        fill_type="entry",
+                        symbol=symbol,
+                        side=side,
+                        qty=delta_qty,
+                        price=price,
+                        status=status,
+                        order_id=order_id,
+                        tag=tag,
                     )
+
                     tag_value = spec.get("client_tag")
-                    if tag_value and price is not None:
-                        entry = {
-                            "symbol": symbol,
-                            "side": side,
-                            "qty": qty,
-                            "price": price,
-                            "timestamp": timestamp_local,
-                            "order_id": order_id,
-                        }
-                        entries_by_tag.setdefault(str(tag_value), []).append(entry)
+                    if not _is_breakout_client_tag(tag_value):
+                        continue
+                    tag_text = str(tag_value)
+                    session = _resolve_session(
+                        tag=tag_text,
+                        symbol=str(symbol),
+                        timestamp_local=timestamp_local,
+                        order_id=order_id_int,
+                        create_if_missing=True,
+                    )
+                    if session is None:
+                        continue
+                    session.symbol = str(symbol)
+                    session.entry_side = str(side)
+                    planned_qty = _maybe_float(spec.get("qty"))
+                    if planned_qty is not None and planned_qty > 0:
+                        session.planned_entry_qty = planned_qty
+                    if order_id_int is not None:
+                        session_key_by_entry_order_id[order_id_int] = session.key
+                        if session.entry_order_id is None:
+                            session.entry_order_id = order_id_int
+                    if cumulative_qty is not None and cumulative_qty > session.entry_filled_qty:
+                        session.entry_filled_qty = cumulative_qty
+                    remaining_qty = _maybe_float(event.get("remaining_qty"))
+                    if remaining_qty is not None:
+                        session.entry_remaining_qty = remaining_qty
+                    if status:
+                        session.entry_last_status = str(status)
+                    if delta_qty is not None and delta_qty > 0:
+                        if session.entry_first_fill_time is None:
+                            session.entry_first_fill_time = timestamp_local
+                        if price is not None:
+                            session.entry_notional += delta_qty * price
+                    avg_fill_price = _maybe_float(event.get("avg_fill_price"))
+                    if avg_fill_price is not None and avg_fill_price > 0:
+                        session.entry_avg_price = avg_fill_price
+                    elif session.entry_filled_qty > 0 and session.entry_notional > 0:
+                        session.entry_avg_price = session.entry_notional / session.entry_filled_qty
                     continue
 
-                if not _is_fill_event(event.get("status"), event.get("filled_qty")):
+                if event_type == "BracketChildOrderBrokerSnapshot":
+                    tag_value = event.get("client_tag")
+                    if not _is_breakout_client_tag(tag_value):
+                        continue
+                    tag = str(tag_value)
+                    symbol = str(event.get("symbol") or "-")
+                    order_id_int = _maybe_int(event.get("order_id"))
+                    parent_order_id = _maybe_int(event.get("parent_order_id"))
+                    session = _resolve_session(
+                        tag=tag,
+                        symbol=symbol,
+                        timestamp_local=timestamp_local,
+                        order_id=order_id_int,
+                        parent_order_id=parent_order_id,
+                        create_if_missing=True,
+                    )
+                    if session is None:
+                        continue
+                    session.symbol = symbol
+                    kind = str(event.get("kind") or "")
+                    expected_qty = _maybe_float(event.get("expected_qty"))
+                    if _is_tp_kind(kind) and expected_qty is not None:
+                        session.tp_expected_by_kind[kind] = expected_qty
+                    if order_id_int is not None:
+                        session_key_by_child_order_id[order_id_int] = session.key
                     continue
-                kind = event.get("kind") or "-"
-                symbol = event.get("symbol") or "-"
-                side = event.get("side") or "-"
-                qty = _coalesce_number(event.get("filled_qty"), event.get("qty"))
-                price = _coalesce_number(event.get("avg_fill_price"), event.get("price"))
-                status = event.get("status") or "-"
-                order_id = event.get("order_id") or "-"
-                tag = event.get("client_tag") or "-"
-                time_str = timestamp_local.strftime("%H:%M:%S")
-                fills_rows.append(
-                    [
-                        time_str,
-                        _format_kind(kind),
-                        str(symbol),
-                        str(side),
-                        _format_number(qty),
-                        _format_number(price),
-                        str(status),
-                        str(order_id),
-                        str(tag),
-                    ]
-                )
-                tag_value = event.get("client_tag")
-                if not tag_value or price is None:
+
+                if event_type == "BracketChildOrderStatusChanged":
+                    tag_value = event.get("client_tag")
+                    if not _is_breakout_client_tag(tag_value):
+                        continue
+                    tag = str(tag_value)
+                    symbol = str(event.get("symbol") or "-")
+                    order_id_int = _maybe_int(event.get("order_id"))
+                    parent_order_id = _maybe_int(event.get("parent_order_id"))
+                    session = _resolve_session(
+                        tag=tag,
+                        symbol=symbol,
+                        timestamp_local=timestamp_local,
+                        order_id=order_id_int,
+                        parent_order_id=parent_order_id,
+                        create_if_missing=True,
+                    )
+                    if session is None:
+                        continue
+                    session.symbol = symbol
+                    if order_id_int is not None:
+                        session_key_by_child_order_id[order_id_int] = session.key
+                    kind = str(event.get("kind") or "")
+                    status = str(event.get("status") or "")
+                    if kind:
+                        session.child_status_by_kind[kind] = status
                     continue
-                entries = entries_by_tag.get(str(tag_value))
-                if not entries:
-                    unmatched_exits += 1
+
+                if event_type == "BracketChildOrderFilled":
+                    kind = event.get("kind") or "-"
+                    symbol = event.get("symbol") or "-"
+                    side = event.get("side") or "-"
+                    price = _coalesce_number(event.get("avg_fill_price"), event.get("price"))
+                    status = event.get("status") or "-"
+                    order_id = event.get("order_id") or "-"
+                    tag = event.get("client_tag") or "-"
+                    order_id_int = _maybe_int(event.get("order_id"))
+                    parent_order_id = _maybe_int(event.get("parent_order_id"))
+                    cumulative_qty = _maybe_float(event.get("filled_qty"))
+                    delta_qty = None
+                    if _is_fill_event(status, cumulative_qty):
+                        delta_qty = _delta_from_cumulative(
+                            cumulative_qty,
+                            order_id=order_id_int,
+                            snapshots_by_order_id=child_filled_cumulative_by_order_id,
+                        )
+                    _record_fill_row(
+                        timestamp_local=timestamp_local,
+                        fill_type=_format_kind(kind),
+                        symbol=symbol,
+                        side=side,
+                        qty=delta_qty,
+                        price=price,
+                        status=status,
+                        order_id=order_id,
+                        tag=tag,
+                    )
+
+                    tag_value = event.get("client_tag")
+                    if not _is_breakout_client_tag(tag_value):
+                        continue
+                    tag_text = str(tag_value)
+                    session = _resolve_session(
+                        tag=tag_text,
+                        symbol=str(symbol),
+                        timestamp_local=timestamp_local,
+                        order_id=order_id_int,
+                        parent_order_id=parent_order_id,
+                        create_if_missing=True,
+                    )
+                    if session is None:
+                        continue
+                    session.symbol = str(symbol)
+                    if order_id_int is not None:
+                        session_key_by_child_order_id[order_id_int] = session.key
+                    kind_text = str(kind)
+                    session.child_status_by_kind[kind_text] = str(status)
+                    if delta_qty is None or delta_qty <= 0:
+                        continue
+                    if session.first_exit_time is None:
+                        session.first_exit_time = timestamp_local
+                    session.last_exit_time = timestamp_local
+                    if _is_tp_kind(kind_text):
+                        session.tp_filled_qty += delta_qty
+                        if price is not None:
+                            session.tp_notional += delta_qty * price
+                    elif _is_stop_kind(kind_text):
+                        session.stop_filled_qty += delta_qty
+                        if price is not None:
+                            session.stop_notional += delta_qty * price
                     continue
-                entry = entries.pop(0)
-                if not entries:
-                    entries_by_tag.pop(str(tag_value), None)
-                pnl = _compute_pnl(entry.get("side"), entry.get("price"), price, qty)
-                entry_time = entry.get("timestamp")
-                completed_rows.append(
-                    [
-                        time_str,
-                        str(entry.get("symbol") or symbol),
-                        str(entry.get("side") or side),
-                        _format_number(qty),
-                        _format_number(entry.get("price")),
-                        _format_number(price),
-                        _format_number(pnl),
-                        _format_kind(kind),
-                        str(tag_value),
-                        _format_time_value(entry_time),
-                    ]
-                )
+
+                if event_type == "LadderProtectionStateChanged":
+                    tag_value = event.get("client_tag")
+                    if not _is_breakout_client_tag(tag_value):
+                        continue
+                    tag = str(tag_value)
+                    symbol = str(event.get("symbol") or "-")
+                    parent_order_id = _maybe_int(event.get("parent_order_id"))
+                    session = _resolve_session(
+                        tag=tag,
+                        symbol=symbol,
+                        timestamp_local=timestamp_local,
+                        parent_order_id=parent_order_id,
+                        create_if_missing=True,
+                    )
+                    if session is None:
+                        continue
+                    session.protection_state = str(event.get("state") or "")
+                    session.protection_reason = str(event.get("reason") or "")
+                    active_tp_ids = event.get("active_take_profit_order_ids")
+                    if isinstance(active_tp_ids, list):
+                        for raw_order_id in active_tp_ids:
+                            order_id = _maybe_int(raw_order_id)
+                            if order_id is None:
+                                continue
+                            session_key_by_child_order_id[order_id] = session.key
+                    stop_order_id = _maybe_int(event.get("stop_order_id"))
+                    if stop_order_id is not None:
+                        session_key_by_child_order_id[stop_order_id] = session.key
+                    continue
+
+                if event_type == "LadderStopLossReplaceFailed":
+                    tag_value = event.get("client_tag")
+                    if not _is_breakout_client_tag(tag_value):
+                        continue
+                    tag = str(tag_value)
+                    symbol = str(event.get("symbol") or "-")
+                    parent_order_id = _maybe_int(event.get("parent_order_id"))
+                    session = _resolve_session(
+                        tag=tag,
+                        symbol=symbol,
+                        timestamp_local=timestamp_local,
+                        parent_order_id=parent_order_id,
+                        create_if_missing=True,
+                    )
+                    if session is None:
+                        continue
+                    session.replace_failed_count += 1
+                    session.last_replace_failed_status = str(event.get("status") or "")
+                    session.last_replace_failed_code = _maybe_int(event.get("broker_code"))
+                    if event.get("broker_message"):
+                        session.last_replace_failed_message = str(event.get("broker_message"))
+                    _append_breakout_issue(session, "stop_replace_failed")
+                    continue
+
+                if event_type == "LadderStopLossReplaced":
+                    tag_value = event.get("client_tag")
+                    if not _is_breakout_client_tag(tag_value):
+                        continue
+                    tag = str(tag_value)
+                    symbol = str(event.get("symbol") or "-")
+                    parent_order_id = _maybe_int(event.get("parent_order_id"))
+                    session = _resolve_session(
+                        tag=tag,
+                        symbol=symbol,
+                        timestamp_local=timestamp_local,
+                        parent_order_id=parent_order_id,
+                        create_if_missing=True,
+                    )
+                    if session is None:
+                        continue
+                    if session.replace_failed_count > 0:
+                        session.replace_failed_count = max(session.replace_failed_count - 1, 0)
+                    continue
+
+                if event_type == "IbGatewayLog":
+                    req_id = _maybe_int(event.get("req_id"))
+                    code = _maybe_int(event.get("code"))
+                    if req_id is None or code is None:
+                        continue
+                    key = session_key_by_child_order_id.get(req_id) or session_key_by_entry_order_id.get(req_id)
+                    if not key:
+                        continue
+                    session = sessions_by_key.get(key)
+                    if session is None:
+                        continue
+                    if code == 404:
+                        _append_breakout_issue(session, f"404_locate_hold:{req_id}")
+                    elif code == 201:
+                        _append_breakout_issue(session, f"201_reject:{req_id}")
+                    elif code == 202:
+                        message = str(event.get("message") or "")
+                        if "cannot accept an order at a limit price" in message.lower():
+                            _append_breakout_issue(session, f"202_price_band:{req_id}")
+
+        sorted_sessions = sorted(
+            sessions_by_key.values(),
+            key=lambda item: item.confirm_time
+            or item.entry_first_fill_time
+            or item.watcher_stop_time
+            or datetime.min.replace(tzinfo=local_tz),
+        )
+        for session in sorted_sessions:
+            exit_qty = session.tp_filled_qty + session.stop_filled_qty
+            open_qty = (
+                max(session.entry_filled_qty - exit_qty, 0.0) if session.entry_filled_qty > 0 else None
+            )
+            issue_text = ",".join(session.issues) if session.issues else "-"
+            lifecycle_rows.append(
+                [
+                    session.tag,
+                    session.symbol,
+                    _format_number(session.level),
+                    _format_breakout_levels(session.configured_tps),
+                    _format_number(session.configured_sl),
+                    _format_time_value(session.entry_first_fill_time),
+                    _format_number(session.entry_filled_qty if session.entry_filled_qty > 0 else None),
+                    _format_number(session.entry_avg_price),
+                    _format_number(exit_qty if exit_qty > 0 else None),
+                    _format_number(open_qty),
+                    _breakout_legs_summary(session),
+                    _breakout_protection_summary(session),
+                    session.watcher_stop_reason or "-",
+                    issue_text,
+                ]
+            )
+
+            if not _session_entry_is_fully_filled(session):
+                continue
+            if session.entry_filled_qty <= 0:
+                continue
+            if exit_qty + 1e-9 < session.entry_filled_qty:
+                continue
+            entry_price = session.entry_avg_price
+            if entry_price is None and session.entry_filled_qty > 0 and session.entry_notional > 0:
+                entry_price = session.entry_notional / session.entry_filled_qty
+            exit_notional = session.tp_notional + session.stop_notional
+            exit_price = (
+                exit_notional / exit_qty
+                if exit_qty > 0 and exit_notional > 0
+                else None
+            )
+            pnl = _compute_pnl(session.entry_side, entry_price, exit_price, session.entry_filled_qty)
+            completed_rows.append(
+                [
+                    _format_time_value(session.last_exit_time),
+                    session.symbol,
+                    str(session.entry_side or "-"),
+                    _format_number(session.entry_filled_qty),
+                    _format_number(entry_price),
+                    _format_number(exit_price),
+                    _format_number(pnl),
+                    _breakout_outcome_kind(session),
+                    session.tag,
+                    _format_time_value(session.entry_first_fill_time),
+                ]
+            )
 
         print(f"Trades for {today.isoformat()} (local time).")
-        print("Fills today (app-seen):")
+        print("Fills today (execution deltas):")
         if fills_rows:
             for line in _format_simple_table(
                 [
@@ -2087,7 +2575,31 @@ class REPL:
                 print(line)
         else:
             print("No fills found today.")
-        print("Completed trades (app-matched bracket exits):")
+        print("Breakout lifecycle today:")
+        if lifecycle_rows:
+            for line in _format_simple_table(
+                [
+                    "tag",
+                    "symbol",
+                    "level",
+                    "tp",
+                    "sl",
+                    "entry_time",
+                    "entry_qty",
+                    "entry_px",
+                    "exit_qty",
+                    "open_qty",
+                    "legs",
+                    "protection",
+                    "watcher",
+                    "issues",
+                ],
+                lifecycle_rows,
+            ):
+                print(line)
+        else:
+            print("No breakout sessions found today.")
+        print("Completed breakout trades (full exits only):")
         if completed_rows:
             for line in _format_simple_table(
                 [
@@ -2106,9 +2618,7 @@ class REPL:
             ):
                 print(line)
         else:
-            print("No completed trades found today.")
-        if unmatched_exits:
-            print(f"Note: {unmatched_exits} exit fill(s) had no matching entry in the log.")
+            print("No completed breakout trades found today.")
 
     async def _seed_position_origins(self) -> None:
         if not self._position_origin_tracker:
@@ -3590,6 +4100,144 @@ def _format_tp_display(levels: Optional[list[float]], fallback: Optional[float])
     if levels:
         return "[" + ",".join(_format_number(item) for item in levels) + "]"
     return _format_number(fallback)
+
+
+def _format_breakout_levels(levels: list[float]) -> str:
+    if not levels:
+        return "-"
+    return "[" + ",".join(_format_number(item) for item in levels) + "]"
+
+
+def _is_breakout_client_tag(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    return value.strip().lower().startswith("breakout:")
+
+
+def _maybe_int(value: object) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _delta_from_cumulative(
+    cumulative_qty: Optional[float],
+    *,
+    order_id: Optional[int],
+    snapshots_by_order_id: dict[int, float],
+) -> Optional[float]:
+    if cumulative_qty is None:
+        return None
+    normalized_qty = max(cumulative_qty, 0.0)
+    if order_id is None:
+        return normalized_qty
+    previous_qty = snapshots_by_order_id.get(order_id)
+    snapshots_by_order_id[order_id] = normalized_qty
+    if previous_qty is None:
+        return normalized_qty
+    delta = normalized_qty - previous_qty
+    if delta >= 0:
+        return delta
+    # Broker can occasionally reset cumulative snapshots; treat the new snapshot as current delta.
+    return normalized_qty
+
+
+def _is_tp_kind(kind: str) -> bool:
+    normalized = kind.strip().lower()
+    return (
+        normalized.startswith("take_profit")
+        or normalized.startswith("detached_tp_")
+        or normalized.startswith("det70_tp_")
+    )
+
+
+def _is_stop_kind(kind: str) -> bool:
+    normalized = kind.strip().lower()
+    return normalized in {"stop_loss", "detached_stop", "det70_stop"}
+
+
+def _append_breakout_issue(session: _BreakoutTradesSession, issue: str) -> None:
+    if not issue:
+        return
+    if issue in session.issues:
+        return
+    session.issues.append(issue)
+
+
+def _breakout_leg_alias(kind: str) -> str:
+    normalized = kind.strip().lower()
+    if normalized == "take_profit":
+        return "tp1"
+    if normalized.startswith("take_profit_"):
+        suffix = normalized.split("_")[-1]
+        return f"tp{suffix}"
+    if normalized.startswith("detached_tp_"):
+        suffix = normalized.split("_")[-1]
+        return f"tp{suffix}"
+    if normalized.startswith("det70_tp_"):
+        suffix = normalized.split("_")[-1]
+        return f"tp{suffix}"
+    if normalized in {"stop_loss", "detached_stop", "det70_stop"}:
+        return "sl"
+    return normalized or "-"
+
+
+def _breakout_legs_summary(session: _BreakoutTradesSession) -> str:
+    tp_expected = sum(session.tp_expected_by_kind.values()) if session.tp_expected_by_kind else None
+    tp_text = _format_number(session.tp_filled_qty if session.tp_filled_qty > 0 else 0.0)
+    if tp_expected is not None:
+        tp_text = f"{tp_text}/{_format_number(tp_expected)}"
+    stop_text = _format_number(session.stop_filled_qty if session.stop_filled_qty > 0 else 0.0)
+    parts = [f"tp={tp_text}", f"sl={stop_text}"]
+    status_parts: list[str] = []
+    for kind in sorted(session.child_status_by_kind):
+        if not (_is_tp_kind(kind) or _is_stop_kind(kind)):
+            continue
+        alias = _breakout_leg_alias(kind)
+        status = session.child_status_by_kind.get(kind) or "-"
+        status_parts.append(f"{alias}:{status}")
+    if status_parts:
+        parts.append(f"[{','.join(status_parts)}]")
+    return " ".join(parts)
+
+
+def _breakout_protection_summary(session: _BreakoutTradesSession) -> str:
+    if not session.protection_state:
+        return "-"
+    if not session.protection_reason:
+        return session.protection_state
+    return f"{session.protection_state}:{session.protection_reason}"
+
+
+def _session_entry_is_fully_filled(session: _BreakoutTradesSession) -> bool:
+    if session.entry_filled_qty <= 0:
+        return False
+    if session.entry_remaining_qty is not None:
+        return session.entry_remaining_qty <= 1e-9
+    if session.planned_entry_qty is not None and session.planned_entry_qty > 0:
+        return session.entry_filled_qty + 1e-9 >= session.planned_entry_qty
+    normalized_status = str(session.entry_last_status or "").strip().lower()
+    return normalized_status == "filled"
+
+
+def _breakout_outcome_kind(session: _BreakoutTradesSession) -> str:
+    entry_qty = session.entry_filled_qty
+    tp_qty = session.tp_filled_qty
+    stop_qty = session.stop_filled_qty
+    if entry_qty > 0 and stop_qty + 1e-9 >= entry_qty:
+        return "stop"
+    if entry_qty > 0 and tp_qty + 1e-9 >= entry_qty:
+        return "tp"
+    if tp_qty > 0 and stop_qty > 0:
+        return "mixed"
+    if tp_qty > 0:
+        return "tp_partial"
+    if stop_qty > 0:
+        return "stop_partial"
+    return "-"
 
 
 def _match_prefix(text: str, options: list[str]) -> list[str]:
