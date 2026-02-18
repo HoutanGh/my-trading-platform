@@ -870,7 +870,7 @@ class IBKROrderPort(OrderPort):
         tp_completed: dict[int, bool] = {1: False, 2: False}
         stop_filled: dict[int, bool] = {1: False, 2: False}
         protection_state: Optional[str] = None
-        incident_active = False
+        incident_pairs_active: set[int] = set()
         stop2_reprice_started = False
         leg_by_order_id: dict[int, tuple[str, int]] = {}
         gateway_unsubscribe_ref: dict[str, Optional[Callable[[], None]]] = {"fn": None}
@@ -920,6 +920,20 @@ class IBKROrderPort(OrderPort):
                     return order_id_value
             return None
 
+        def _active_stop_remaining_qty_locked(pair_index: int) -> int:
+            trade_obj = stop_trades.get(pair_index)
+            if trade_obj is None:
+                return 0
+            status_value = _normalize_status(getattr(trade_obj.orderStatus, "status", None))
+            if status_value in _INACTIVE_ORDER_STATUSES:
+                return 0
+            remaining_qty = _maybe_float(getattr(trade_obj.orderStatus, "remaining", None))
+            if remaining_qty is None:
+                remaining_qty = _maybe_float(getattr(getattr(trade_obj, "order", None), "totalQuantity", None))
+            if remaining_qty is None:
+                return 0
+            return int(round(max(remaining_qty, 0.0)))
+
         def _emit_protection_state_locked(*, state: str, reason: str, force: bool = False) -> None:
             nonlocal protection_state
             active_tp_order_ids = _active_tp_order_ids_locked()
@@ -956,23 +970,19 @@ class IBKROrderPort(OrderPort):
 
         async def _handle_child_incident(
             *,
+            pair_index: int,
             source_order_id: Optional[int],
             code: Optional[int],
             message: Optional[str],
         ) -> None:
-            nonlocal incident_active
             with state_lock:
-                if incident_active:
+                if pair_index in incident_pairs_active:
                     return
-                incident_active = True
-                _emit_protection_state_locked(
-                    state="unprotected",
-                    reason=f"child_incident_{code if code is not None else 'unknown'}",
-                    force=True,
-                )
+                incident_pairs_active.add(pair_index)
+                other_pair_index = 2 if pair_index == 1 else 1
                 child_orders = [
-                    getattr(trade_obj, "order", None)
-                    for trade_obj in [tp_trades[1], tp_trades[2], stop_trades[1], stop_trades[2]]
+                    getattr(tp_trades.get(pair_index), "order", None),
+                    getattr(stop_trades.get(pair_index), "order", None),
                 ]
                 emergency_price = min(pair_stop_price.values())
 
@@ -987,16 +997,32 @@ class IBKROrderPort(OrderPort):
                 timeout=replace_timeout,
             )
             remaining_qty = int(round(max(remaining_qty_raw or 0.0, 0.0)))
-            if remaining_qty <= 0:
+            with state_lock:
+                protected_qty = _active_stop_remaining_qty_locked(other_pair_index)
+            uncovered_qty = int(round(max(float(remaining_qty - protected_qty), 0.0)))
+            if uncovered_qty <= 0:
                 with state_lock:
+                    incident_pairs_active.discard(pair_index)
+                    _emit_protection_state_locked(
+                        state="protected",
+                        reason=f"child_incident_{code if code is not None else 'unknown'}_covered",
+                        force=True,
+                    )
                     _close_gateway_subscription_if_idle_locked()
                 return
+
+            with state_lock:
+                _emit_protection_state_locked(
+                    state="unprotected",
+                    reason=f"child_incident_{code if code is not None else 'unknown'}",
+                    force=True,
+                )
 
             emergency_trade = await _submit_emergency_stop(
                 ib=self._ib,
                 contract=qualified,
                 side=child_side,
-                qty=remaining_qty,
+                qty=uncovered_qty,
                 stop_price=emergency_price,
                 tif=spec.tif,
                 outside_rth=spec.outside_rth,
@@ -1013,13 +1039,14 @@ class IBKROrderPort(OrderPort):
                         kind="det70_emergency_stop",
                         symbol=spec.symbol,
                         side=child_side,
-                        qty=remaining_qty,
+                        qty=uncovered_qty,
                         price=emergency_price,
                         parent_order_id=order_id,
                         client_tag=spec.client_tag,
                         event_bus=self._event_bus,
                     )
                 with state_lock:
+                    incident_pairs_active.discard(pair_index)
                     _emit_protection_state_locked(
                         state="protected",
                         reason="emergency_stop_armed",
@@ -1034,7 +1061,7 @@ class IBKROrderPort(OrderPort):
                         symbol=spec.symbol,
                         parent_order_id=order_id,
                         old_order_id=source_order_id,
-                        attempted_qty=remaining_qty,
+                        attempted_qty=uncovered_qty,
                         attempted_price=emergency_price,
                         status="emergency_stop_failed",
                         broker_code=code,
@@ -1049,7 +1076,7 @@ class IBKROrderPort(OrderPort):
                     ib=self._ib,
                     contract=qualified,
                     side=child_side,
-                    qty=remaining_qty,
+                    qty=uncovered_qty,
                     tif=spec.tif,
                     outside_rth=spec.outside_rth,
                     account=spec.account,
@@ -1057,12 +1084,18 @@ class IBKROrderPort(OrderPort):
                 )
 
             with state_lock:
+                incident_pairs_active.discard(pair_index)
+                _emit_protection_state_locked(
+                    state="unprotected",
+                    reason="emergency_stop_failed",
+                    force=True,
+                )
                 _close_gateway_subscription_if_idle_locked()
 
         async def _reprice_pair2_stop() -> None:
             nonlocal stop2_reprice_started
             with state_lock:
-                if incident_active:
+                if 2 in incident_pairs_active:
                     return
                 stop_trade = stop_trades.get(2)
                 if stop_trade is None:
@@ -1173,40 +1206,43 @@ class IBKROrderPort(OrderPort):
                 _schedule_coroutine(
                     loop,
                     _handle_child_incident(
+                        pair_index=2,
                         source_order_id=old_order_id,
                         code=broker_code,
                         message=broker_message,
                     ),
                 )
 
-        def _is_gateway_incident_locked(
+        def _gateway_incident_pair_locked(
             *,
             order_id_value: int,
             code: int,
-        ) -> bool:
+        ) -> Optional[int]:
             leg = leg_by_order_id.get(order_id_value)
             if leg is None:
-                return False
+                return None
             leg_kind, pair_index = leg
+            if pair_index in incident_pairs_active:
+                return None
             if code in {201, 404}:
-                return True
+                return pair_index
             if code != 202:
-                return False
+                return None
             if leg_kind == "stop":
                 paired_tp_trade = tp_trades.get(pair_index)
                 paired_tp_has_fill = bool(
                     paired_tp_trade is not None and _has_any_fill(paired_tp_trade)
                 )
                 if tp_completed[pair_index] or paired_tp_has_fill:
-                    return False
+                    return None
             if leg_kind == "tp":
                 paired_stop_trade = stop_trades.get(pair_index)
                 paired_stop_has_fill = bool(
                     paired_stop_trade is not None and _has_any_fill(paired_stop_trade)
                 )
                 if stop_filled[pair_index] or paired_stop_has_fill:
-                    return False
-            return True
+                    return None
+            return pair_index
 
         def _on_gateway_message(
             req_id: Optional[int],
@@ -1217,19 +1253,18 @@ class IBKROrderPort(OrderPort):
             if req_id is None or code is None:
                 return
             normalized_code = int(code)
-            should_handle = False
+            pair_index: Optional[int] = None
             with state_lock:
-                if incident_active:
-                    return
-                should_handle = _is_gateway_incident_locked(
+                pair_index = _gateway_incident_pair_locked(
                     order_id_value=int(req_id),
                     code=normalized_code,
                 )
-            if not should_handle:
+            if pair_index is None:
                 return
             _schedule_coroutine(
                 loop,
                 _handle_child_incident(
+                    pair_index=pair_index,
                     source_order_id=int(req_id),
                     code=normalized_code,
                     message=message or advanced,
@@ -1237,7 +1272,6 @@ class IBKROrderPort(OrderPort):
             )
 
         def _on_tp_status(pair_index: int, trade_obj: Trade) -> None:
-            nonlocal incident_active
             status_value = _normalize_status(getattr(trade_obj.orderStatus, "status", None))
             with state_lock:
                 paired_stop_trade = stop_trades.get(pair_index)
@@ -1250,11 +1284,12 @@ class IBKROrderPort(OrderPort):
                     status_value in _INACTIVE_ORDER_STATUSES
                     and not stop_filled[pair_index]
                     and not paired_stop_filled
-                    and not incident_active
+                    and pair_index not in incident_pairs_active
                 ):
                     _schedule_coroutine(
                         loop,
                         _handle_child_incident(
+                            pair_index=pair_index,
                             source_order_id=_trade_order_id(trade_obj),
                             code=202,
                             message="Take-profit became inactive before paired stop resolution.",
@@ -1266,8 +1301,6 @@ class IBKROrderPort(OrderPort):
         def _on_tp_fill(pair_index: int, _trade_obj: Trade, fill_obj: object | None) -> None:
             nonlocal stop2_reprice_started
             with state_lock:
-                if incident_active:
-                    return
                 fill_qty = _extract_execution_shares(fill_obj)
                 if fill_qty is None or fill_qty <= 0:
                     return
@@ -1292,7 +1325,6 @@ class IBKROrderPort(OrderPort):
             _schedule_coroutine(loop, _reprice_pair2_stop())
 
         def _on_stop_status(pair_index: int, trade_obj: Trade) -> None:
-            nonlocal incident_active
             status_value = _normalize_status(getattr(trade_obj.orderStatus, "status", None))
             with state_lock:
                 paired_tp_trade = tp_trades.get(pair_index)
@@ -1304,11 +1336,12 @@ class IBKROrderPort(OrderPort):
                     and not stop_filled[pair_index]
                     and not tp_completed[pair_index]
                     and not paired_tp_filled
-                    and not incident_active
+                    and pair_index not in incident_pairs_active
                 ):
                     _schedule_coroutine(
                         loop,
                         _handle_child_incident(
+                            pair_index=pair_index,
                             source_order_id=_trade_order_id(trade_obj),
                             code=202,
                             message="Protective stop became inactive before paired TP completion.",
@@ -1319,7 +1352,7 @@ class IBKROrderPort(OrderPort):
 
         def _on_stop_fill(pair_index: int, trade_obj: Trade) -> None:
             with state_lock:
-                if incident_active:
+                if pair_index in incident_pairs_active:
                     return
                 if not _has_any_fill(trade_obj):
                     return

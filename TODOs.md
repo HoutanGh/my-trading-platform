@@ -33,21 +33,39 @@
 ### NEXT WEEK
 - [ ] check how is latency calculated - would like to know for take profits
 - [ ] clean up the error for stock trading eligiblity
-- [ ] ib_async migration
+
 - [ ] research multiple sessions/popups all working together
     - when i type just a stock session pops up for that stock
 - [ ] ====== breakout took 1.7 seconds to fill ======= (fill bar)
 - [ ] get all the errors possible then cleanup
 
-### 17/02/25
+### 18/02/26
 - [ ] test breakout
-- [x] cancel ALL orders cli command
-- [ ] trades for breakouts
+    - [ ] test with one detached Sell LMT
+- [ ] why is app logic in adapters
+- [ ] fix the short sale issue
 - [ ] the stop LMT amount have to change depending on take profit quantities?
-- [ ] update the prices by increment if above the breakout significantly
+- [ ] ib_async migration
 - [ ] breakout status should be shown as a table
-- [ ] 1 hour understanding breakout
-- [ ] look into the steps of ib_async migration
+- [ ] orphan auto cancel
+- [x] clean up trade table
+- [ ] sometimes the y/N is not asked
+- [ ] should have a further two points on the times
+- [ ] need to also look at other functionality 
+    - [ ] stop losses changing after first take profit hit
+- [ ] clean up breakout lifecycle table
+- [ ] if a command gets stuck, how to get out of it?
+- [x] app getting stuck on commands
+- [ ] fix the positions tag at the start
+- [ ] fix the double apps> at the start
+
+
+### 17/02/26
+- [x] test breakout
+- [x] cancel ALL orders cli command
+- [x] trades for breakouts
+- [ ] update the prices by increment if above the breakout significantly
+- [x] look into the steps of ib_async migration
 
 ### 14/02/26
 - [x] look into ib_async
