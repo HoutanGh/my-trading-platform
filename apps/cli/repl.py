@@ -2808,31 +2808,11 @@ class REPL:
                 extras.append(f"tp={config.take_profit}")
             if config.stop_loss is not None:
                 extras.append(f"sl={config.stop_loss}")
-            if config.ladder_execution_mode != LadderExecutionMode.ATTACHED:
-                extras.append(f"tp_exec={_ladder_execution_mode_label(config.ladder_execution_mode)}")
             if config.tp_reprice_on_fill:
                 extras.append("tp_reprice=on_fill")
-            health_parts = []
-            slow_health = self._stream_health_summary(
-                config.symbol,
-                bar_size=config.bar_size,
-                use_rth=config.use_rth,
-            )
-            if slow_health:
-                health_parts.append(f"slow:{slow_health}")
-            if config.rule.fast_entry.enabled:
-                fast_health = self._stream_health_summary(
-                    config.symbol,
-                    bar_size=config.fast_bar_size,
-                    use_rth=config.use_rth,
-                )
-                if fast_health:
-                    health_parts.append(f"fast:{fast_health}")
-            if health_parts:
-                extras.append(f"health=[{', '.join(health_parts)}]")
             suffix = f" {' '.join(extras)}" if extras else ""
             print(
-                f"{name} symbol={config.symbol} level={config.rule.level} "
+                f"{name} level={config.rule.level} "
                 f"qty={config.qty} state={state}{suffix}"
             )
 
