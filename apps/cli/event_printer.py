@@ -345,8 +345,9 @@ def print_event(event: object) -> bool:
         if event.kind.startswith("det70_tp_"):
             suffix = event.kind.split("_")[-1]
             label = f"Det70TakeProfit{suffix}Filled"
-        elif event.kind == "det70_stop":
-            label = "Det70StopLossFilled"
+        elif event.kind == "det70_stop" or event.kind.startswith("det70_stop_"):
+            suffix = event.kind.split("_")[-1] if event.kind.startswith("det70_stop_") else ""
+            label = f"Det70StopLoss{suffix}Filled" if suffix else "Det70StopLossFilled"
         elif event.kind.startswith("detached_tp_"):
             suffix = event.kind.split("_")[-1]
             label = f"DetachedTakeProfit{suffix}Filled"

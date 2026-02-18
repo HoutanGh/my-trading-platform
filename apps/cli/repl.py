@@ -4136,7 +4136,10 @@ def _is_tp_kind(kind: str) -> bool:
 
 def _is_stop_kind(kind: str) -> bool:
     normalized = kind.strip().lower()
-    return normalized in {"stop_loss", "detached_stop", "det70_stop"}
+    return (
+        normalized in {"stop_loss", "detached_stop", "det70_stop"}
+        or normalized.startswith("det70_stop_")
+    )
 
 
 def _append_breakout_issue(session: _BreakoutTradesSession, issue: str) -> None:
@@ -4160,7 +4163,10 @@ def _breakout_leg_alias(kind: str) -> str:
     if normalized.startswith("det70_tp_"):
         suffix = normalized.split("_")[-1]
         return f"tp{suffix}"
-    if normalized in {"stop_loss", "detached_stop", "det70_stop"}:
+    if (
+        normalized in {"stop_loss", "detached_stop", "det70_stop"}
+        or normalized.startswith("det70_stop_")
+    ):
         return "sl"
     return normalized or "-"
 
