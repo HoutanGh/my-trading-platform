@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import os
 from time import monotonic
 import sys
 from typing import Optional
@@ -12,6 +13,7 @@ except ImportError:
     readline = None
 
 from apps.core.orders.events import (
+    BracketChildOrderStatusChanged,
     BracketChildOrderFilled,
     BracketChildOrderBrokerSnapshot,
     BracketChildQuantityMismatchDetected,
@@ -20,6 +22,8 @@ from apps.core.orders.events import (
     LadderStopLossReplaceFailed,
     LadderStopLossReplaced,
     OrderFilled,
+    OrderIdAssigned,
+    OrderStatusChanged,
 )
 from apps.core.ops.events import (
     BarStreamCompetingSessionBlocked,
@@ -55,8 +59,16 @@ _BAR_STREAM_INFO_COOLDOWN_SECONDS = 15.0
 _BAR_STREAM_INFO_LAST_PRINTED: dict[tuple[str, str, str, bool], float] = {}
 _SUPPRESSED_GATEWAY_REQ_IDS: dict[int, float] = {}
 _GATEWAY_REQ_SUPPRESS_TTL_SECONDS = 10.0
+_SHOW_ORDER_IDS = os.getenv("APPS_CLI_SHOW_ORDER_IDS", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "y",
+    "on",
+}
 _GATEWAY_CODE_ALIASES = {
     202: "order_canceled",
+    10148: "cancel_race",
     10197: "competing_session",
     2104: "md_ok",
     2107: "hmds_inactive",
@@ -66,6 +78,7 @@ _GATEWAY_CODE_ALIASES = {
 }
 _GATEWAY_CODE_SHORT_MESSAGES = {
     202: "order canceled",
+    10148: "cancel ignored (already terminal)",
     10197: "competing live session",
     2104: "market data farm ok",
     2107: "historical data farm inactive",
@@ -79,6 +92,21 @@ _GATEWAY_CODE_SHORT_MESSAGES = {
 class _EntryFillTiming:
     confirmed_at: datetime
     partial_reported: bool = False
+
+
+@dataclass
+class _OrderLifecycleState:
+    symbol: str
+    leg: str
+    stage: str
+    target_qty: Optional[float]
+    filled_qty: Optional[float] = None
+    remaining_qty: Optional[float] = None
+    price: Optional[float] = None
+    status: Optional[str] = None
+
+
+_ORDER_STATE_BY_ID: dict[int, _OrderLifecycleState] = {}
 
 
 def print_event(event: object) -> bool:
@@ -188,11 +216,92 @@ def print_event(event: object) -> bool:
             f"{event.symbol} {' '.join(parts)}",
         )
         return True
+    if isinstance(event, OrderIdAssigned):
+        state = _track_entry_order(
+            order_id=event.order_id,
+            symbol=event.spec.symbol,
+            qty=event.spec.qty,
+            price=event.spec.limit_price,
+        )
+        parts = _lifecycle_parts(
+            symbol=event.spec.symbol,
+            leg="entry",
+            status="assigned",
+            target_qty=state.target_qty if state else float(event.spec.qty),
+            filled_qty=state.filled_qty if state else 0.0,
+            remaining_qty=state.remaining_qty if state else float(event.spec.qty),
+            price=state.price if state else event.spec.limit_price,
+            order_id=event.order_id,
+        )
+        _print_line(event.timestamp, "EntryStatus", " ".join(parts))
+        return True
+    if isinstance(event, OrderStatusChanged):
+        state = _track_entry_order(
+            order_id=event.order_id,
+            symbol=event.spec.symbol,
+            qty=event.spec.qty,
+            price=event.spec.limit_price,
+            status=event.status,
+        )
+        normalized_status = _normalize_order_status(event.status)
+        target_qty = state.target_qty if state else float(event.spec.qty)
+        filled_qty = state.filled_qty if state else 0.0
+        remaining_qty = (
+            state.remaining_qty
+            if state and state.remaining_qty is not None
+            else max(target_qty - filled_qty, 0.0)
+        )
+        parts = _lifecycle_parts(
+            symbol=event.spec.symbol,
+            leg="entry",
+            status=normalized_status,
+            target_qty=target_qty,
+            filled_qty=filled_qty,
+            remaining_qty=remaining_qty,
+            price=event.spec.limit_price,
+            order_id=event.order_id,
+        )
+        _print_line(event.timestamp, "EntryStatus", " ".join(parts))
+        return True
+    if isinstance(event, BracketChildOrderStatusChanged):
+        leg = _leg_from_kind(event.kind)
+        state = _track_child_order(
+            order_id=event.order_id,
+            symbol=event.symbol,
+            kind=event.kind,
+            qty=float(event.qty),
+            price=event.price,
+            status=event.status,
+        )
+        target_qty = state.target_qty if state else float(event.qty)
+        filled_qty = state.filled_qty if state else 0.0
+        remaining_qty = (
+            state.remaining_qty
+            if state and state.remaining_qty is not None
+            else max(target_qty - filled_qty, 0.0)
+        )
+        parts = _lifecycle_parts(
+            symbol=event.symbol,
+            leg=leg,
+            status=_normalize_order_status(event.status),
+            target_qty=target_qty,
+            filled_qty=filled_qty,
+            remaining_qty=remaining_qty,
+            price=event.price,
+            order_id=event.order_id,
+        )
+        _print_line(event.timestamp, "ExitStatus", " ".join(parts))
+        return True
     if isinstance(event, IbGatewayLog):
         if _should_hide_gateway_log(event):
             return False
         if event.code is None and not event.message:
             return False
+        correlated = _format_correlated_gateway_log(event)
+        if correlated is not None:
+            label, message = correlated
+            _print_line(event.timestamp, label, message)
+            return True
         label = _gateway_label(event)
         parts = []
         message = _gateway_message_for_display(event)
@@ -201,7 +310,7 @@ def print_event(event: object) -> bool:
             parts.append(_shorten_message(message, max_len=max_len))
         if event.code is not None:
             parts.append(_format_gateway_code(event.code))
-        if event.req_id is not None and event.req_id >= 0:
+        if event.req_id is not None and event.req_id >= 0 and (_SHOW_ORDER_IDS or label == "IbError"):
             parts.append(f"req={event.req_id}")
         if event.advanced:
             parts.append("adv")
@@ -290,20 +399,53 @@ def print_event(event: object) -> bool:
         )
         return True
     if isinstance(event, OrderFilled):
+        state = _track_entry_order(
+            order_id=event.order_id,
+            symbol=event.spec.symbol,
+            qty=event.spec.qty,
+            price=event.spec.limit_price,
+            status=event.status,
+            filled_qty=event.filled_qty,
+            remaining_qty=event.remaining_qty,
+        )
         if not _is_fill_event(event.status, event.filled_qty):
             return False
         latency_suffix = _entry_fill_latency_suffix(event)
+        target_qty = state.target_qty if state else float(event.spec.qty)
+        filled_qty = state.filled_qty if state and state.filled_qty is not None else (event.filled_qty or 0.0)
+        remaining_qty = (
+            state.remaining_qty
+            if state and state.remaining_qty is not None
+            else event.remaining_qty
+        )
+        status = "filled" if _is_full_fill(event) else "partially_filled"
+        parts = _lifecycle_parts(
+            symbol=event.spec.symbol,
+            leg="entry",
+            status=status,
+            target_qty=target_qty,
+            filled_qty=filled_qty,
+            remaining_qty=remaining_qty,
+            price=event.avg_fill_price,
+            order_id=event.order_id,
+        )
+        if latency_suffix:
+            parts.append(latency_suffix.strip())
         _print_line(
             event.timestamp,
-            "OrderFilled",
-            (
-                f"{event.spec.symbol} order_id={event.order_id} status={event.status} "
-                f"filled={event.filled_qty} avg_price={event.avg_fill_price} "
-                f"remaining={event.remaining_qty}{latency_suffix}"
-            ),
+            "EntryFill",
+            " ".join(parts),
         )
         return True
     if isinstance(event, BracketChildOrderBrokerSnapshot):
+        leg = _leg_from_kind(event.kind)
+        _track_child_order(
+            order_id=event.order_id,
+            symbol=event.symbol,
+            kind=event.kind,
+            qty=event.expected_qty,
+            status=event.status,
+        )
         broker_qty = "-"
         if event.broker_order_qty is not None:
             broker_qty = f"{event.broker_order_qty:g}"
@@ -317,12 +459,21 @@ def print_event(event: object) -> bool:
             event.timestamp,
             label,
             (
-                f"{event.symbol} kind={event.kind} order_id={event.order_id} parent={event.parent_order_id} "
+                f"{event.symbol} leg={leg} kind={event.kind}"
+                f"{_optional_order_ref(event.order_id)}{_optional_parent_ref(event.parent_order_id)} "
                 f"expected={event.expected_qty:g} broker={broker_qty} status={event.status or '-'}"
             ),
         )
         return True
     if isinstance(event, BracketChildQuantityMismatchDetected):
+        leg = _leg_from_kind(event.kind)
+        _track_child_order(
+            order_id=event.order_id,
+            symbol=event.symbol,
+            kind=event.kind,
+            qty=event.expected_qty,
+            status=event.status,
+        )
         if event.kind.startswith("det70_"):
             label = "Det70QtyMismatch"
         elif event.kind.startswith("detached_"):
@@ -333,32 +484,50 @@ def print_event(event: object) -> bool:
             event.timestamp,
             label,
             (
-                f"{event.symbol} kind={event.kind} order_id={event.order_id} parent={event.parent_order_id} "
+                f"{event.symbol} leg={leg} kind={event.kind}"
+                f"{_optional_order_ref(event.order_id)}{_optional_parent_ref(event.parent_order_id)} "
                 f"expected={event.expected_qty:g} broker={event.broker_order_qty:g} "
                 f"status={event.status or '-'}"
             ),
         )
         return True
     if isinstance(event, BracketChildOrderFilled):
+        leg = _leg_from_kind(event.kind)
+        state = _track_child_order(
+            order_id=event.order_id,
+            symbol=event.symbol,
+            kind=event.kind,
+            qty=event.expected_qty if event.expected_qty is not None else float(event.qty),
+            price=event.price,
+            status=event.status,
+            filled_qty=event.filled_qty,
+            remaining_qty=event.remaining_qty,
+        )
         if not _is_fill_event(event.status, event.filled_qty):
             return False
-        if event.kind.startswith("det70_tp_"):
-            suffix = event.kind.split("_")[-1]
-            label = f"Det70TakeProfit{suffix}Filled"
-        elif event.kind == "det70_stop" or event.kind.startswith("det70_stop_"):
-            suffix = event.kind.split("_")[-1] if event.kind.startswith("det70_stop_") else ""
-            label = f"Det70StopLoss{suffix}Filled" if suffix else "Det70StopLossFilled"
-        elif event.kind.startswith("detached_tp_"):
-            suffix = event.kind.split("_")[-1]
-            label = f"DetachedTakeProfit{suffix}Filled"
-        elif event.kind == "detached_stop":
-            label = "DetachedStopLossFilled"
-        elif event.kind.startswith("take_profit"):
-            suffix = event.kind.split("_", 2)[-1] if event.kind.startswith("take_profit_") else ""
-            label = f"TakeProfit{suffix}Filled" if suffix else "TakeProfitFilled"
-        else:
-            label = "StopLossFilled"
         fill_price = event.avg_fill_price if event.avg_fill_price is not None else event.price
+        target_qty = (
+            state.target_qty
+            if state and state.target_qty is not None
+            else (event.expected_qty if event.expected_qty is not None else float(event.qty))
+        )
+        filled_qty = (
+            state.filled_qty
+            if state and state.filled_qty is not None
+            else (event.filled_qty or 0.0)
+        )
+        remaining_qty = (
+            state.remaining_qty
+            if state and state.remaining_qty is not None
+            else event.remaining_qty
+        )
+        status = "filled"
+        if (
+            target_qty is not None
+            and filled_qty is not None
+            and filled_qty + 1e-9 < target_qty
+        ):
+            status = "partially_filled"
         broker_suffix = ""
         if event.expected_qty is not None and event.broker_order_qty is not None:
             if abs(event.expected_qty - event.broker_order_qty) > 1e-9:
@@ -367,31 +536,50 @@ def print_event(event: object) -> bool:
                 )
             else:
                 broker_suffix = f" expected={event.expected_qty:g} broker={event.broker_order_qty:g}"
+        parts = _lifecycle_parts(
+            symbol=event.symbol,
+            leg=leg,
+            status=status,
+            target_qty=target_qty,
+            filled_qty=filled_qty,
+            remaining_qty=remaining_qty,
+            price=fill_price,
+            order_id=event.order_id,
+        )
+        if broker_suffix:
+            parts.append(broker_suffix.strip())
         _print_line(
             event.timestamp,
-            label,
-            (
-                f"{event.symbol} qty={event.filled_qty or event.qty} "
-                f"price={fill_price}{broker_suffix}"
-            ),
+            "ExitFill",
+            " ".join(parts),
         )
         return True
     if isinstance(event, LadderStopLossReplaced):
-        if event.execution_mode == "detached70":
-            label = "Det70StopLossReplaced"
-        elif event.execution_mode == "detached":
-            label = "DetachedStopLossReplaced"
-        else:
-            label = "StopLossReplaced"
+        state = _track_repriced_stop(event)
+        leg = state.leg if state else "sl"
+        target_qty = state.target_qty if state else float(event.new_qty)
+        filled_qty = state.filled_qty if state and state.filled_qty is not None else 0.0
+        remaining_qty = (
+            state.remaining_qty
+            if state and state.remaining_qty is not None
+            else max(float(event.new_qty) - filled_qty, 0.0)
+        )
+        parts = _lifecycle_parts(
+            symbol=event.symbol,
+            leg=leg,
+            status="repriced",
+            target_qty=target_qty,
+            filled_qty=filled_qty,
+            remaining_qty=remaining_qty,
+            price=event.new_price,
+            order_id=event.new_order_id,
+        )
+        parts.append(f"from={event.old_price:g}")
+        parts.append(f"reason={event.reason}")
         _print_line(
             event.timestamp,
-            label,
-            (
-                f"{event.symbol} reason={event.reason} "
-                f"order={event.old_order_id}->{event.new_order_id} "
-                f"qty={event.old_qty}->{event.new_qty} "
-                f"price={event.old_price:g}->{event.new_price:g}"
-            ),
+            "ExitStatus",
+            " ".join(parts),
         )
         return True
     if isinstance(event, LadderStopLossReplaceFailed):
@@ -411,7 +599,7 @@ def print_event(event: object) -> bool:
             event.timestamp,
             label,
             (
-                f"{event.symbol} order_id={event.old_order_id} "
+                f"{event.symbol}{_optional_order_ref(event.old_order_id)} "
                 f"attempt_qty={event.attempted_qty} attempt_price={event.attempted_price:g} "
                 f"status={event.status or '-'}{broker_suffix}"
             ),
@@ -425,12 +613,16 @@ def print_event(event: object) -> bool:
             label = "DetachedStopProtection"
         else:
             label = "StopProtection"
+        if _SHOW_ORDER_IDS:
+            stop_details = f"stop_order_id={event.stop_order_id} active_tp_ids=[{tp_ids}]"
+        else:
+            stop_details = f"active_tp_count={len(event.active_take_profit_order_ids)}"
         _print_line(
             event.timestamp,
             label,
             (
                 f"{event.symbol} state={event.state} reason={event.reason} "
-                f"stop_order_id={event.stop_order_id} active_tp_ids=[{tp_ids}]"
+                f"{stop_details}"
             ),
         )
         return True
@@ -441,12 +633,14 @@ def print_event(event: object) -> bool:
             label = "DetachedStopLossCancelled"
         else:
             label = "StopLossCancelled"
+        order_ref = _optional_order_ref(event.order_id).strip()
+        order_prefix = f"{order_ref} " if order_ref else ""
         _print_line(
             event.timestamp,
             label,
             (
                 f"{event.symbol} reason={event.reason} "
-                f"order_id={event.order_id} qty={event.qty} price={event.price:g}"
+                f"{order_prefix}qty={event.qty} price={event.price:g}"
             ),
         )
         return True
@@ -539,9 +733,49 @@ def _shorten_message(message: str, max_len: int = _MAX_GATEWAY_MSG_LEN) -> str:
     return compact[: max_len - 3].rstrip() + "..."
 
 
+def _format_correlated_gateway_log(event: IbGatewayLog) -> Optional[tuple[str, str]]:
+    req_id = event.req_id
+    if req_id is None or req_id < 0:
+        return None
+    state = _ORDER_STATE_BY_ID.get(req_id)
+    if state is None:
+        return None
+
+    code = event.code
+    message = " ".join(str(event.message or "").split())
+    parts = [
+        state.symbol,
+        f"leg={state.leg}",
+        f"stage={state.stage}",
+    ]
+    if code == 201:
+        parts.append("status=rejected")
+        parts.append("code=201")
+        parts.append(f"reason={_extract_reject_reason(message)}")
+        _append_optional_order_id(parts, req_id)
+        return ("OrderError", " ".join(parts))
+    if code == 202:
+        parts.append("status=cancelled")
+        parts.append("code=202")
+        parts.append("reason=broker_cancel_confirmed")
+        _append_optional_order_id(parts, req_id)
+        return ("OrderInfo", " ".join(parts))
+    if code == 10148 and _is_terminal_cancel_race(message):
+        parts.append("status=cancel_ignored")
+        parts.append("code=10148")
+        parts.append(f"reason={_terminal_cancel_reason(message)}")
+        _append_optional_order_id(parts, req_id)
+        return ("OrderInfo", " ".join(parts))
+    return None
+
+
 def _gateway_label(event: IbGatewayLog) -> str:
     if event.code == 202:
         return "IbStatus"
+    if event.code == 10148 and _is_terminal_cancel_race(event.message):
+        return "IbStatus"
+    if event.code == 201:
+        return "IbError"
     message = str(event.message or "").lower()
     if "is ok" in message:
         return "IbStatus"
@@ -577,6 +811,261 @@ def _gateway_message_preview_len(label: str) -> int:
     if label == "IbError":
         return _MAX_GATEWAY_ERROR_PREVIEW_LEN
     return _MAX_GATEWAY_PREVIEW_LEN
+
+
+def _track_entry_order(
+    *,
+    order_id: Optional[int],
+    symbol: str,
+    qty: float,
+    price: Optional[float] = None,
+    status: Optional[str] = None,
+    filled_qty: Optional[float] = None,
+    remaining_qty: Optional[float] = None,
+) -> Optional[_OrderLifecycleState]:
+    return _track_order(
+        order_id=order_id,
+        symbol=symbol,
+        leg="entry",
+        target_qty=float(qty),
+        price=price,
+        status=status,
+        filled_qty=filled_qty,
+        remaining_qty=remaining_qty,
+    )
+
+
+def _track_child_order(
+    *,
+    order_id: Optional[int],
+    symbol: str,
+    kind: str,
+    qty: Optional[float] = None,
+    price: Optional[float] = None,
+    status: Optional[str] = None,
+    filled_qty: Optional[float] = None,
+    remaining_qty: Optional[float] = None,
+) -> Optional[_OrderLifecycleState]:
+    target_qty = float(qty) if qty is not None else None
+    return _track_order(
+        order_id=order_id,
+        symbol=symbol,
+        leg=_leg_from_kind(kind),
+        target_qty=target_qty,
+        price=price,
+        status=status,
+        filled_qty=filled_qty,
+        remaining_qty=remaining_qty,
+    )
+
+
+def _track_repriced_stop(event: LadderStopLossReplaced) -> Optional[_OrderLifecycleState]:
+    old_state = (
+        _ORDER_STATE_BY_ID.get(event.old_order_id)
+        if event.old_order_id is not None
+        else None
+    )
+    leg = old_state.leg if old_state else "sl"
+    state = _track_order(
+        order_id=event.new_order_id,
+        symbol=event.symbol,
+        leg=leg,
+        target_qty=float(event.new_qty),
+        price=event.new_price,
+        status="repriced",
+    )
+    if (
+        event.old_order_id is not None
+        and event.new_order_id is not None
+        and event.old_order_id != event.new_order_id
+    ):
+        _ORDER_STATE_BY_ID.pop(event.old_order_id, None)
+    return state
+
+
+def _track_order(
+    *,
+    order_id: Optional[int],
+    symbol: str,
+    leg: str,
+    target_qty: Optional[float],
+    price: Optional[float] = None,
+    status: Optional[str] = None,
+    filled_qty: Optional[float] = None,
+    remaining_qty: Optional[float] = None,
+) -> Optional[_OrderLifecycleState]:
+    if order_id is None or order_id < 0:
+        return None
+    state = _ORDER_STATE_BY_ID.get(order_id)
+    if state is None:
+        state = _OrderLifecycleState(
+            symbol=symbol,
+            leg=leg,
+            stage=_stage_for_leg(leg),
+            target_qty=target_qty,
+            price=price,
+        )
+        _ORDER_STATE_BY_ID[order_id] = state
+    else:
+        state.symbol = symbol
+        state.leg = leg
+        state.stage = _stage_for_leg(leg)
+        if state.target_qty is None and target_qty is not None:
+            state.target_qty = target_qty
+        if price is not None:
+            state.price = price
+    if filled_qty is not None:
+        state.filled_qty = max(float(filled_qty), 0.0)
+    if remaining_qty is not None:
+        state.remaining_qty = max(float(remaining_qty), 0.0)
+    if state.filled_qty is None:
+        state.filled_qty = 0.0
+    if status:
+        normalized_status = _normalize_order_status(status)
+        state.status = normalized_status
+        if normalized_status == "filled" and state.target_qty is not None:
+            state.filled_qty = state.target_qty
+            state.remaining_qty = 0.0
+    if state.remaining_qty is None and state.target_qty is not None and state.filled_qty is not None:
+        state.remaining_qty = max(state.target_qty - state.filled_qty, 0.0)
+    return state
+
+
+def _stage_for_leg(leg: str) -> str:
+    if leg == "entry":
+        return "entry"
+    return "exits_live"
+
+
+def _lifecycle_parts(
+    *,
+    symbol: str,
+    leg: str,
+    status: str,
+    target_qty: Optional[float],
+    filled_qty: Optional[float],
+    remaining_qty: Optional[float],
+    price: Optional[float],
+    order_id: Optional[int],
+) -> list[str]:
+    parts = [symbol, f"leg={leg}", f"status={status}"]
+    normalized_filled = max(filled_qty, 0.0) if filled_qty is not None else 0.0
+    if target_qty is not None:
+        parts.append(f"filled={normalized_filled:g}/{target_qty:g}")
+    else:
+        parts.append(f"filled={normalized_filled:g}")
+    if remaining_qty is not None:
+        parts.append(f"remaining={max(remaining_qty, 0.0):g}")
+    if price is not None:
+        parts.append(f"price={price:g}")
+    _append_optional_order_id(parts, order_id)
+    return parts
+
+
+def _append_optional_order_id(parts: list[str], order_id: Optional[int]) -> None:
+    if not _SHOW_ORDER_IDS:
+        return
+    if order_id is None or order_id < 0:
+        return
+    parts.append(f"order_id={order_id}")
+
+
+def _optional_order_ref(order_id: Optional[int]) -> str:
+    if not _SHOW_ORDER_IDS:
+        return ""
+    if order_id is None or order_id < 0:
+        return ""
+    return f" order_id={order_id}"
+
+
+def _optional_parent_ref(parent_order_id: Optional[int]) -> str:
+    if not _SHOW_ORDER_IDS:
+        return ""
+    if parent_order_id is None or parent_order_id < 0:
+        return ""
+    return f" parent={parent_order_id}"
+
+
+def _leg_from_kind(kind: str) -> str:
+    normalized = str(kind or "").strip().lower()
+    if not normalized:
+        return "exit"
+    if normalized.startswith(("det70_tp_", "detached_tp_", "take_profit_")):
+        suffix = normalized.rsplit("_", 1)[-1]
+        if suffix.isdigit():
+            return f"tp{suffix}"
+        return "tp1"
+    if normalized in {"det70_tp", "detached_tp", "take_profit"}:
+        return "tp1"
+    if normalized.startswith(("det70_stop_", "detached_stop_", "stop_loss_")):
+        suffix = normalized.rsplit("_", 1)[-1]
+        if suffix.isdigit():
+            return f"sl{suffix}"
+        return "sl1"
+    if normalized in {"det70_stop", "detached_stop", "stop_loss", "stop"}:
+        return "sl1"
+    if normalized == "det70_emergency_stop":
+        return "sl_emergency"
+    return normalized
+
+
+def _normalize_order_status(status: Optional[str]) -> str:
+    if not status:
+        return "-"
+    compact = str(status).strip().lower().replace(" ", "").replace("_", "")
+    mapping = {
+        "pendingsubmit": "pending",
+        "presubmitted": "pending",
+        "submitted": "submitted",
+        "apipending": "pending",
+        "partiallyfilled": "partially_filled",
+        "filled": "filled",
+        "pendingcancel": "cancel_pending",
+        "cancelled": "cancelled",
+        "apicancelled": "cancelled",
+        "inactive": "rejected",
+        "rejected": "rejected",
+        "assigned": "assigned",
+        "repriced": "repriced",
+    }
+    if compact in mapping:
+        return mapping[compact]
+    return str(status).strip().lower().replace(" ", "_")
+
+
+def _extract_reject_reason(message: str) -> str:
+    compact = " ".join(str(message or "").split())
+    if not compact:
+        return "order_rejected"
+    marker = "reason:"
+    index = compact.lower().find(marker)
+    if index < 0:
+        return _shorten_message(compact, max_len=120)
+    reason = compact[index + len(marker):].strip()
+    if not reason:
+        return "order_rejected"
+    return _shorten_message(reason, max_len=120)
+
+
+def _is_terminal_cancel_race(message: Optional[str]) -> bool:
+    normalized = str(message or "").strip().lower()
+    if "cannot be cancelled" not in normalized:
+        return False
+    return any(
+        token in normalized
+        for token in ("state: filled", "state: cancelled", "state: apicancelled", "state: api cancelled")
+    )
+
+
+def _terminal_cancel_reason(message: Optional[str]) -> str:
+    normalized = str(message or "").strip().lower()
+    if "state: filled" in normalized:
+        return "already_filled"
+    if "state: cancelled" in normalized:
+        return "already_cancelled"
+    if "state: apicancelled" in normalized or "state: api cancelled" in normalized:
+        return "already_api_cancelled"
+    return "already_terminal"
 
 
 def _print_line(timestamp, label: str, message: str) -> None:
