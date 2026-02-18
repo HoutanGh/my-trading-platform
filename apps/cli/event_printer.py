@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import os
 from time import monotonic
@@ -109,6 +109,33 @@ class _OrderLifecycleState:
 _ORDER_STATE_BY_ID: dict[int, _OrderLifecycleState] = {}
 
 
+@dataclass
+class _BreakoutNarrativeSession:
+    client_tag: str
+    symbol: str
+    entry_qty: Optional[float] = None
+    entry_filled_qty: float = 0.0
+    entry_avg_price: Optional[float] = None
+    entry_reported_filled_qty: float = 0.0
+    parent_order_id: Optional[int] = None
+    leg_target_qty: dict[str, float] = field(default_factory=dict)
+    leg_price: dict[str, float] = field(default_factory=dict)
+    leg_filled_qty: dict[str, float] = field(default_factory=dict)
+    order_cumulative_filled: dict[int, float] = field(default_factory=dict)
+    submitted_legs: set[str] = field(default_factory=set)
+    cancel_pending_legs: set[str] = field(default_factory=set)
+    cancelled_legs: set[str] = field(default_factory=set)
+    filled_legs: set[str] = field(default_factory=set)
+    protected_qty: float = 0.0
+    unexpected_errors: int = 0
+    completed_printed: bool = False
+    last_tp_fill_leg: Optional[str] = None
+
+
+_BREAKOUT_SESSION_BY_TAG: dict[str, _BreakoutNarrativeSession] = {}
+_BREAKOUT_TAG_BY_ORDER_ID: dict[int, str] = {}
+
+
 def print_event(event: object) -> bool:
     if isinstance(event, BreakoutStarted):
         suffix = _breakout_tp_sl_suffix(
@@ -161,6 +188,7 @@ def print_event(event: object) -> bool:
             _CONFIRMED_BY_TAG[event.client_tag] = _EntryFillTiming(
                 confirmed_at=_normalize_timestamp(event.timestamp)
             )
+            _get_or_create_breakout_session(event.client_tag, event.symbol)
         suffix = _breakout_tp_sl_suffix(
             take_profit=event.take_profit,
             take_profits=event.take_profits,
@@ -217,6 +245,9 @@ def print_event(event: object) -> bool:
         )
         return True
     if isinstance(event, OrderIdAssigned):
+        breakout_handled = _handle_breakout_order_id_assigned(event)
+        if breakout_handled is not None:
+            return breakout_handled
         state = _track_entry_order(
             order_id=event.order_id,
             symbol=event.spec.symbol,
@@ -236,6 +267,9 @@ def print_event(event: object) -> bool:
         _print_line(event.timestamp, "EntryStatus", " ".join(parts))
         return True
     if isinstance(event, OrderStatusChanged):
+        breakout_handled = _handle_breakout_order_status_changed(event)
+        if breakout_handled is not None:
+            return breakout_handled
         state = _track_entry_order(
             order_id=event.order_id,
             symbol=event.spec.symbol,
@@ -264,6 +298,9 @@ def print_event(event: object) -> bool:
         _print_line(event.timestamp, "EntryStatus", " ".join(parts))
         return True
     if isinstance(event, BracketChildOrderStatusChanged):
+        breakout_handled = _handle_breakout_child_status_changed(event)
+        if breakout_handled is not None:
+            return breakout_handled
         leg = _leg_from_kind(event.kind)
         state = _track_child_order(
             order_id=event.order_id,
@@ -293,6 +330,9 @@ def print_event(event: object) -> bool:
         _print_line(event.timestamp, "ExitStatus", " ".join(parts))
         return True
     if isinstance(event, IbGatewayLog):
+        breakout_handled = _handle_breakout_gateway_log(event)
+        if breakout_handled is not None:
+            return breakout_handled
         if _should_hide_gateway_log(event):
             return False
         if event.code is None and not event.message:
@@ -399,6 +439,9 @@ def print_event(event: object) -> bool:
         )
         return True
     if isinstance(event, OrderFilled):
+        breakout_handled = _handle_breakout_order_filled(event)
+        if breakout_handled is not None:
+            return breakout_handled
         state = _track_entry_order(
             order_id=event.order_id,
             symbol=event.spec.symbol,
@@ -438,6 +481,9 @@ def print_event(event: object) -> bool:
         )
         return True
     if isinstance(event, BracketChildOrderBrokerSnapshot):
+        breakout_handled = _handle_breakout_child_snapshot(event)
+        if breakout_handled is not None:
+            return breakout_handled
         leg = _leg_from_kind(event.kind)
         _track_child_order(
             order_id=event.order_id,
@@ -466,6 +512,9 @@ def print_event(event: object) -> bool:
         )
         return True
     if isinstance(event, BracketChildQuantityMismatchDetected):
+        breakout_handled = _handle_breakout_child_qty_mismatch(event)
+        if breakout_handled is not None:
+            return breakout_handled
         leg = _leg_from_kind(event.kind)
         _track_child_order(
             order_id=event.order_id,
@@ -492,6 +541,9 @@ def print_event(event: object) -> bool:
         )
         return True
     if isinstance(event, BracketChildOrderFilled):
+        breakout_handled = _handle_breakout_child_filled(event)
+        if breakout_handled is not None:
+            return breakout_handled
         leg = _leg_from_kind(event.kind)
         state = _track_child_order(
             order_id=event.order_id,
@@ -555,6 +607,9 @@ def print_event(event: object) -> bool:
         )
         return True
     if isinstance(event, LadderStopLossReplaced):
+        breakout_handled = _handle_breakout_stop_replaced(event)
+        if breakout_handled is not None:
+            return breakout_handled
         state = _track_repriced_stop(event)
         leg = state.leg if state else "sl"
         target_qty = state.target_qty if state else float(event.new_qty)
@@ -606,6 +661,9 @@ def print_event(event: object) -> bool:
         )
         return True
     if isinstance(event, LadderProtectionStateChanged):
+        breakout_handled = _handle_breakout_protection_changed(event)
+        if breakout_handled is not None:
+            return breakout_handled
         tp_ids = ",".join(str(order_id) for order_id in event.active_take_profit_order_ids)
         if event.execution_mode == "detached70":
             label = "Det70StopProtection"
@@ -1023,7 +1081,7 @@ def _normalize_order_status(status: Optional[str]) -> str:
         "pendingcancel": "cancel_pending",
         "cancelled": "cancelled",
         "apicancelled": "cancelled",
-        "inactive": "rejected",
+        "inactive": "inactive",
         "rejected": "rejected",
         "assigned": "assigned",
         "repriced": "repriced",
@@ -1066,6 +1124,578 @@ def _terminal_cancel_reason(message: Optional[str]) -> str:
     if "state: apicancelled" in normalized or "state: api cancelled" in normalized:
         return "already_api_cancelled"
     return "already_terminal"
+
+
+def _is_breakout_client_tag(client_tag: Optional[str]) -> bool:
+    if not client_tag:
+        return False
+    return str(client_tag).startswith("breakout:")
+
+
+def _get_or_create_breakout_session(
+    client_tag: str,
+    symbol: str,
+) -> _BreakoutNarrativeSession:
+    session = _BREAKOUT_SESSION_BY_TAG.get(client_tag)
+    if session is None:
+        session = _BreakoutNarrativeSession(client_tag=client_tag, symbol=symbol)
+        _BREAKOUT_SESSION_BY_TAG[client_tag] = session
+        return session
+    if symbol:
+        session.symbol = symbol
+    return session
+
+
+def _register_breakout_order(
+    order_id: Optional[int],
+    *,
+    client_tag: str,
+    leg: str,
+) -> None:
+    if order_id is None or order_id < 0:
+        return
+    _BREAKOUT_TAG_BY_ORDER_ID[order_id] = client_tag
+    state = _ORDER_STATE_BY_ID.get(order_id)
+    if state is not None:
+        state.leg = leg
+
+
+def _breakout_position(session: _BreakoutNarrativeSession) -> float:
+    exits = 0.0
+    for leg, qty in session.leg_filled_qty.items():
+        if _is_exit_leg(leg):
+            exits += max(qty, 0.0)
+    return max(session.entry_filled_qty - exits, 0.0)
+
+
+def _breakout_protected_display(session: _BreakoutNarrativeSession) -> tuple[float, float]:
+    position = _breakout_position(session)
+    protected = min(max(session.protected_qty, 0.0), position)
+    return protected, position
+
+
+def _is_tp_leg(leg: str) -> bool:
+    return str(leg).startswith("tp")
+
+
+def _is_sl_leg(leg: str) -> bool:
+    return str(leg).startswith("sl")
+
+
+def _is_exit_leg(leg: str) -> bool:
+    return _is_tp_leg(leg) or _is_sl_leg(leg)
+
+
+def _paired_tp_leg(stop_leg: str) -> Optional[str]:
+    if not _is_sl_leg(stop_leg):
+        return None
+    digits = "".join(ch for ch in stop_leg if ch.isdigit())
+    if not digits:
+        return "tp1"
+    return f"tp{digits}"
+
+
+def _paired_sl_leg(tp_leg: str) -> Optional[str]:
+    if not _is_tp_leg(tp_leg):
+        return None
+    digits = "".join(ch for ch in tp_leg if ch.isdigit())
+    if not digits:
+        return "sl1"
+    return f"sl{digits}"
+
+
+def _leg_title(leg: str) -> str:
+    normalized = str(leg or "").strip().lower()
+    if normalized == "entry":
+        return "Entry"
+    if normalized.startswith("tp"):
+        suffix = "".join(ch for ch in normalized if ch.isdigit())
+        return f"TP{suffix or '1'}"
+    if normalized.startswith("sl"):
+        if normalized == "sl_emergency":
+            return "SLEmergency"
+        suffix = "".join(ch for ch in normalized if ch.isdigit())
+        return f"SL{suffix or '1'}"
+    return normalized.upper() or "Order"
+
+
+def _fmt_qty(value: Optional[float]) -> str:
+    if value is None:
+        return "-"
+    return f"{max(float(value), 0.0):g}"
+
+
+def _fmt_price(value: Optional[float]) -> str:
+    if value is None:
+        return "-"
+    return f"{value:g}"
+
+
+def _handle_breakout_order_id_assigned(event: OrderIdAssigned) -> Optional[bool]:
+    client_tag = event.spec.client_tag
+    if not _is_breakout_client_tag(client_tag):
+        return None
+    session = _get_or_create_breakout_session(client_tag, event.spec.symbol)
+    session.entry_qty = float(event.spec.qty)
+    if event.order_id is not None:
+        session.parent_order_id = event.order_id
+        _register_breakout_order(event.order_id, client_tag=client_tag, leg="entry")
+    _track_entry_order(
+        order_id=event.order_id,
+        symbol=event.spec.symbol,
+        qty=event.spec.qty,
+        price=event.spec.limit_price,
+    )
+    return False
+
+
+def _handle_breakout_order_status_changed(event: OrderStatusChanged) -> Optional[bool]:
+    client_tag = event.spec.client_tag
+    if not _is_breakout_client_tag(client_tag):
+        return None
+    session = _get_or_create_breakout_session(client_tag, event.spec.symbol)
+    if session.entry_qty is None:
+        session.entry_qty = float(event.spec.qty)
+    if event.order_id is not None:
+        _register_breakout_order(event.order_id, client_tag=client_tag, leg="entry")
+    _track_entry_order(
+        order_id=event.order_id,
+        symbol=event.spec.symbol,
+        qty=event.spec.qty,
+        price=event.spec.limit_price,
+        status=event.status,
+    )
+    normalized_status = _normalize_order_status(event.status)
+    if normalized_status == "rejected" and session.entry_filled_qty <= 0:
+        session.unexpected_errors += 1
+        qty_total = session.entry_qty if session.entry_qty is not None else float(event.spec.qty)
+        _print_line(
+            event.timestamp,
+            "EntryRejected",
+            f"{session.symbol} qty=0/{qty_total:g} reason=status_rejected",
+        )
+        return True
+    if normalized_status == "cancelled" and session.entry_filled_qty <= 0:
+        qty_total = session.entry_qty if session.entry_qty is not None else float(event.spec.qty)
+        _print_line(
+            event.timestamp,
+            "EntryCancelled",
+            f"{session.symbol} qty=0/{qty_total:g} reason=status_cancelled",
+        )
+        return True
+    return False
+
+
+def _handle_breakout_order_filled(event: OrderFilled) -> Optional[bool]:
+    client_tag = event.spec.client_tag
+    if not _is_breakout_client_tag(client_tag):
+        return None
+    session = _get_or_create_breakout_session(client_tag, event.spec.symbol)
+    if session.entry_qty is None:
+        session.entry_qty = float(event.spec.qty)
+    if event.order_id is not None:
+        _register_breakout_order(event.order_id, client_tag=client_tag, leg="entry")
+    _track_entry_order(
+        order_id=event.order_id,
+        symbol=event.spec.symbol,
+        qty=event.spec.qty,
+        price=event.spec.limit_price,
+        status=event.status,
+        filled_qty=event.filled_qty,
+        remaining_qty=event.remaining_qty,
+    )
+    if event.filled_qty is not None:
+        session.entry_filled_qty = max(session.entry_filled_qty, float(event.filled_qty))
+    if event.avg_fill_price is not None and event.avg_fill_price > 0:
+        session.entry_avg_price = event.avg_fill_price
+    if not _is_fill_event(event.status, event.filled_qty):
+        return False
+    filled_qty = float(event.filled_qty or 0.0)
+    if filled_qty <= session.entry_reported_filled_qty + 1e-9:
+        return False
+    session.entry_reported_filled_qty = filled_qty
+    target_qty = session.entry_qty if session.entry_qty is not None else float(event.spec.qty)
+    label = "EntryFilled" if filled_qty + 1e-9 >= target_qty else "EntryPartiallyFilled"
+    protected_qty, position_qty = _breakout_protected_display(session)
+    avg_fill = event.avg_fill_price if event.avg_fill_price is not None else session.entry_avg_price
+    parts = [
+        session.symbol,
+        f"qty={filled_qty:g}/{target_qty:g}",
+        f"avg={_fmt_price(avg_fill)}",
+        f"pos={position_qty:g}",
+        f"protected={protected_qty:g}/{position_qty:g}",
+    ]
+    latency_suffix = _entry_fill_latency_suffix(event)
+    if latency_suffix:
+        parts.append(latency_suffix.strip())
+    _print_line(event.timestamp, label, " ".join(parts))
+    return True
+
+
+def _handle_breakout_child_snapshot(event: BracketChildOrderBrokerSnapshot) -> Optional[bool]:
+    client_tag = event.client_tag
+    if not _is_breakout_client_tag(client_tag):
+        return None
+    session = _get_or_create_breakout_session(client_tag, event.symbol)
+    leg = _leg_from_kind(event.kind)
+    _track_child_order(
+        order_id=event.order_id,
+        symbol=event.symbol,
+        kind=event.kind,
+        qty=event.expected_qty,
+        status=event.status,
+    )
+    if event.order_id is not None:
+        _register_breakout_order(event.order_id, client_tag=client_tag, leg=leg)
+    session.leg_target_qty[leg] = float(event.expected_qty)
+    return False
+
+
+def _handle_breakout_child_status_changed(event: BracketChildOrderStatusChanged) -> Optional[bool]:
+    client_tag = event.client_tag
+    if not _is_breakout_client_tag(client_tag):
+        return None
+    session = _get_or_create_breakout_session(client_tag, event.symbol)
+    leg = _leg_from_kind(event.kind)
+    _track_child_order(
+        order_id=event.order_id,
+        symbol=event.symbol,
+        kind=event.kind,
+        qty=float(event.qty),
+        price=event.price,
+        status=event.status,
+    )
+    if event.order_id is not None:
+        _register_breakout_order(event.order_id, client_tag=client_tag, leg=leg)
+    session.leg_target_qty[leg] = float(event.qty)
+    session.leg_price[leg] = float(event.price)
+    normalized_status = _normalize_order_status(event.status)
+    if normalized_status in {"pending", "submitted"}:
+        if leg not in session.submitted_legs:
+            session.submitted_legs.add(leg)
+            price_key = "px" if _is_tp_leg(leg) else "stop"
+            target_qty = session.leg_target_qty.get(leg, float(event.qty))
+            _print_line(
+                event.timestamp,
+                f"{_leg_title(leg)}Submitted",
+                (
+                    f"{session.symbol} qty={target_qty:g}/{target_qty:g} "
+                    f"{price_key}={event.price:g}"
+                ),
+            )
+            return True
+        return False
+    if normalized_status == "cancel_pending":
+        if leg not in session.cancel_pending_legs:
+            session.cancel_pending_legs.add(leg)
+            protected_qty, position_qty = _breakout_protected_display(session)
+            target_qty = session.leg_target_qty.get(leg, float(event.qty))
+            _print_line(
+                event.timestamp,
+                f"{_leg_title(leg)}CancelPending",
+                (
+                    f"{session.symbol} qty={target_qty:g} reason=broker_pending_cancel "
+                    f"expected=false pos={position_qty:g} protected={protected_qty:g}/{position_qty:g}"
+                ),
+            )
+            return True
+        return False
+    if normalized_status == "cancelled":
+        if leg not in session.cancelled_legs:
+            session.cancelled_legs.add(leg)
+            reason, expected = _infer_leg_cancel_reason(session, leg)
+            position_qty = _breakout_position(session)
+            if reason == "oca_pair_fill":
+                paired_tp = _paired_tp_leg(leg)
+                if paired_tp:
+                    projected_qty = position_qty - session.leg_target_qty.get(paired_tp, 0.0)
+                    if projected_qty >= 0:
+                        position_qty = projected_qty
+            target_qty = session.leg_target_qty.get(leg, float(event.qty))
+            _print_line(
+                event.timestamp,
+                f"{_leg_title(leg)}Cancelled",
+                (
+                    f"{session.symbol} qty={target_qty:g} reason={reason} "
+                    f"expected={str(expected).lower()} pos={position_qty:g}"
+                ),
+            )
+            _maybe_print_breakout_completed(session, event.timestamp)
+            return True
+        return False
+    if normalized_status == "rejected":
+        session.unexpected_errors += 1
+        target_qty = session.leg_target_qty.get(leg, float(event.qty))
+        _print_line(
+            event.timestamp,
+            f"{_leg_title(leg)}Rejected",
+            f"{session.symbol} qty={target_qty:g} reason=status_rejected",
+        )
+        return True
+    return False
+
+
+def _handle_breakout_child_filled(event: BracketChildOrderFilled) -> Optional[bool]:
+    client_tag = event.client_tag
+    if not _is_breakout_client_tag(client_tag):
+        return None
+    session = _get_or_create_breakout_session(client_tag, event.symbol)
+    leg = _leg_from_kind(event.kind)
+    target_qty = (
+        float(event.expected_qty)
+        if event.expected_qty is not None
+        else float(event.qty)
+    )
+    _track_child_order(
+        order_id=event.order_id,
+        symbol=event.symbol,
+        kind=event.kind,
+        qty=target_qty,
+        price=event.price,
+        status=event.status,
+        filled_qty=event.filled_qty,
+        remaining_qty=event.remaining_qty,
+    )
+    if event.order_id is not None:
+        _register_breakout_order(event.order_id, client_tag=client_tag, leg=leg)
+    session.leg_target_qty[leg] = target_qty
+    if event.avg_fill_price is not None and event.avg_fill_price > 0:
+        session.leg_price[leg] = float(event.avg_fill_price)
+    elif event.price > 0:
+        session.leg_price[leg] = float(event.price)
+
+    if not _is_fill_event(event.status, event.filled_qty):
+        return False
+    cumulative_qty = float(event.filled_qty or 0.0)
+    if cumulative_qty <= 0:
+        return False
+    previous_order_qty = 0.0
+    if event.order_id is not None:
+        previous_order_qty = session.order_cumulative_filled.get(event.order_id, 0.0)
+        session.order_cumulative_filled[event.order_id] = max(cumulative_qty, previous_order_qty)
+    delta_qty = max(cumulative_qty - previous_order_qty, 0.0)
+    if delta_qty <= 0:
+        return False
+    leg_total_qty = session.leg_filled_qty.get(leg, 0.0) + delta_qty
+    session.leg_filled_qty[leg] = leg_total_qty
+    if _is_tp_leg(leg):
+        session.last_tp_fill_leg = leg
+    is_full_fill = leg_total_qty + 1e-9 >= target_qty
+    if is_full_fill:
+        if leg in session.filled_legs:
+            return False
+        session.filled_legs.add(leg)
+        label = f"{_leg_title(leg)}Filled"
+    else:
+        label = f"{_leg_title(leg)}PartiallyFilled"
+    protected_qty, position_qty = _breakout_protected_display(session)
+    fill_price = (
+        event.avg_fill_price
+        if event.avg_fill_price is not None and event.avg_fill_price > 0
+        else event.price
+    )
+    price_key = "px" if _is_tp_leg(leg) else "stop"
+    _print_line(
+        event.timestamp,
+        label,
+        (
+            f"{session.symbol} qty={leg_total_qty:g}/{target_qty:g} {price_key}={fill_price:g} "
+            f"pos={position_qty:g} protected={protected_qty:g}/{position_qty:g}"
+        ),
+    )
+    _maybe_print_breakout_completed(session, event.timestamp)
+    return True
+
+
+def _handle_breakout_stop_replaced(event: LadderStopLossReplaced) -> Optional[bool]:
+    client_tag = event.client_tag
+    if not _is_breakout_client_tag(client_tag):
+        return None
+    session = _get_or_create_breakout_session(client_tag, event.symbol)
+    state = _track_repriced_stop(event)
+    leg = state.leg if state else "sl"
+    if event.new_order_id is not None:
+        _register_breakout_order(event.new_order_id, client_tag=client_tag, leg=leg)
+    session.leg_target_qty[leg] = float(event.new_qty)
+    session.leg_price[leg] = float(event.new_price)
+    reason = event.reason
+    if reason == "price_update" and session.last_tp_fill_leg:
+        reason = f"{session.last_tp_fill_leg}_filled"
+    protected_qty, position_qty = _breakout_protected_display(session)
+    _print_line(
+        event.timestamp,
+        f"{_leg_title(leg)}Repriced",
+        (
+            f"{session.symbol} qty={event.new_qty:g}/{event.new_qty:g} "
+            f"stop={event.old_price:g}->{event.new_price:g} "
+            f"reason={reason} pos={position_qty:g} protected={protected_qty:g}/{position_qty:g}"
+        ),
+    )
+    return True
+
+
+def _handle_breakout_protection_changed(event: LadderProtectionStateChanged) -> Optional[bool]:
+    client_tag = event.client_tag
+    if not _is_breakout_client_tag(client_tag):
+        return None
+    session = _get_or_create_breakout_session(client_tag, event.symbol)
+    if event.stop_order_id is not None:
+        stop_state = _ORDER_STATE_BY_ID.get(event.stop_order_id)
+        stop_leg = stop_state.leg if stop_state else "sl"
+        _register_breakout_order(event.stop_order_id, client_tag=client_tag, leg=stop_leg)
+    for order_id in event.active_take_profit_order_ids:
+        tp_state = _ORDER_STATE_BY_ID.get(order_id)
+        tp_leg = tp_state.leg if tp_state else "tp"
+        _register_breakout_order(order_id, client_tag=client_tag, leg=tp_leg)
+    if event.state == "protected":
+        protected_qty = 0.0
+        for order_id in event.active_take_profit_order_ids:
+            state = _ORDER_STATE_BY_ID.get(order_id)
+            if state is None:
+                continue
+            leg = state.leg
+            if leg in session.leg_target_qty:
+                protected_qty += session.leg_target_qty[leg]
+            elif state.target_qty is not None:
+                protected_qty += float(state.target_qty)
+        if protected_qty <= 0:
+            protected_qty = _breakout_position(session)
+        session.protected_qty = protected_qty
+        protected_display, position_qty = _breakout_protected_display(session)
+        _print_line(
+            event.timestamp,
+            "ProtectionActive",
+            f"{session.symbol} protected={protected_display:g}/{position_qty:g} pos={position_qty:g}",
+        )
+        return True
+    session.protected_qty = 0.0
+    position_qty = _breakout_position(session)
+    _print_line(
+        event.timestamp,
+        "ProtectionLost",
+        f"{session.symbol} reason={event.reason} pos={position_qty:g}",
+    )
+    return True
+
+
+def _handle_breakout_child_qty_mismatch(event: BracketChildQuantityMismatchDetected) -> Optional[bool]:
+    client_tag = event.client_tag
+    if not _is_breakout_client_tag(client_tag):
+        return None
+    normalized_status = _normalize_order_status(event.status)
+    if normalized_status in {"pending", "submitted"}:
+        return False
+    session = _get_or_create_breakout_session(client_tag, event.symbol)
+    leg = _leg_from_kind(event.kind)
+    _track_child_order(
+        order_id=event.order_id,
+        symbol=event.symbol,
+        kind=event.kind,
+        qty=event.expected_qty,
+        status=event.status,
+    )
+    if event.order_id is not None:
+        _register_breakout_order(event.order_id, client_tag=client_tag, leg=leg)
+    _print_line(
+        event.timestamp,
+        f"{_leg_title(leg)}QtyMismatch",
+        (
+            f"{session.symbol} expected={event.expected_qty:g} broker={event.broker_order_qty:g} "
+            f"status={normalized_status} impact=monitor"
+        ),
+    )
+    return True
+
+
+def _handle_breakout_gateway_log(event: IbGatewayLog) -> Optional[bool]:
+    req_id = event.req_id
+    if req_id is None or req_id < 0:
+        return None
+    client_tag = _BREAKOUT_TAG_BY_ORDER_ID.get(req_id)
+    if not _is_breakout_client_tag(client_tag):
+        return None
+    session = _BREAKOUT_SESSION_BY_TAG.get(client_tag)
+    if session is None:
+        return None
+    code = event.code
+    message = " ".join(str(event.message or "").split())
+    state = _ORDER_STATE_BY_ID.get(req_id)
+    leg = state.leg if state is not None else "exit"
+    stage = "entry" if leg == "entry" else "exits_live"
+    if code == 202:
+        return False
+    if code == 10148 and _is_terminal_cancel_race(message):
+        return False
+    if code in {201, 404}:
+        session.unexpected_errors += 1
+        label = "EntryRejected" if leg == "entry" else f"{_leg_title(leg)}Rejected"
+        reason = _extract_reject_reason(message) if code == 201 else _shorten_message(message, max_len=120)
+        position_qty = _breakout_position(session)
+        if leg == "entry":
+            impact = "entry_blocked"
+        elif position_qty > 0:
+            impact = f"unprotected_{position_qty:g}"
+        else:
+            impact = "position_closed"
+        _print_line(
+            event.timestamp,
+            label,
+            (
+                f"{session.symbol} code={code} reason={reason} "
+                f"stage={stage} impact={impact}"
+            ),
+        )
+        return True
+    return None
+
+
+def _infer_leg_cancel_reason(
+    session: _BreakoutNarrativeSession,
+    leg: str,
+) -> tuple[str, bool]:
+    position_qty = _breakout_position(session)
+    if position_qty <= 1e-9:
+        return ("position_closed", True)
+    if _is_sl_leg(leg):
+        paired_tp = _paired_tp_leg(leg)
+        if paired_tp and (
+            session.leg_filled_qty.get(paired_tp, 0.0) > 0
+            or paired_tp in session.submitted_legs
+        ):
+            return ("oca_pair_fill", True)
+    if _is_tp_leg(leg):
+        paired_sl = _paired_sl_leg(leg)
+        if paired_sl and session.leg_filled_qty.get(paired_sl, 0.0) > 0:
+            return ("paired_stop_fill", True)
+    return ("broker_cancel", False)
+
+
+def _maybe_print_breakout_completed(
+    session: _BreakoutNarrativeSession,
+    timestamp: datetime,
+) -> None:
+    if session.completed_printed:
+        return
+    if session.entry_filled_qty <= 0:
+        return
+    if _breakout_position(session) > 1e-9:
+        return
+    tp1_qty = session.leg_filled_qty.get("tp1", 0.0)
+    tp2_qty = session.leg_filled_qty.get("tp2", 0.0)
+    sl_qty = 0.0
+    for leg, qty in session.leg_filled_qty.items():
+        if _is_sl_leg(leg):
+            sl_qty += max(qty, 0.0)
+    _print_line(
+        timestamp,
+        "BreakoutCompleted",
+        (
+            f"{session.symbol} result=closed entry={session.entry_filled_qty:g} "
+            f"tp1={tp1_qty:g} tp2={tp2_qty:g} sl={sl_qty:g} "
+            f"unexpected_errors={session.unexpected_errors}"
+        ),
+    )
+    session.completed_printed = True
 
 
 def _print_line(timestamp, label: str, message: str) -> None:
