@@ -501,7 +501,8 @@ class IBKROrderPort(OrderPort):
             stop_limit_buffer_pct=self._outside_rth_stop_limit_buffer_pct,
         )
         _apply_oca(stop_order, group=exit_oca_group, oca_type=exit_oca_type)
-        stop_order.parentId = order_id
+        # Detached exits are intentionally unlinked from parent order lifecycle.
+        stop_order.parentId = 0
         stop_order.transmit = True
         stop_trade = _place_order_sanitized(self._ib, qualified, stop_order)
         _publish_stop_mode_selected(
@@ -603,7 +604,7 @@ class IBKROrderPort(OrderPort):
                 gateway_message_subscribe=self._connection.subscribe_gateway_messages,
                 replace_timeout=max(self._connection.config.timeout, 1.0),
                 execution_mode=execution_mode,
-                link_stop_to_parent=True,
+                link_stop_to_parent=False,
                 stop_limit_buffer_pct=self._outside_rth_stop_limit_buffer_pct,
                 exit_oca_group=exit_oca_group,
                 exit_oca_type=exit_oca_type,
@@ -615,6 +616,7 @@ class IBKROrderPort(OrderPort):
                 zip(spec.take_profits, spec.take_profit_qtys), start=1
             ):
                 tp_order = LimitOrder(child_side.value, tp_qty, tp_price, tif=spec.tif)
+                tp_order.parentId = 0
                 _apply_oca(tp_order, group=exit_oca_group, oca_type=exit_oca_type)
                 tp_order.transmit = True
                 tp_order.outsideRth = spec.outside_rth
