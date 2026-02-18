@@ -235,6 +235,10 @@ class REPL:
             except EOFError:
                 print()
                 break
+            except (KeyboardInterrupt, asyncio.CancelledError):
+                # Keep the REPL alive when Ctrl+C interrupts input or an in-flight command.
+                print("\nInterrupted. Type 'quit' to exit.")
+                continue
             line = line.strip()
             if not line:
                 continue
@@ -247,6 +251,8 @@ class REPL:
                 continue
             try:
                 await spec.handler(args, kwargs)
+            except (KeyboardInterrupt, asyncio.CancelledError):
+                print("Command interrupted.")
             except Exception as exc:
                 self._log_cli_error(exc, cmd_name, line)
                 _print_exception("Command error", exc)
@@ -1691,7 +1697,7 @@ class REPL:
     async def _prompt_yes_no(self, prompt: str) -> bool:
         try:
             response = await asyncio.to_thread(input, prompt)
-        except EOFError:
+        except (EOFError, KeyboardInterrupt, asyncio.CancelledError):
             return False
         if not response:
             return False
