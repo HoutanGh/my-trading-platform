@@ -2507,7 +2507,6 @@ class REPL:
             issue_text = ",".join(session.issues) if session.issues else "-"
             lifecycle_rows.append(
                 [
-                    session.tag,
                     session.symbol,
                     _format_number(session.level),
                     _format_breakout_levels(session.configured_tps),
@@ -2579,7 +2578,6 @@ class REPL:
         if lifecycle_rows:
             for line in _format_simple_table(
                 [
-                    "tag",
                     "symbol",
                     "level",
                     "tp",
