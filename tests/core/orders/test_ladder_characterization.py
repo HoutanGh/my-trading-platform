@@ -152,3 +152,46 @@ def test_attached_ladder_mode_is_rejected() -> None:
         match="execution_mode ATTACHED is not supported for ladders",
     ):
         _run(service.submit_ladder(spec))
+
+
+def test_detached_accepts_three_take_profits_and_submits() -> None:
+    port = _FakeOrderPort()
+    service = OrderService(port)
+    spec = LadderOrderSpec(
+        symbol="aapl",
+        qty=10,
+        side=OrderSide.BUY,
+        entry_type=OrderType.MARKET,
+        take_profits=[11.0, 11.5, 12.0],
+        take_profit_qtys=[6, 3, 1],
+        stop_loss=9.5,
+        stop_updates=[10.0, 11.0],
+        execution_mode=LadderExecutionMode.DETACHED,
+    )
+
+    ack = _run(service.submit_ladder(spec))
+
+    assert ack.order_id == 1
+    assert len(port.ladder_specs) == 1
+    assert port.ladder_specs[0].symbol == "AAPL"
+
+
+def test_detached_requires_two_stop_updates_for_three_take_profits() -> None:
+    service = OrderService(_FakeOrderPort())
+    spec = LadderOrderSpec(
+        symbol="AAPL",
+        qty=10,
+        side=OrderSide.BUY,
+        entry_type=OrderType.MARKET,
+        take_profits=[11.0, 11.5, 12.0],
+        take_profit_qtys=[6, 3, 1],
+        stop_loss=9.5,
+        stop_updates=[10.0],
+        execution_mode=LadderExecutionMode.DETACHED,
+    )
+
+    with pytest.raises(
+        OrderValidationError,
+        match="stop_updates must match take_profit count minus one",
+    ):
+        _run(service.submit_ladder(spec))

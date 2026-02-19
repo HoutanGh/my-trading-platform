@@ -9,6 +9,8 @@ from apps.core.strategies.breakout.logic import BreakoutRuleConfig
 from apps.core.strategies.breakout.runner import (
     BreakoutRunConfig,
     _default_breakout_tag,
+    _split_take_profit_qtys,
+    _stop_updates_for_take_profits,
     run_breakout,
 )
 
@@ -103,3 +105,21 @@ def test_attached_ladder_mode_is_rejected() -> None:
 
     with pytest.raises(ValueError, match="ATTACHED ladder mode is not supported"):
         _run(run_breakout(config, bar_stream=None, order_service=None))
+
+
+def test_tp3_stop_updates_use_breakout_then_tp1() -> None:
+    assert _stop_updates_for_take_profits([11.0, 12.0, 13.0], breakout_level=10.0) == [10.0, 11.0]
+
+
+def test_tp2_stop_updates_use_breakout_level_only() -> None:
+    assert _stop_updates_for_take_profits([11.0, 12.0], breakout_level=10.0) == [10.0]
+
+
+def test_tp3_default_qty_split_is_stable() -> None:
+    assert _split_take_profit_qtys(10, 3) == [6, 3, 1]
+    assert _split_take_profit_qtys(7, 3) == [4, 2, 1]
+
+
+def test_tp3_default_qty_split_rejects_too_small_qty() -> None:
+    with pytest.raises(ValueError, match="qty too small for take profit ladder"):
+        _split_take_profit_qtys(2, 3)

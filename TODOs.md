@@ -23,6 +23,10 @@
 - [ ] MAYBE: for breakouts, when first take profit is taken the lowest SL should just be the lowest it can stay to stay green
 - [ ] cancel multipel orders in one line
 - [ ] you type in the stock and gives you best breakout prices, etc.
+- [ ] new breakout automation
+    - first breakout then falls below VWAP then breaks VWAP and fills slightly above the first high
+- [ ] fix the double apps> at the start
+- [ ] automate the take profit flow more it is a more generic flow that has input of how many take profits rathern than separate streams for different take profit numbers 
 
 
 
@@ -33,25 +37,28 @@
 ### NEXT WEEK
 - [ ] check how is latency calculated - would like to know for take profits
 - [ ] clean up the error for stock trading eligiblity
-
 - [ ] research multiple sessions/popups all working together
     - when i type just a stock session pops up for that stock
 - [ ] ====== breakout took 1.7 seconds to fill ======= (fill bar)
 - [ ] get all the errors possible then cleanup
 
-###
-- [ ] fix the short sale issue
+### 19/02/26
+- [x] fix the short sale issue
 - [ ] orphan auto cancel
 - [ ] sometimes the y/N is not asked
-- [ ] fix the positions tag at the start
-- [ ] fix the double apps> at the start
+- [x] fix the positions tag at the start
 - [ ] why is app logic in adapters
-- [ ] should have a further two points on the times
-- [ ] need to also look at other functionality 
-    - [ ] stop losses changing after first take profit hit
+- [x] should have a further two points on the times
+- [x] stop losses changing after first take profit hit
 - [ ] ib_async migration
 - [ ] breakout status should be shown as a table
 - [ ] the stop LMT amount have to change depending on take profit quantities?
+- [ ] functionality for multiple breakouts of the same stock
+- [x] so need the functionality for tp3
+- [ ] the self-calc take profits should be accounted for also
+- [ ] something needs to show p&l
+- [ ] definitely need the ability to edit 
+- [ ] the stop loss shouldnt go to the first tp, should go to breakeven or a bit more
 
 ### 18/02/26
 - [x] test breakout
