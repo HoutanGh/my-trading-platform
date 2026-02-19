@@ -2087,7 +2087,7 @@ class REPL:
                 return
             fills_rows.append(
                 [
-                    timestamp_local.strftime("%H:%M:%S"),
+                    timestamp_local.strftime("%H:%M:%S.%f")[:-4],
                     str(fill_type),
                     str(symbol or "-"),
                     str(side or "-"),
@@ -4356,5 +4356,5 @@ def _format_kind(kind: object) -> str:
 
 def _format_time_value(value: object) -> str:
     if isinstance(value, datetime):
-        return value.strftime("%H:%M:%S")
+        return value.strftime("%H:%M:%S.%f")[:-4]
     return "-"

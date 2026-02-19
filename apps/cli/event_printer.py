@@ -1708,7 +1708,7 @@ def _print_line(timestamp, label: str, message: str) -> None:
 
 
 def _format_time(timestamp) -> str:
-    return timestamp.strftime("%H:%M:%S")
+    return timestamp.strftime("%H:%M:%S.%f")[:-4]
 
 
 def _is_fill_event(status: Optional[str], filled_qty: Optional[float]) -> bool:

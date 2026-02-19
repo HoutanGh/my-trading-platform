@@ -12,7 +12,7 @@ These labels are printed only for `IbGatewayLog` events:
 - `IbStatus`: gateway message contains `"is ok"` (case-insensitive).
 - `IbWarn`: gateway message contains `"inactive"` or `"broken"` (case-insensitive), and did not match `IbStatus`.
 - `IbError`: fallback for all other gateway messages.
-- CLI timestamp prefix is compact `HH:MM:SS` (no microseconds/timezone suffix).
+- CLI timestamp prefix is compact `HH:MM:SS.xx` (centiseconds; no timezone suffix).
 
 Printed line fields:
 
