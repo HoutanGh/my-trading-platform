@@ -1682,16 +1682,20 @@ def _maybe_print_breakout_completed(
         return
     tp1_qty = session.leg_filled_qty.get("tp1", 0.0)
     tp2_qty = session.leg_filled_qty.get("tp2", 0.0)
+    tp3_qty = session.leg_filled_qty.get("tp3", 0.0)
     sl_qty = 0.0
     for leg, qty in session.leg_filled_qty.items():
         if _is_sl_leg(leg):
             sl_qty += max(qty, 0.0)
+    tp3_part = ""
+    if "tp3" in session.leg_target_qty or "tp3" in session.leg_filled_qty:
+        tp3_part = f" tp3={tp3_qty:g}"
     _print_line(
         timestamp,
         "BreakoutCompleted",
         (
             f"{session.symbol} result=closed entry={session.entry_filled_qty:g} "
-            f"tp1={tp1_qty:g} tp2={tp2_qty:g} sl={sl_qty:g} "
+            f"tp1={tp1_qty:g} tp2={tp2_qty:g}{tp3_part} sl={sl_qty:g} "
             f"unexpected_errors={session.unexpected_errors}"
         ),
     )

@@ -4242,7 +4242,10 @@ def _is_stop_kind(kind: str) -> bool:
     normalized = kind.strip().lower()
     return (
         normalized in {"stop_loss", "detached_stop", "det70_stop"}
+        or normalized.startswith("stop_loss_")
+        or normalized.startswith("detached_stop_")
         or normalized.startswith("det70_stop_")
+        or normalized == "det70_emergency_stop"
     )
 
 
@@ -4267,11 +4270,19 @@ def _breakout_leg_alias(kind: str) -> str:
     if normalized.startswith("det70_tp_"):
         suffix = normalized.split("_")[-1]
         return f"tp{suffix}"
-    if (
-        normalized in {"stop_loss", "detached_stop", "det70_stop"}
-        or normalized.startswith("det70_stop_")
-    ):
-        return "sl"
+    if normalized == "det70_emergency_stop":
+        return "sl_emergency"
+    if normalized in {"stop_loss", "detached_stop", "det70_stop"}:
+        return "sl1"
+    if normalized.startswith("stop_loss_"):
+        suffix = normalized.split("_")[-1]
+        return f"sl{suffix}"
+    if normalized.startswith("detached_stop_"):
+        suffix = normalized.split("_")[-1]
+        return f"sl{suffix}"
+    if normalized.startswith("det70_stop_"):
+        suffix = normalized.split("_")[-1]
+        return f"sl{suffix}"
     return normalized or "-"
 
 
