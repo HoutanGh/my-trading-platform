@@ -4,7 +4,7 @@
 Help me ship this trading platform safely with small, correct changes and clear explanations.
 
 ## Non-negotiables
-- Make the smallest correct change. Don’t refactor unrelated code.
+- Don’t refactor unrelated code.
 - Core/Ports/Adapters: **core must not import adapters**.
 - Default to **paper trading**. Any live-trading capability must be behind an explicit config flag + risk limits + kill switch + documentation.
 - Don’t guess silently: state assumptions and add TODOs if needed.
@@ -43,3 +43,11 @@ Output a copy-paste prompt that includes:
 - Task definition + constraints
 - Required outputs (files, patch/pseudocode, verification)
 - The workflow steps above
+
+## Git shortcut
+When I say `acp: <commit message>`, do:
+1. `git add -A`
+2. `git commit -m "<commit message>"`
+3. `git push origin HEAD`
+If any step fails, stop and report the error.
+Never use `--amend` unless I explicitly ask.
