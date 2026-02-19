@@ -25,11 +25,16 @@ class IBKRPositionsPort(PositionsPort):
 
         snapshots: list[PositionSnapshot] = []
         fallback_positions: Optional[list[object]] = None
-        timeout = max(self._connection.config.timeout, 1.0)
+        positions_timeout = max(self._connection.config.timeout, 1.0)
+        account_updates_timeout = 0.5
         explicit_account = account is not None
         for acct in accounts:
             try:
-                portfolio = await _refresh_account_portfolio(self._ib, acct, timeout=timeout)
+                portfolio = await _refresh_account_portfolio(
+                    self._ib,
+                    acct,
+                    timeout=account_updates_timeout,
+                )
                 for item in portfolio:
                     snapshot = _to_snapshot(item, acct)
                     if snapshot:
@@ -38,7 +43,7 @@ class IBKRPositionsPort(PositionsPort):
                 try:
                     fallback_positions = fallback_positions or await _fetch_positions(
                         self._ib,
-                        timeout=timeout,
+                        timeout=positions_timeout,
                     )
                 except asyncio.TimeoutError:
                     message = (
