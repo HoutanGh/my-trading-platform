@@ -39,25 +39,27 @@
 - [ ] ====== breakout took 1.7 seconds to fill ======= (fill bar)
 - [ ] get all the errors possible then cleanup
 
-### 18/02/26
-- [ ] test breakout
-    - [ ] test with one detached Sell LMT
-- [ ] why is app logic in adapters
+###
 - [ ] fix the short sale issue
-- [ ] the stop LMT amount have to change depending on take profit quantities?
-- [ ] ib_async migration
-- [ ] breakout status should be shown as a table
 - [ ] orphan auto cancel
-- [x] clean up trade table
 - [ ] sometimes the y/N is not asked
+- [ ] fix the positions tag at the start
+- [ ] fix the double apps> at the start
+- [ ] why is app logic in adapters
 - [ ] should have a further two points on the times
 - [ ] need to also look at other functionality 
     - [ ] stop losses changing after first take profit hit
-- [ ] clean up breakout lifecycle table
-- [ ] if a command gets stuck, how to get out of it?
+- [ ] ib_async migration
+- [ ] breakout status should be shown as a table
+- [ ] the stop LMT amount have to change depending on take profit quantities?
+
+### 18/02/26
+- [x] test breakout
+- [x] clean up trade table
+- [x] clean up breakout lifecycle table
+- [x] if a command gets stuck, how to get out of it?
 - [x] app getting stuck on commands
-- [ ] fix the positions tag at the start
-- [ ] fix the double apps> at the start
+
 
 
 ### 17/02/26
