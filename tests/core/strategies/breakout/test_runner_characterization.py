@@ -80,3 +80,26 @@ def test_detached70_requires_exactly_two_take_profits() -> None:
     with pytest.raises(ValueError, match="DETACHED_70_30 requires exactly 2 take_profits"):
         _run(run_breakout(config, bar_stream=None, order_service=None))
 
+
+def test_detached_requires_exactly_three_take_profits() -> None:
+    config = _base_config(
+        take_profits=[11.0, 11.5],
+        take_profit_qtys=[7, 3],
+        stop_loss=9.5,
+        ladder_execution_mode=LadderExecutionMode.DETACHED,
+    )
+
+    with pytest.raises(ValueError, match="DETACHED requires exactly 3 take_profits"):
+        _run(run_breakout(config, bar_stream=None, order_service=None))
+
+
+def test_attached_ladder_mode_is_rejected() -> None:
+    config = _base_config(
+        take_profits=[11.0, 11.5, 12.0],
+        take_profit_qtys=[6, 3, 1],
+        stop_loss=9.5,
+        ladder_execution_mode=LadderExecutionMode.ATTACHED,
+    )
+
+    with pytest.raises(ValueError, match="ATTACHED ladder mode is not supported"):
+        _run(run_breakout(config, bar_stream=None, order_service=None))

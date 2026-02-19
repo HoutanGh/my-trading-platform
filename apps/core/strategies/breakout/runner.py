@@ -96,9 +96,11 @@ async def run_breakout(
             raise ValueError("take_profit_qtys must sum to qty")
     if config.tp_reprice_timeout_seconds <= 0:
         raise ValueError("tp_reprice_timeout_seconds must be greater than zero")
+    if config.ladder_execution_mode == LadderExecutionMode.ATTACHED and config.take_profits:
+        raise ValueError("ATTACHED ladder mode is not supported; use bracket for 1 TP + 1 SL")
     if config.ladder_execution_mode == LadderExecutionMode.DETACHED:
-        if not config.take_profits or len(config.take_profits) not in {2, 3}:
-            raise ValueError("DETACHED requires 2 or 3 take_profits")
+        if not config.take_profits or len(config.take_profits) != 3:
+            raise ValueError("DETACHED requires exactly 3 take_profits")
     if config.ladder_execution_mode == LadderExecutionMode.DETACHED_70_30:
         if not config.take_profits or len(config.take_profits) != 2:
             raise ValueError("DETACHED_70_30 requires exactly 2 take_profits")

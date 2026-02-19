@@ -1305,9 +1305,13 @@ class REPL:
             elif len(take_profits) == 3:
                 ladder_execution_mode = LadderExecutionMode.DETACHED
 
+        if ladder_execution_mode == LadderExecutionMode.ATTACHED and take_profits:
+            print("tp_exec=attached supports only single tp/sl (use tp=LEVEL, not a ladder).")
+            return
+
         if ladder_execution_mode == LadderExecutionMode.DETACHED:
-            if not take_profits or len(take_profits) not in {2, 3}:
-                print("tp_exec=detached requires a 2- or 3-level tp ladder with sl.")
+            if not take_profits or len(take_profits) != 3:
+                print("tp_exec=detached requires a 3-level tp ladder with sl.")
                 return
             if tp_reprice_on_fill:
                 tp_reprice_on_fill = False
@@ -3803,13 +3807,15 @@ def _deserialize_breakout_config(payload: dict[str, object]) -> Optional[Breakou
         return None
     if (
         ladder_execution_mode == LadderExecutionMode.DETACHED
-        and (not take_profits or len(take_profits) not in {2, 3})
+        and (not take_profits or len(take_profits) != 3)
     ):
         return None
     if (
         ladder_execution_mode == LadderExecutionMode.DETACHED_70_30
         and (not take_profits or len(take_profits) != 2)
     ):
+        return None
+    if ladder_execution_mode == LadderExecutionMode.ATTACHED and take_profits:
         return None
     if ladder_execution_mode == LadderExecutionMode.DETACHED and tp_reprice_on_fill:
         tp_reprice_on_fill = False

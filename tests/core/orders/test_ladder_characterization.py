@@ -111,3 +111,44 @@ def test_detached70_accepts_expected_split_and_submits() -> None:
     assert len(port.ladder_specs) == 1
     assert port.ladder_specs[0].symbol == "AAPL"
 
+
+def test_detached_requires_exactly_three_take_profits() -> None:
+    service = OrderService(_FakeOrderPort())
+    spec = LadderOrderSpec(
+        symbol="AAPL",
+        qty=10,
+        side=OrderSide.BUY,
+        entry_type=OrderType.MARKET,
+        take_profits=[11.0, 11.5],
+        take_profit_qtys=[7, 3],
+        stop_loss=9.5,
+        stop_updates=[10.0],
+        execution_mode=LadderExecutionMode.DETACHED,
+    )
+
+    with pytest.raises(
+        OrderValidationError,
+        match="execution_mode DETACHED requires exactly 3 take_profits",
+    ):
+        _run(service.submit_ladder(spec))
+
+
+def test_attached_ladder_mode_is_rejected() -> None:
+    service = OrderService(_FakeOrderPort())
+    spec = LadderOrderSpec(
+        symbol="AAPL",
+        qty=10,
+        side=OrderSide.BUY,
+        entry_type=OrderType.MARKET,
+        take_profits=[11.0, 11.5, 12.0],
+        take_profit_qtys=[6, 3, 1],
+        stop_loss=9.5,
+        stop_updates=[10.0, 11.0],
+        execution_mode=LadderExecutionMode.ATTACHED,
+    )
+
+    with pytest.raises(
+        OrderValidationError,
+        match="execution_mode ATTACHED is not supported for ladders",
+    ):
+        _run(service.submit_ladder(spec))

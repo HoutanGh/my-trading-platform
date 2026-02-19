@@ -239,10 +239,14 @@ class OrderService:
             raise OrderValidationError("stop_updates must match take_profit count minus one")
         if any(level <= 0 for level in spec.stop_updates):
             raise OrderValidationError("stop_updates must be greater than zero")
+        if spec.execution_mode == LadderExecutionMode.ATTACHED:
+            raise OrderValidationError(
+                "execution_mode ATTACHED is not supported for ladders; use bracket for 1 TP + 1 SL"
+            )
         if spec.execution_mode == LadderExecutionMode.DETACHED:
-            if len(spec.take_profits) not in {2, 3}:
+            if len(spec.take_profits) != 3:
                 raise OrderValidationError(
-                    "execution_mode DETACHED requires 2 or 3 take_profits"
+                    "execution_mode DETACHED requires exactly 3 take_profits"
                 )
         if spec.execution_mode == LadderExecutionMode.DETACHED_70_30:
             if len(spec.take_profits) != 2:
