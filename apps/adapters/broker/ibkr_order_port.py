@@ -463,6 +463,12 @@ class IBKROrderPort(OrderPort):
                 qualified=qualified,
                 loop=loop,
             )
+        if spec.execution_mode == LadderExecutionMode.DETACHED and len(spec.take_profits) == 3:
+            return await self._submit_ladder_order_detached_3_pairs(
+                spec=spec,
+                qualified=qualified,
+                loop=loop,
+            )
 
         if spec.entry_type == OrderType.MARKET:
             parent = MarketOrder(spec.side.value, spec.qty, tif=spec.tif)
@@ -1364,6 +1370,808 @@ class IBKROrderPort(OrderPort):
                 _close_gateway_subscription_if_idle_locked()
 
         for pair_index in (1, 2):
+            tp_trade = tp_trades[pair_index]
+            stop_trade = stop_trades[pair_index]
+
+            status_event = getattr(tp_trade, "statusEvent", None)
+            if status_event is not None:
+                status_event += (
+                    lambda trade_obj, *_args, pair_idx=pair_index: _on_tp_status(pair_idx, trade_obj)
+                )
+            filled_event = getattr(tp_trade, "filledEvent", None)
+            if filled_event is not None:
+                filled_event += (
+                    lambda trade_obj, *args, pair_idx=pair_index: _on_tp_fill(
+                        pair_idx,
+                        trade_obj,
+                        args[0] if args else None,
+                    )
+                )
+            fill_event = getattr(tp_trade, "fillEvent", None)
+            if fill_event is not None:
+                fill_event += (
+                    lambda trade_obj, *args, pair_idx=pair_index: _on_tp_fill(
+                        pair_idx,
+                        trade_obj,
+                        args[0] if args else None,
+                    )
+                )
+            fills = getattr(tp_trade, "fills", None)
+            if fills:
+                for fill_obj in list(fills):
+                    _on_tp_fill(pair_index, tp_trade, fill_obj)
+
+            stop_status_event = getattr(stop_trade, "statusEvent", None)
+            if stop_status_event is not None:
+                stop_status_event += (
+                    lambda trade_obj, *_args, pair_idx=pair_index: _on_stop_status(
+                        pair_idx,
+                        trade_obj,
+                    )
+                )
+            stop_filled_event = getattr(stop_trade, "filledEvent", None)
+            if stop_filled_event is not None:
+                stop_filled_event += (
+                    lambda trade_obj, *_args, pair_idx=pair_index: _on_stop_fill(
+                        pair_idx,
+                        trade_obj,
+                    )
+                )
+            stop_fill_event = getattr(stop_trade, "fillEvent", None)
+            if stop_fill_event is not None:
+                stop_fill_event += (
+                    lambda trade_obj, *_args, pair_idx=pair_index: _on_stop_fill(
+                        pair_idx,
+                        trade_obj,
+                    )
+                )
+
+        with state_lock:
+            _refresh_leg_registry_locked()
+            _emit_protection_state_locked(state="protected", reason="tp_registered", force=True)
+            gateway_unsubscribe_ref["fn"] = self._connection.subscribe_gateway_messages(
+                _on_gateway_message
+            )
+
+        final_status = _normalize_status(getattr(trade.orderStatus, "status", None)) or status
+        return OrderAck.now(order_id=order_id, status=final_status)
+
+    async def _submit_ladder_order_detached_3_pairs(
+        self,
+        *,
+        spec: LadderOrderSpec,
+        qualified: Stock,
+        loop: asyncio.AbstractEventLoop,
+    ) -> OrderAck:
+        if len(spec.take_profits) != 3 or len(spec.take_profit_qtys) != 3:
+            raise RuntimeError("Detached 3-pair mode requires exactly 3 take profits and qtys.")
+        if len(spec.stop_updates) < 2:
+            raise RuntimeError("Detached 3-pair mode requires 2 stop update levels.")
+
+        if spec.entry_type == OrderType.MARKET:
+            parent = MarketOrder(spec.side.value, spec.qty, tif=spec.tif)
+        elif spec.entry_type == OrderType.LIMIT:
+            parent = LimitOrder(spec.side.value, spec.qty, spec.entry_price, tif=spec.tif)
+        else:
+            raise RuntimeError(f"Unsupported entry type: {spec.entry_type}")
+
+        parent.transmit = True
+        parent.outsideRth = spec.outside_rth
+        if spec.account:
+            parent.account = spec.account
+        if spec.client_tag:
+            parent.orderRef = spec.client_tag
+
+        parent_spec = _entry_spec_from_ladder(spec)
+        trade = _place_order_sanitized(self._ib, qualified, parent)
+        if self._event_bus:
+            _attach_trade_handlers(trade, parent_spec, self._event_bus)
+            self._event_bus.publish(OrderSent.now(parent_spec))
+
+        order_id = await _wait_for_order_id(trade)
+        if self._event_bus:
+            self._event_bus.publish(OrderIdAssigned.now(parent_spec, order_id))
+
+        status = await _wait_for_order_status(trade)
+        if self._event_bus:
+            self._event_bus.publish(
+                OrderStatusChanged.now(parent_spec, order_id=order_id, status=status)
+            )
+
+        confirmed, filled_qty, position_qty = await _wait_for_inventory_confirmation(
+            ib=self._ib,
+            trade=trade,
+            contract=qualified,
+            account=spec.account,
+            expected_qty=spec.qty,
+            timeout=max(self._connection.config.timeout * 4.0, 4.0),
+        )
+        if not confirmed:
+            if self._connection.config.paper_only and filled_qty > 0:
+                await _flatten_position_market(
+                    ib=self._ib,
+                    contract=qualified,
+                    side=OrderSide.SELL,
+                    qty=int(round(filled_qty)),
+                    tif=spec.tif,
+                    outside_rth=spec.outside_rth,
+                    account=spec.account,
+                    client_tag=spec.client_tag,
+                )
+            raise RuntimeError(
+                "Detached 3-pair exits were not armed because inventory confirmation failed "
+                f"(filled={filled_qty}, position={position_qty})."
+            )
+
+        child_side = OrderSide.SELL if spec.side == OrderSide.BUY else OrderSide.BUY
+        use_stop_limit = _uses_stop_limit(spec.outside_rth)
+        replace_timeout = max(self._connection.config.timeout, 1.0)
+        exit_oca_type = 2
+        pair_indices = (1, 2, 3)
+        pair_oca_group = {
+            1: f"DET3A-{uuid.uuid4().hex[:10]}",
+            2: f"DET3B-{uuid.uuid4().hex[:10]}",
+            3: f"DET3C-{uuid.uuid4().hex[:10]}",
+        }
+        pair_stop_price = {idx: float(spec.stop_loss) for idx in pair_indices}
+        pair_tp_price = {idx: float(spec.take_profits[idx - 1]) for idx in pair_indices}
+        pair_tp_qty = {idx: int(spec.take_profit_qtys[idx - 1]) for idx in pair_indices}
+        reprice_milestones: tuple[tuple[frozenset[int], tuple[int, ...], float], ...] = (
+            (
+                frozenset({1}),
+                (2, 3),
+                _snap_price(float(spec.stop_updates[0]), contract=qualified),
+            ),
+            (
+                frozenset({1, 2}),
+                (3,),
+                _snap_price(float(spec.stop_updates[1]), contract=qualified),
+            ),
+        )
+
+        stop_trades: dict[int, Trade] = {}
+        tp_trades: dict[int, Trade] = {}
+
+        for pair_index in pair_indices:
+            qty = pair_tp_qty[pair_index]
+            stop_price = pair_stop_price[pair_index]
+            oca_group = pair_oca_group[pair_index]
+
+            def _stop_factory(
+                *,
+                pair_qty: int = qty,
+                pair_stop_price: float = stop_price,
+                group: str = oca_group,
+            ) -> object:
+                stop_order = _build_protective_stop_order(
+                    side=child_side,
+                    qty=pair_qty,
+                    stop_price=pair_stop_price,
+                    limit_price=pair_stop_price,
+                    tif=spec.tif,
+                    outside_rth=spec.outside_rth,
+                    account=spec.account,
+                    client_tag=spec.client_tag,
+                    use_stop_limit=use_stop_limit,
+                    stop_limit_buffer_pct=self._outside_rth_stop_limit_buffer_pct,
+                )
+                _apply_oca(stop_order, group=group, oca_type=exit_oca_type)
+                stop_order.parentId = 0
+                stop_order.transmit = True
+                return stop_order
+
+            stop_trade = await _place_order_with_reconcile(
+                ib=self._ib,
+                contract=qualified,
+                order_factory=_stop_factory,
+                expected_qty=qty,
+                expected_parent_id=0,
+                expected_oca_group=oca_group,
+                expected_oca_type=exit_oca_type,
+                timeout=replace_timeout,
+            )
+            stop_trades[pair_index] = stop_trade
+            _publish_stop_mode_selected(
+                event_bus=self._event_bus,
+                symbol=spec.symbol,
+                parent_order_id=order_id,
+                trade=stop_trade,
+                session_phase=SessionPhase.RTH if not spec.outside_rth else SessionPhase.OUTSIDE_RTH,
+                stop_price=stop_price,
+                execution_mode="detached",
+                client_tag=spec.client_tag,
+            )
+            if self._event_bus:
+                _attach_bracket_child_handlers(
+                    stop_trade,
+                    kind=f"detached_stop_{pair_index}",
+                    symbol=spec.symbol,
+                    side=child_side,
+                    qty=qty,
+                    price=stop_price,
+                    parent_order_id=order_id,
+                    client_tag=spec.client_tag,
+                    event_bus=self._event_bus,
+                )
+
+            tp_price = pair_tp_price[pair_index]
+
+            def _tp_factory(
+                *,
+                pair_qty: int = qty,
+                pair_tp_price: float = tp_price,
+                group: str = oca_group,
+            ) -> object:
+                tp_order = LimitOrder(child_side.value, pair_qty, pair_tp_price, tif=spec.tif)
+                _apply_oca(tp_order, group=group, oca_type=exit_oca_type)
+                tp_order.parentId = 0
+                tp_order.transmit = True
+                tp_order.outsideRth = spec.outside_rth
+                if spec.account:
+                    tp_order.account = spec.account
+                if spec.client_tag:
+                    tp_order.orderRef = spec.client_tag
+                return tp_order
+
+            tp_trade = await _place_order_with_reconcile(
+                ib=self._ib,
+                contract=qualified,
+                order_factory=_tp_factory,
+                expected_qty=qty,
+                expected_parent_id=0,
+                expected_oca_group=oca_group,
+                expected_oca_type=exit_oca_type,
+                timeout=replace_timeout,
+            )
+            tp_trades[pair_index] = tp_trade
+            if self._event_bus:
+                _attach_bracket_child_handlers(
+                    tp_trade,
+                    kind=f"detached_tp_{pair_index}",
+                    symbol=spec.symbol,
+                    side=child_side,
+                    qty=qty,
+                    price=tp_price,
+                    parent_order_id=order_id,
+                    client_tag=spec.client_tag,
+                    event_bus=self._event_bus,
+                )
+
+        state_lock = threading.Lock()
+        tp_exec_ids: dict[int, set[str]] = {idx: set() for idx in pair_indices}
+        tp_filled_qty: dict[int, float] = {idx: 0.0 for idx in pair_indices}
+        tp_completed: dict[int, bool] = {idx: False for idx in pair_indices}
+        stop_filled: dict[int, bool] = {idx: False for idx in pair_indices}
+        protection_state: Optional[str] = None
+        incident_pairs_active: set[int] = set()
+        leg_by_order_id: dict[int, tuple[str, int]] = {}
+        gateway_unsubscribe_ref: dict[str, Optional[Callable[[], None]]] = {"fn": None}
+        milestone_applied = [False] * len(reprice_milestones)
+
+        def _register_leg_locked(*, kind: str, pair_index: int, trade_obj: Optional[Trade]) -> None:
+            order_id_value = _trade_order_id(trade_obj)
+            if order_id_value is None:
+                return
+            leg_by_order_id[order_id_value] = (kind, pair_index)
+
+        def _refresh_leg_registry_locked() -> None:
+            leg_by_order_id.clear()
+            for idx in pair_indices:
+                _register_leg_locked(kind="stop", pair_index=idx, trade_obj=stop_trades.get(idx))
+            for idx in pair_indices:
+                _register_leg_locked(kind="tp", pair_index=idx, trade_obj=tp_trades.get(idx))
+
+        def _active_tp_order_ids_locked() -> list[int]:
+            ids: list[int] = []
+            for idx in pair_indices:
+                trade_obj = tp_trades.get(idx)
+                order_id_value = _trade_order_id(trade_obj)
+                if order_id_value is None:
+                    continue
+                status_value = _normalize_status(getattr(trade_obj.orderStatus, "status", None))
+                if status_value in _INACTIVE_ORDER_STATUSES and not tp_completed[idx]:
+                    continue
+                if tp_completed[idx] and status_value in _INACTIVE_ORDER_STATUSES:
+                    continue
+                ids.append(order_id_value)
+            ids.sort()
+            return ids
+
+        def _current_stop_order_id_locked() -> Optional[int]:
+            for idx in reversed(pair_indices):
+                trade_obj = stop_trades.get(idx)
+                if trade_obj is None:
+                    continue
+                status_value = _normalize_status(getattr(trade_obj.orderStatus, "status", None))
+                if status_value in _INACTIVE_ORDER_STATUSES:
+                    continue
+                order_id_value = _trade_order_id(trade_obj)
+                if order_id_value is not None:
+                    return order_id_value
+            for idx in reversed(pair_indices):
+                order_id_value = _trade_order_id(stop_trades.get(idx))
+                if order_id_value is not None:
+                    return order_id_value
+            return None
+
+        def _active_stop_remaining_qty_locked(pair_index: int) -> int:
+            trade_obj = stop_trades.get(pair_index)
+            if trade_obj is None:
+                return 0
+            status_value = _normalize_status(getattr(trade_obj.orderStatus, "status", None))
+            if status_value in _INACTIVE_ORDER_STATUSES:
+                return 0
+            remaining_qty = _maybe_float(getattr(trade_obj.orderStatus, "remaining", None))
+            if remaining_qty is None:
+                remaining_qty = _maybe_float(
+                    getattr(getattr(trade_obj, "order", None), "totalQuantity", None)
+                )
+            if remaining_qty is None:
+                return 0
+            return int(round(max(remaining_qty, 0.0)))
+
+        def _active_stop_total_remaining_qty_locked(*, exclude_pair: Optional[int] = None) -> int:
+            total = 0
+            for idx in pair_indices:
+                if exclude_pair is not None and idx == exclude_pair:
+                    continue
+                total += _active_stop_remaining_qty_locked(idx)
+            return total
+
+        def _emit_protection_state_locked(*, state: str, reason: str, force: bool = False) -> None:
+            nonlocal protection_state
+            active_tp_order_ids = _active_tp_order_ids_locked()
+            if not active_tp_order_ids and not force:
+                protection_state = None
+                return
+            if not force and protection_state == state:
+                return
+            protection_state = state
+            if self._event_bus:
+                self._event_bus.publish(
+                    LadderProtectionStateChanged.now(
+                        symbol=spec.symbol,
+                        parent_order_id=order_id,
+                        state=state,
+                        reason=reason,
+                        stop_order_id=_current_stop_order_id_locked(),
+                        active_take_profit_order_ids=active_tp_order_ids,
+                        client_tag=spec.client_tag,
+                        execution_mode="detached",
+                    )
+                )
+
+        def _close_gateway_subscription_if_idle_locked() -> None:
+            unsubscribe = gateway_unsubscribe_ref["fn"]
+            if unsubscribe is None:
+                return
+            if _active_tp_order_ids_locked():
+                return
+            try:
+                unsubscribe()
+            finally:
+                gateway_unsubscribe_ref["fn"] = None
+
+        async def _handle_child_incident(
+            *,
+            pair_index: int,
+            source_order_id: Optional[int],
+            code: Optional[int],
+            message: Optional[str],
+        ) -> None:
+            with state_lock:
+                if pair_index in incident_pairs_active:
+                    return
+                incident_pairs_active.add(pair_index)
+                child_orders = [
+                    getattr(tp_trades.get(pair_index), "order", None),
+                    getattr(stop_trades.get(pair_index), "order", None),
+                ]
+                emergency_price = min(pair_stop_price.values())
+
+            for child_order in child_orders:
+                _safe_cancel_order(self._ib, child_order)
+            await asyncio.sleep(0.2)
+
+            remaining_qty_raw = await _position_qty_for_contract(
+                self._ib,
+                qualified,
+                account=spec.account,
+                timeout=replace_timeout,
+            )
+            remaining_qty = int(round(max(remaining_qty_raw or 0.0, 0.0)))
+            with state_lock:
+                protected_qty = _active_stop_total_remaining_qty_locked(exclude_pair=pair_index)
+            uncovered_qty = int(round(max(float(remaining_qty - protected_qty), 0.0)))
+            if uncovered_qty <= 0:
+                with state_lock:
+                    incident_pairs_active.discard(pair_index)
+                    _emit_protection_state_locked(
+                        state="protected",
+                        reason=f"child_incident_{code if code is not None else 'unknown'}_covered",
+                        force=True,
+                    )
+                    _close_gateway_subscription_if_idle_locked()
+                return
+
+            with state_lock:
+                _emit_protection_state_locked(
+                    state="unprotected",
+                    reason=f"child_incident_{code if code is not None else 'unknown'}",
+                    force=True,
+                )
+
+            emergency_trade = await _submit_emergency_stop(
+                ib=self._ib,
+                contract=qualified,
+                side=child_side,
+                qty=uncovered_qty,
+                stop_price=emergency_price,
+                tif=spec.tif,
+                outside_rth=spec.outside_rth,
+                account=spec.account,
+                client_tag=spec.client_tag,
+                use_stop_limit=use_stop_limit,
+                stop_limit_buffer_pct=self._outside_rth_stop_limit_buffer_pct,
+                timeout=replace_timeout,
+            )
+            if emergency_trade is not None:
+                if self._event_bus:
+                    _attach_bracket_child_handlers(
+                        emergency_trade,
+                        kind="det70_emergency_stop",
+                        symbol=spec.symbol,
+                        side=child_side,
+                        qty=uncovered_qty,
+                        price=emergency_price,
+                        parent_order_id=order_id,
+                        client_tag=spec.client_tag,
+                        event_bus=self._event_bus,
+                    )
+                with state_lock:
+                    incident_pairs_active.discard(pair_index)
+                    _emit_protection_state_locked(
+                        state="protected",
+                        reason="emergency_stop_armed",
+                        force=True,
+                    )
+                    _close_gateway_subscription_if_idle_locked()
+                return
+
+            if self._event_bus:
+                self._event_bus.publish(
+                    LadderStopLossReplaceFailed.now(
+                        symbol=spec.symbol,
+                        parent_order_id=order_id,
+                        old_order_id=source_order_id,
+                        attempted_qty=uncovered_qty,
+                        attempted_price=emergency_price,
+                        status="emergency_stop_failed",
+                        broker_code=code,
+                        broker_message=message,
+                        client_tag=spec.client_tag,
+                        execution_mode="detached",
+                    )
+                )
+
+            if self._connection.config.paper_only:
+                await _flatten_position_market(
+                    ib=self._ib,
+                    contract=qualified,
+                    side=child_side,
+                    qty=uncovered_qty,
+                    tif=spec.tif,
+                    outside_rth=spec.outside_rth,
+                    account=spec.account,
+                    client_tag=spec.client_tag,
+                )
+
+            with state_lock:
+                incident_pairs_active.discard(pair_index)
+                _emit_protection_state_locked(
+                    state="unprotected",
+                    reason="emergency_stop_failed",
+                    force=True,
+                )
+                _close_gateway_subscription_if_idle_locked()
+
+        async def _reprice_single_pair_stop(
+            *,
+            pair_index: int,
+            stop_price: float,
+        ) -> None:
+            with state_lock:
+                if pair_index in incident_pairs_active:
+                    return
+                stop_trade = stop_trades.get(pair_index)
+                if stop_trade is None:
+                    return
+                if tp_completed[pair_index] or stop_filled[pair_index]:
+                    return
+                current_status = _normalize_status(getattr(stop_trade.orderStatus, "status", None))
+                if current_status in _INACTIVE_ORDER_STATUSES:
+                    return
+                old_order_id = _trade_order_id(stop_trade)
+                if old_order_id is None:
+                    if self._event_bus:
+                        self._event_bus.publish(
+                            LadderStopLossReplaceFailed.now(
+                                symbol=spec.symbol,
+                                parent_order_id=order_id,
+                                old_order_id=None,
+                                attempted_qty=pair_tp_qty[pair_index],
+                                attempted_price=stop_price,
+                                status="missing_stop_order_id",
+                                broker_code=None,
+                                broker_message=f"Pair-{pair_index} stop has no orderId; cannot replace.",
+                                client_tag=spec.client_tag,
+                                execution_mode="detached",
+                            )
+                        )
+                    return
+                previous_price = pair_stop_price[pair_index]
+                stop_order = copy.copy(stop_trade.order)
+                stop_order.orderId = old_order_id
+                stop_order.parentId = 0
+                stop_order.totalQuantity = pair_tp_qty[pair_index]
+                stop_order.auxPrice = stop_price
+                if _is_stop_limit_order(stop_trade.order):
+                    stop_order.lmtPrice = _outside_rth_stop_limit_price(
+                        side=child_side,
+                        stop_price=stop_price,
+                        buffer_pct=self._outside_rth_stop_limit_buffer_pct,
+                    )
+                _apply_oca(
+                    stop_order,
+                    group=pair_oca_group[pair_index],
+                    oca_type=exit_oca_type,
+                )
+                stop_order.tif = spec.tif
+                stop_order.outsideRth = spec.outside_rth
+                stop_order.transmit = True
+                if spec.account:
+                    stop_order.account = spec.account
+                if spec.client_tag:
+                    stop_order.orderRef = spec.client_tag
+
+            error_capture = _GatewayOrderErrorCapture(
+                self._connection.subscribe_gateway_messages,
+                order_id=old_order_id,
+            )
+            replace_trade = _place_order_sanitized(self._ib, qualified, stop_order)
+            try:
+                applied = await _wait_for_order_intent_match(
+                    replace_trade,
+                    expected_qty=pair_tp_qty[pair_index],
+                    expected_parent_id=0,
+                    expected_oca_group=pair_oca_group[pair_index],
+                    expected_oca_type=exit_oca_type,
+                    expected_aux_price=stop_price,
+                    timeout=replace_timeout,
+                )
+            finally:
+                error_capture.close()
+            broker_code, broker_message = error_capture.snapshot()
+
+            with state_lock:
+                stop_trades[pair_index] = replace_trade
+                pair_stop_price[pair_index] = stop_price if applied else previous_price
+                _register_leg_locked(kind="stop", pair_index=pair_index, trade_obj=replace_trade)
+                _refresh_leg_registry_locked()
+
+            if applied and broker_code is None:
+                if self._event_bus:
+                    self._event_bus.publish(
+                        LadderStopLossReplaced.now(
+                            symbol=spec.symbol,
+                            parent_order_id=order_id,
+                            old_order_id=old_order_id,
+                            new_order_id=old_order_id,
+                            old_qty=pair_tp_qty[pair_index],
+                            new_qty=pair_tp_qty[pair_index],
+                            old_price=previous_price,
+                            new_price=stop_price,
+                            reason="price_update",
+                            client_tag=spec.client_tag,
+                            execution_mode="detached",
+                        )
+                    )
+                return
+
+            if self._event_bus:
+                self._event_bus.publish(
+                    LadderStopLossReplaceFailed.now(
+                        symbol=spec.symbol,
+                        parent_order_id=order_id,
+                        old_order_id=old_order_id,
+                        attempted_qty=pair_tp_qty[pair_index],
+                        attempted_price=stop_price,
+                        status=_normalize_status(getattr(replace_trade.orderStatus, "status", None)),
+                        broker_code=broker_code,
+                        broker_message=broker_message,
+                        client_tag=spec.client_tag,
+                        execution_mode="detached",
+                    )
+                )
+            if broker_code in {201, 202, 404}:
+                _schedule_coroutine(
+                    loop,
+                    _handle_child_incident(
+                        pair_index=pair_index,
+                        source_order_id=old_order_id,
+                        code=broker_code,
+                        message=broker_message,
+                    ),
+                )
+
+        async def _reprice_pairs(*, target_pairs: tuple[int, ...], stop_price: float) -> None:
+            for pair_index in target_pairs:
+                await _reprice_single_pair_stop(pair_index=pair_index, stop_price=stop_price)
+
+        def _maybe_schedule_reprices_locked() -> None:
+            completed_pairs = {idx for idx in pair_indices if tp_completed[idx]}
+            for milestone_idx, milestone in enumerate(reprice_milestones):
+                required_pairs, target_pairs, stop_price = milestone
+                if milestone_applied[milestone_idx]:
+                    continue
+                if not required_pairs.issubset(completed_pairs):
+                    continue
+                milestone_applied[milestone_idx] = True
+                _schedule_coroutine(
+                    loop,
+                    _reprice_pairs(target_pairs=target_pairs, stop_price=stop_price),
+                )
+
+        def _gateway_incident_pair_locked(
+            *,
+            order_id_value: int,
+            code: int,
+        ) -> Optional[int]:
+            leg = leg_by_order_id.get(order_id_value)
+            if leg is None:
+                return None
+            leg_kind, pair_index = leg
+            if pair_index in incident_pairs_active:
+                return None
+            if code in {201, 404}:
+                return pair_index
+            if code != 202:
+                return None
+            if leg_kind == "stop":
+                paired_tp_trade = tp_trades.get(pair_index)
+                paired_tp_has_fill = bool(
+                    paired_tp_trade is not None and _has_any_fill(paired_tp_trade)
+                )
+                if tp_completed[pair_index] or paired_tp_has_fill:
+                    return None
+            if leg_kind == "tp":
+                paired_stop_trade = stop_trades.get(pair_index)
+                paired_stop_has_fill = bool(
+                    paired_stop_trade is not None and _has_any_fill(paired_stop_trade)
+                )
+                if stop_filled[pair_index] or paired_stop_has_fill:
+                    return None
+            return pair_index
+
+        def _on_gateway_message(
+            req_id: Optional[int],
+            code: Optional[int],
+            message: Optional[str],
+            advanced: Optional[str],
+        ) -> None:
+            if req_id is None or code is None:
+                return
+            normalized_code = int(code)
+            pair_index: Optional[int]
+            with state_lock:
+                pair_index = _gateway_incident_pair_locked(
+                    order_id_value=int(req_id),
+                    code=normalized_code,
+                )
+            if pair_index is None:
+                return
+            _schedule_coroutine(
+                loop,
+                _handle_child_incident(
+                    pair_index=pair_index,
+                    source_order_id=int(req_id),
+                    code=normalized_code,
+                    message=message or advanced,
+                ),
+            )
+
+        def _on_tp_status(pair_index: int, trade_obj: Trade) -> None:
+            status_value = _normalize_status(getattr(trade_obj.orderStatus, "status", None))
+            with state_lock:
+                paired_stop_trade = stop_trades.get(pair_index)
+                paired_stop_filled = bool(
+                    paired_stop_trade is not None and _has_any_fill(paired_stop_trade)
+                )
+                if status_value == "filled":
+                    tp_completed[pair_index] = True
+                elif (
+                    status_value in _INACTIVE_ORDER_STATUSES
+                    and not stop_filled[pair_index]
+                    and not paired_stop_filled
+                    and pair_index not in incident_pairs_active
+                ):
+                    _schedule_coroutine(
+                        loop,
+                        _handle_child_incident(
+                            pair_index=pair_index,
+                            source_order_id=_trade_order_id(trade_obj),
+                            code=202,
+                            message="Take-profit became inactive before paired stop resolution.",
+                        ),
+                    )
+                _maybe_schedule_reprices_locked()
+                _refresh_leg_registry_locked()
+                _close_gateway_subscription_if_idle_locked()
+
+        def _on_tp_fill(pair_index: int, _trade_obj: Trade, fill_obj: object | None) -> None:
+            with state_lock:
+                fill_qty = _extract_execution_shares(fill_obj)
+                if fill_qty is None or fill_qty <= 0:
+                    return
+                exec_id = _extract_execution_id(fill_obj)
+                if not exec_id:
+                    return
+                seen_exec_ids = tp_exec_ids[pair_index]
+                if exec_id in seen_exec_ids:
+                    return
+                seen_exec_ids.add(exec_id)
+                prev_filled = tp_filled_qty[pair_index]
+                capped_qty = min(float(pair_tp_qty[pair_index]), prev_filled + float(fill_qty))
+                if capped_qty <= prev_filled:
+                    return
+                tp_filled_qty[pair_index] = capped_qty
+                if capped_qty < float(pair_tp_qty[pair_index]) or tp_completed[pair_index]:
+                    return
+                tp_completed[pair_index] = True
+                _maybe_schedule_reprices_locked()
+                _refresh_leg_registry_locked()
+                _close_gateway_subscription_if_idle_locked()
+
+        def _on_stop_status(pair_index: int, trade_obj: Trade) -> None:
+            status_value = _normalize_status(getattr(trade_obj.orderStatus, "status", None))
+            with state_lock:
+                paired_tp_trade = tp_trades.get(pair_index)
+                paired_tp_filled = bool(
+                    paired_tp_trade is not None and _has_any_fill(paired_tp_trade)
+                )
+                if (
+                    status_value in _INACTIVE_ORDER_STATUSES
+                    and not stop_filled[pair_index]
+                    and not tp_completed[pair_index]
+                    and not paired_tp_filled
+                    and pair_index not in incident_pairs_active
+                ):
+                    _schedule_coroutine(
+                        loop,
+                        _handle_child_incident(
+                            pair_index=pair_index,
+                            source_order_id=_trade_order_id(trade_obj),
+                            code=202,
+                            message="Protective stop became inactive before paired TP completion.",
+                        ),
+                    )
+                _refresh_leg_registry_locked()
+                _close_gateway_subscription_if_idle_locked()
+
+        def _on_stop_fill(pair_index: int, trade_obj: Trade) -> None:
+            with state_lock:
+                if pair_index in incident_pairs_active:
+                    return
+                if not _has_any_fill(trade_obj):
+                    return
+                stop_filled[pair_index] = True
+                tp_trade = tp_trades.get(pair_index)
+                if tp_trade is not None:
+                    _safe_cancel_order(self._ib, getattr(tp_trade, "order", None))
+                _refresh_leg_registry_locked()
+                _close_gateway_subscription_if_idle_locked()
+
+        for pair_index in pair_indices:
             tp_trade = tp_trades[pair_index]
             stop_trade = stop_trades[pair_index]
 
