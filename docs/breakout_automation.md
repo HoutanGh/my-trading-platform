@@ -1,6 +1,6 @@
 # Breakout Automation - Production Architecture (apps)
 
-This document describes the production breakout automation architecture in `apps/`, including the current TP ladder and TP reprice behavior.
+This document describes the production breakout automation architecture in `apps/`, including the current bracket and detached ladder execution behavior.
 
 ---
 .
@@ -55,12 +55,13 @@ This document describes the production breakout automation architecture in `apps
 - Streams 1-minute bars from IBKR; optionally 1-second bars for fast entry.
 - Applies breakout rule: enter when bar close is at/above level.
 - Supports:
-  - manual TP/SL (`tp=...`, `tp=1.1-1.3`, `sl=...`)
-  - auto TP ladder (`tp=auto tp_count=2|3` or shorthand `tp-2` / `tp-3`).
-- Auto TP ladder uses historical bars to produce fallback TP levels at watcher start.
-- For auto ladder mode, after full entry fill the app can recalc TP levels from fill price and attempt to replace remaining TP child orders.
+  - bracket mode (single TP/SL)
+  - detached70 mode (2 TP + 2 SL with two OCA pairs)
+  - detached mode (3 TP + 3 SL with three OCA pairs)
+  - auto TP level calculation (`tp=auto tp_count=1|2|3` or shorthand `tp-1` / `tp-2` / `tp-3`).
+- Auto TP mode uses historical bars to produce initial TP levels at watcher start.
 - Emits strategy/order events for audit and CLI visibility.
-- Breakout watcher remains single-fire (one trade attempt), while TP reprice handling is coordinated in CLI event flow after submission.
+- Breakout watcher remains single-fire (one trade attempt).
 
 ---
 
@@ -71,16 +72,18 @@ Operator runs apps CLI and starts a watcher.
 Examples:
 - Basic breakout:
   - `breakout AAPL level=190 qty=1`
-- Manual bracket:
+- Single-TP bracket:
   - `breakout AAPL level=190 qty=1 tp=195 sl=187`
-- Manual ladder:
+- Detached 2-TP ladder (auto-routes to `tp_exec=detached70`, fixed 70/30):
+  - `breakout AAPL level=190 qty=100 tp=195-198 sl=187`
+- Detached 3-TP ladder (auto-routes to `tp_exec=detached`):
   - `breakout AAPL level=190 qty=100 tp=195-198-205 sl=187`
-- Auto ladder (key/value):
-  - `breakout XRTX level=0.42 qty=1000 tp=auto tp_count=2 sl=0.37`
+- Detached 3-TP ladder with custom split:
+  - `breakout AAPL level=190 qty=100 tp=195-198-205 sl=187 tp_alloc=50-30-20`
+- Auto TP ladder (key/value):
+  - `breakout XRTX level=0.42 qty=1000 tp=auto tp_count=3 sl=0.37`
 - Auto ladder shorthand:
   - `breakout XRTX 0.42 1000 tp-2 sl=0.37`
-- Auto ladder shorthand with custom split:
-  - `breakout XRTX 0.42 1000 tp-2 sl=0.37 tp_alloc=85-15`
 
 Stop or check status:
 - `breakout status`
@@ -103,11 +106,14 @@ Quick orders:
   - Wires event bus, IBKR adapters, services, and REPL.
 - `apps/cli/repl.py`
   - Parses breakout commands, resolves TP mode, computes initial auto TP levels, starts/stops watcher tasks.
-  - Hosts TP reprice coordinator (event-driven, post-fill).
+  - Enforces mode matrix:
+    - single TP => bracket
+    - 2 TP ladder => detached70
+    - 3 TP ladder => detached
 - `apps/cli/position_origin_tracker.py`
   - Tracks position origin tag and latest TP/SL display state (including TP updates).
 - `apps/cli/event_printer.py`
-  - Prints selected strategy/order events, including TP update events.
+  - Prints strategy/order events with breakout leg lifecycle labeling (`entry`, `tp1`, `sl1`, `tp2`, `sl2`, `tp3`, `sl3`).
 
 ### Strategy (unique logic)
 - `apps/core/strategies/breakout/logic.py`
@@ -122,7 +128,7 @@ Quick orders:
   - TP computation model (runner-oriented levels from bars).
 - `apps/core/analytics/flow/take_profit/service.py`
   - Adaptive lookback + bar-size retry orchestration.
-  - Supports explicit `anchor_price` (used for fill-based TP recalculation).
+  - Supports explicit `anchor_price` (used by optional fill-based TP recalculation paths).
 
 ### Market data (reusable)
 - `apps/core/market_data/models.py`
@@ -160,17 +166,17 @@ Quick orders:
 2. REPL parses input and resolves TP mode.
 3. If auto TP mode is requested:
    - REPL computes fallback TP ladder using `TakeProfitService` anchored at breakout level.
-   - REPL sets TP qty split (defaults: `tp-2 => 80/20`, `tp-3 => 60/30/10`, override with `tp_alloc`).
+   - REPL sets TP qty split:
+     - `tp-2` routes to detached70 and is normalized to 70/30.
+     - `tp-3` routes to detached and defaults to 60/30/10 (override with `tp_alloc`).
 4. Runner subscribes to slow bars (and optional fast bars) and streaming quotes.
 5. On trigger, runner submits entry + exits:
-   - bracket for single TP
-   - ladder for 2/3 TP levels.
-6. Runner stops (single-fire) after one trade attempt.
-7. For auto ladder mode with reprice enabled:
-   - REPL tracks order and child TP events by `client_tag`.
-   - On full parent fill, REPL recalculates TP levels from `anchor_price=fill_price`.
-   - REPL replaces TP child limit prices if no TP has filled and replace acks are accepted.
-   - On full success, REPL publishes `BreakoutTakeProfitsUpdated`.
+   - bracket for single TP + SL.
+   - detached70 for 2 TP + 2 SL (two OCA pairs).
+   - detached for 3 TP + 3 SL (three OCA pairs).
+6. Detached execution paths arm exits only after inventory confirmation (fill + execution qty + position check).
+   - If confirmation fails, detached exits are not armed and the attempt fails safe.
+7. Runner stops (single-fire) after one trade attempt.
 
 ---
 
@@ -179,25 +185,30 @@ Quick orders:
 - Default entry type: limit at ask.
 - Market entry is supported via explicit `entry=market`.
 
-Manual bracket:
+Bracket (single TP):
 - `tp` + `sl` with single TP price.
 - Stop-loss uses stop-limit: initial limit equals `sl`; when the stop is elected, limit reprices to touch (`bid` for SELL, `ask` for BUY).
 
-Manual ladder:
-- `tp=price1-price2` or `tp=price1-price2-price3` + `sl`.
-- Optional `tp_alloc=` supports custom quantity splits.
-- Managed stop-loss uses stop-limit with the same trigger-time touch repricing behavior.
+Detached70 (2 TP + 2 SL):
+- `tp=price1-price2` + `sl` (or `tp=auto tp_count=2`).
+- Uses two independent OCA pairs: `tp1<->sl1`, `tp2<->sl2`.
+- Quantity split is fixed to 70/30.
+- After TP1 fully fills, SL2 is repriced to first stop-update level.
 
-Auto ladder:
-- `tp=auto tp_count=2|3` or `tp-2` / `tp-3` + `sl`.
-- Initial TP ladder is computed at breakout start (fallback protection).
-- Fill-time reprice tries to replace remaining TP levels using fill-anchored TP calculation.
+Detached (3 TP + 3 SL):
+- `tp=price1-price2-price3` + `sl` (or `tp=auto tp_count=3`).
+- Uses three independent OCA pairs: `tp1<->sl1`, `tp2<->sl2`, `tp3<->sl3`.
+- Supports custom `tp_alloc` splits (must sum to qty).
+- Stop repricing milestones:
+  - after TP1 full fill: SL2 and SL3 are repriced to `stop_updates[0]`
+  - after TP1+TP2 full fill: SL3 is repriced to `stop_updates[1]`
 
-V1 reprice safety rules:
-- If any TP fill is detected before/during reprice, reprice is skipped.
-- If child TP order IDs are unavailable by timeout, reprice is skipped.
-- If any replace ack is not accepted, reprice is skipped and no TP-update success event is emitted.
-- TP-update event is only published after all targeted TP child replacements are accepted.
+Mode routing and validation:
+- `tp_exec=attached` does not support ladders; use single `tp=` + `sl=` bracket.
+- If `tp_exec` is omitted, CLI auto-selects:
+  - 2 TP ladder => `detached70`
+  - 3 TP ladder => `detached`
+- Detached modes (`detached70`, `detached`) disable fill-time TP reprice-on-fill.
 
 ---
 
@@ -213,7 +224,7 @@ Emitted events (relevant groups):
 - Bar stream health/recovery: `BarStreamStalled`, `BarStreamRecovered`, `BarStreamRecoveryStarted`, `BarStreamRecoveryFailed`, `BarStreamCompetingSessionBlocked`, `BarStreamCompetingSessionCleared`, `BarStreamRecoveryScanScheduled`.
 
 Display behavior:
-- `event_printer` shows `BreakoutTpUpdated` when TP update event is emitted.
+- `event_printer` shows narrative lifecycle lines for entries/exits and protection state changes.
 - `positions` TP column uses latest tracked TP list when available (not only TP1).
 
 Logging:
@@ -228,8 +239,9 @@ Logging:
 - Active IBKR connection required to start watchers.
 - Paper/live guard behavior unchanged (paper defaults/ports).
 - Limit-at-ask entry rejects on missing/stale quote.
-- TP reprice is conservative by design:
-  - prefers skip over forcing uncertain state transitions.
+- Detached exits are armed only after inventory confirmation.
+- Child-order incident handling (codes like `201/202/404`) attempts to keep remaining inventory protected (including emergency stop path).
+- In paper mode, unrecoverable uncovered inventory path can flatten as a hard safety fallback.
 
 ---
 
@@ -237,22 +249,22 @@ Logging:
 
 Core CLI fields:
 - Required: `symbol`, `level`, `qty`
-- Optional common: `tp`, `sl`, `rth`, `bar`, `fast`, `fast_bar`, `max_bars`, `tif`, `outside_rth`, `entry`, `quote_age`, `account`, `client_tag`
+- Optional common: `tp`, `sl`, `tp_exec`, `rth`, `bar`, `fast`, `fast_bar`, `max_bars`, `tif`, `outside_rth`, `entry`, `quote_age`, `account`, `client_tag`
 
 Auto TP / reprice fields:
 - `tp=auto`
 - `tp_count=1|2|3`
 - shorthand token: `tp-1|tp-2|tp-3`
-- `tp_alloc=...` (example: `80-20`, `60-30-10`)
+- `tp_alloc=...` (primarily for 3-TP detached path; example: `60-30-10`)
 - `tp_bar` / `tp_bar_size` (historical bar size for TP calculation)
 - `tp_rth` / `tp_use_rth`
-- `tp_timeout` (seconds for child TP ID readiness)
+- `tp_timeout` (seconds for child TP ID readiness; relevant to optional TP reprice coordinator paths)
 
 Defaults:
 - If `rth=false`, breakout orders default `outside_rth=true`.
-- Auto TP default allocation:
-  - `tp-2 => 80/20`
-  - `tp-3 => 60/30/10`
+- Auto TP default allocation by active execution mode:
+  - `tp-2 => detached70 => 70/30`
+  - `tp-3 => detached => 60/30/10`
 
 Environment:
 - IBKR connection env vars unchanged (`IB_HOST`, `IB_PORT`, `IB_CLIENT_ID`, `PAPER_ONLY`, etc.).
@@ -277,15 +289,14 @@ Environment:
 
 - Watcher lifecycle is single-fire.
 - Breakout trigger logic is still fixed (close >= level).
-- Fill-time TP reprice currently targets auto ladder flow (2/3 TP levels).
-- Reprice applies sequential TP replaces; if interrupted, broker may hold partially updated levels (CLI marks this as skipped/partial and does not emit success TP-update event).
+- Fill-time TP reprice-on-fill is disabled for detached ladder modes.
 - Replace support remains limited to orders tracked in current session.
 
 ---
 
 ## 10. Future enhancements (optional)
 
-- Explicit structured events for TP reprice skip/failure reasons.
+- Explicit structured events for optional TP reprice coordinator paths.
 - Broker-state reconciliation after partial replace scenarios.
 - Reprice support for broader TP modes and optional stop-update re-optimization.
 - Strategy schedules/re-arm and richer risk/session constraints.
@@ -297,8 +308,8 @@ Environment:
 
 - IBKR bar timestamps are bar-start times; strategy sees bars on close.
 - Starting mid-bar means first seen bar may already be the close that triggers entry.
-- For TP reprice debugging, check:
-  - console lines beginning with `TP reprice ...`
-  - `BreakoutTakeProfitsUpdated` in `apps/journal/events.jsonl`
-  - child order events (`BracketChildOrderStatusChanged`, `BracketChildOrderFilled`).
-- `positions` TP display reflects latest tracked TP updates after the TP update event is emitted.
+- For detached ladder debugging, check:
+  - child order events (`BracketChildOrderStatusChanged`, `BracketChildOrderFilled`)
+  - protection/stop events (`LadderProtectionStateChanged`, `LadderStopLossReplaced`, `LadderStopLossReplaceFailed`)
+  - gateway incident correlation in CLI output (rejections and cancel races tied to leg/stage)
+- `positions` TP display reflects latest tracked TP levels from breakout config and any emitted TP update events.
