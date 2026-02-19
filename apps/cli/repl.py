@@ -5,6 +5,7 @@ import copy
 import json
 import os
 import re
+import signal
 import shlex
 import sys
 import traceback
@@ -235,8 +236,12 @@ class REPL:
             except EOFError:
                 print()
                 break
-            except (KeyboardInterrupt, asyncio.CancelledError):
-                # Keep the REPL alive when Ctrl+C interrupts input or an in-flight command.
+            except KeyboardInterrupt:
+                # Keep the REPL alive when Ctrl+C interrupts input.
+                print("\nInterrupted. Type 'quit' to exit.")
+                continue
+            except asyncio.CancelledError:
+                self._clear_cancel_state()
                 print("\nInterrupted. Type 'quit' to exit.")
                 continue
             line = line.strip()
@@ -249,16 +254,102 @@ class REPL:
             if not spec:
                 print(f"Unknown command: {cmd_name}. Type 'help' to list commands.")
                 continue
-            try:
-                await spec.handler(args, kwargs)
-            except (KeyboardInterrupt, asyncio.CancelledError):
-                print("Command interrupted.")
-            except Exception as exc:
-                self._log_cli_error(exc, cmd_name, line)
-                _print_exception("Command error", exc)
+            await self._run_command_interruptibly(spec, args, kwargs, line)
         await self._stop_pnl_processes()
         await self._stop_breakouts(persist=True)
         await self._stop_tp_reprice_tasks()
+
+    async def _run_command_interruptibly(
+        self,
+        spec: CommandSpec,
+        args: list[str],
+        kwargs: dict[str, str],
+        raw_line: str,
+    ) -> None:
+        loop = asyncio.get_running_loop()
+        command_task = loop.create_task(spec.handler(args, kwargs))
+        interrupted = False
+        sigint_installed = False
+        previous_sigint_handler: object = signal.getsignal(signal.SIGINT)
+
+        def _cancel_command() -> None:
+            nonlocal interrupted
+            interrupted = True
+            if not command_task.done():
+                command_task.cancel()
+
+        try:
+            try:
+                loop.add_signal_handler(signal.SIGINT, _cancel_command)
+                sigint_installed = True
+            except (NotImplementedError, RuntimeError, ValueError):
+                sigint_installed = False
+
+            try:
+                await command_task
+            except KeyboardInterrupt:
+                interrupted = True
+            except asyncio.CancelledError:
+                interrupted = True
+                self._clear_cancel_state()
+            except Exception as exc:
+                self._log_cli_error(exc, spec.name, raw_line)
+                _print_exception("Command error", exc)
+
+            if interrupted:
+                await self._cancel_command_with_fallback(command_task)
+                print("Command interrupted.")
+        finally:
+            if sigint_installed:
+                try:
+                    loop.remove_signal_handler(signal.SIGINT)
+                except Exception:
+                    pass
+            try:
+                signal.signal(signal.SIGINT, previous_sigint_handler)
+            except (TypeError, ValueError):
+                pass
+
+    async def _cancel_command_with_fallback(self, command_task: asyncio.Task[object]) -> None:
+        if command_task.done():
+            await asyncio.gather(command_task, return_exceptions=True)
+            return
+
+        command_task.cancel()
+        if await self._wait_for_task_completion(command_task, timeout=0.75):
+            return
+
+        if self._connection.status().get("connected"):
+            print("Interrupt: forcing broker disconnect to release pending command...")
+            self._connection.disconnect()
+
+        command_task.cancel()
+        if await self._wait_for_task_completion(command_task, timeout=1.5):
+            return
+
+        print("Warning: command did not stop cleanly.")
+
+    async def _wait_for_task_completion(
+        self,
+        task: asyncio.Task[object],
+        *,
+        timeout: float,
+    ) -> bool:
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(asyncio.gather(task, return_exceptions=True)),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            return task.done()
+        return True
+
+    def _clear_cancel_state(self) -> None:
+        current = asyncio.current_task()
+        if current is None:
+            return
+        while current.cancelling():
+            current.uncancel()
 
     def _register_commands(self) -> None:
         self._register(
@@ -1697,7 +1788,10 @@ class REPL:
     async def _prompt_yes_no(self, prompt: str) -> bool:
         try:
             response = await asyncio.to_thread(input, prompt)
-        except (EOFError, KeyboardInterrupt, asyncio.CancelledError):
+        except asyncio.CancelledError:
+            self._clear_cancel_state()
+            return False
+        except (EOFError, KeyboardInterrupt):
             return False
         if not response:
             return False
