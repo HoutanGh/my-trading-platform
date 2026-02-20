@@ -128,3 +128,4 @@ def test_maybe_pnl_float_filters_non_finite_values() -> None:
     assert _maybe_pnl_float(1.25) == 1.25
     assert _maybe_pnl_float(float("nan")) is None
     assert _maybe_pnl_float(float("inf")) is None
+    assert _maybe_pnl_float(1.7976931348623157e308) is None

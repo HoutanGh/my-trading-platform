@@ -5,6 +5,8 @@ from typing import Optional
 
 from apps.core.positions.models import PositionSnapshot
 
+_IB_UNSET_DOUBLE = 1.7976931348623157e308
+
 
 def format_positions_realized_table(
     positions: list[PositionSnapshot],
@@ -71,6 +73,8 @@ def _as_finite_float(value: Optional[float]) -> Optional[float]:
         return None
     as_float = float(value)
     if not math.isfinite(as_float):
+        return None
+    if as_float == _IB_UNSET_DOUBLE:
         return None
     return as_float
 

@@ -81,3 +81,17 @@ def test_format_positions_realized_table_ignores_nan_realized_values() -> None:
     )
 
     assert lines == []
+
+
+def test_format_positions_realized_table_ignores_ib_unset_double() -> None:
+    lines = format_positions_realized_table(
+        [
+            _position(symbol="OPEN", sec_type="STK", qty=10, realized_pnl=1.7976931348623157e308),
+            _position(symbol="RXT", sec_type="STK", qty=1, realized_pnl=90.8635),
+        ]
+    )
+
+    assert lines
+    joined = "\n".join(lines)
+    assert "OPEN" not in joined
+    assert "RXT" in joined

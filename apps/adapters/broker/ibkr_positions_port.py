@@ -11,6 +11,8 @@ from apps.adapters.broker.ibkr_connection import IBKRConnection
 from apps.core.positions.models import PositionSnapshot
 from apps.core.positions.ports import PositionsPort
 
+_IB_UNSET_DOUBLE = 1.7976931348623157e308
+
 
 class IBKRPositionsPort(PositionsPort):
     def __init__(self, connection: IBKRConnection) -> None:
@@ -218,6 +220,9 @@ def _maybe_pnl_float(value: object) -> Optional[float]:
     if as_float is None:
         return None
     if not math.isfinite(as_float):
+        return None
+    # IBKR uses UNSET_DOUBLE as a sentinel for "value unavailable".
+    if as_float == _IB_UNSET_DOUBLE:
         return None
     return as_float
 
