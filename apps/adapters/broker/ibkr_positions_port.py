@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import math
+from dataclasses import replace
 from typing import Optional
 
 from ib_insync import IB
@@ -66,12 +68,21 @@ class IBKRPositionsPort(PositionsPort):
                     continue
                 print(
                     f"Warning: account updates timed out for {acct}; "
-                    "falling back to reqPositions (market/PnL fields may be blank)."
+                    "falling back to reqPositions; enriching PnL via reqPnLSingle when available."
                 )
+                fallback_snapshots: list[PositionSnapshot] = []
                 for item in fallback:
                     snapshot = _to_position_snapshot(item, acct)
                     if snapshot:
-                        snapshots.append(snapshot)
+                        fallback_snapshots.append(snapshot)
+                if fallback_snapshots:
+                    fallback_snapshots = await _enrich_with_single_position_pnl(
+                        self._ib,
+                        fallback_snapshots,
+                        account=acct,
+                        wait_seconds=min(max(self._connection.config.timeout * 0.2, 0.25), 1.0),
+                    )
+                    snapshots.extend(fallback_snapshots)
         return snapshots
 
 
@@ -96,6 +107,53 @@ async def _fetch_positions(ib: IB, *, timeout: float) -> list[object]:
     return await asyncio.wait_for(ib.reqPositionsAsync(), timeout=timeout)
 
 
+async def _enrich_with_single_position_pnl(
+    ib: IB,
+    snapshots: list[PositionSnapshot],
+    *,
+    account: str,
+    wait_seconds: float,
+) -> list[PositionSnapshot]:
+    updated = list(snapshots)
+    subscriptions: list[tuple[int, int, object]] = []
+    for idx, snapshot in enumerate(updated):
+        con_id = snapshot.con_id
+        if con_id is None or con_id <= 0:
+            continue
+        if snapshot.realized_pnl is not None and snapshot.unrealized_pnl is not None:
+            continue
+        try:
+            pnl = ib.reqPnLSingle(account, "", con_id)
+        except Exception:
+            continue
+        subscriptions.append((idx, con_id, pnl))
+
+    if not subscriptions:
+        return updated
+
+    try:
+        if wait_seconds > 0:
+            await asyncio.sleep(wait_seconds)
+        for idx, _con_id, pnl in subscriptions:
+            realized = _maybe_pnl_float(getattr(pnl, "realizedPnL", None))
+            unrealized = _maybe_pnl_float(getattr(pnl, "unrealizedPnL", None))
+            if realized is None and unrealized is None:
+                continue
+            current = updated[idx]
+            updated[idx] = replace(
+                current,
+                realized_pnl=realized if realized is not None else current.realized_pnl,
+                unrealized_pnl=unrealized if unrealized is not None else current.unrealized_pnl,
+            )
+    finally:
+        for _idx, con_id, _pnl in subscriptions:
+            try:
+                ib.cancelPnLSingle(account, "", con_id)
+            except Exception:
+                continue
+    return updated
+
+
 def _to_snapshot(item: object, account_hint: str) -> Optional[PositionSnapshot]:
     contract = getattr(item, "contract", None)
     if contract is None:
@@ -117,8 +175,8 @@ def _to_snapshot(item: object, account_hint: str) -> Optional[PositionSnapshot]:
         avg_cost=_maybe_float(getattr(item, "averageCost", None)),
         market_price=_maybe_float(getattr(item, "marketPrice", None)),
         market_value=_maybe_float(getattr(item, "marketValue", None)),
-        unrealized_pnl=_maybe_float(getattr(item, "unrealizedPNL", None)),
-        realized_pnl=_maybe_float(getattr(item, "realizedPNL", None)),
+        unrealized_pnl=_maybe_pnl_float(getattr(item, "unrealizedPNL", None)),
+        realized_pnl=_maybe_pnl_float(getattr(item, "realizedPNL", None)),
         con_id=con_id,
     )
 
@@ -153,6 +211,15 @@ def _maybe_float(value: object) -> Optional[float]:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _maybe_pnl_float(value: object) -> Optional[float]:
+    as_float = _maybe_float(value)
+    if as_float is None:
+        return None
+    if not math.isfinite(as_float):
+        return None
+    return as_float
 
 
 def _maybe_int(value: object) -> Optional[int]:

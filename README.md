@@ -146,6 +146,8 @@ Commands (current):
 - can-trade SYMBOL [SYMBOL ...] [side=BUY|SELL] [qty=1] [tif=DAY] [outside_rth=true|false] [exchange=SMART] [currency=USD] [account=...]
 - breakout SYMBOL level=... qty=... [tp=...] [sl=...] [rth=true|false] [bar=1 min] [max_bars=...]
 - orders [pending]
+- positions [account=...]
+- positions realized [account=...] [sort=asc|desc] [min=...]
 - ingest-flex csv=... account=... [source=flex]
 - set key=value [key=value ...]
 - show config

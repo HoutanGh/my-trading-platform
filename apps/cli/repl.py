@@ -25,6 +25,7 @@ from ib_insync import MarketOrder, Stock
 from apps.adapters.broker.ibkr_connection import IBKRConnection
 from apps.cli.event_printer import suppress_gateway_req_id
 from apps.cli.order_tracker import OrderTracker
+from apps.cli.positions_realized_table import format_positions_realized_table
 from apps.cli.position_origin_tracker import PositionOriginTracker
 from apps.core.analytics.flow.take_profit import TakeProfitRequest, TakeProfitService
 from apps.core.active_orders.models import ActiveOrderSnapshot
@@ -442,7 +443,10 @@ class REPL:
                 name="positions",
                 handler=self._cmd_positions,
                 help="Show current positions from IBKR.",
-                usage="positions [account=...]",
+                usage=(
+                    "positions [account=...] "
+                    "| positions realized [account=...] [sort=asc|desc] [min=...]"
+                ),
                 aliases=("pos",),
             )
         )
@@ -648,7 +652,7 @@ class REPL:
                 "scope=",
             ]
         if name == "positions":
-            return ["account="]
+            return ["realized", "realised", "account=", "sort=", "min="]
         if name == "ingest-flex":
             return ["csv=", "account=", "source="]
         if name == "show":
@@ -2551,10 +2555,54 @@ class REPL:
         if not self._connection.status().get("connected"):
             print("Not connected. Use `connect` before requesting positions.")
             return
+        normalized_args = list(_args)
+        show_realized = False
+        if normalized_args:
+            subcommand = normalized_args[0].strip().lower()
+            if subcommand in {"realized", "realised"}:
+                show_realized = True
+                normalized_args = normalized_args[1:]
+        if normalized_args:
+            print(self._commands["positions"].usage)
+            return
+        allowed_kwargs = {"account"}
+        if show_realized:
+            allowed_kwargs.update({"sort", "min"})
+        unknown_kwargs = sorted(key for key in _kwargs if key not in allowed_kwargs)
+        if unknown_kwargs:
+            unknown_text = ", ".join(unknown_kwargs)
+            print(f"Unknown positions option(s): {unknown_text}")
+            print(self._commands["positions"].usage)
+            return
+        sort_desc = True
+        if show_realized:
+            sort_value = (_kwargs.get("sort") or "desc").strip().lower()
+            if sort_value not in {"asc", "desc"}:
+                print("sort must be 'asc' or 'desc'")
+                return
+            sort_desc = sort_value == "desc"
+        min_realized = None
+        if show_realized and "min" in _kwargs:
+            min_realized = _coerce_float(_kwargs.get("min"))
+            if min_realized is None:
+                print("min must be a number")
+                return
         account = _kwargs.get("account") or _config_get(self._config, "account")
         positions = await self._positions_service.list_positions(account=account)
         if not positions:
             print("No positions found.")
+            return
+        if show_realized:
+            lines = format_positions_realized_table(
+                positions,
+                sort_desc=sort_desc,
+                min_realized=min_realized,
+            )
+            if not lines:
+                print("No stock positions with realized P&L found.")
+                return
+            for line in lines:
+                print(line)
             return
         tag_lookup = None
         exit_lookup = None
@@ -3526,7 +3574,11 @@ def _flag_aliases(command: str) -> dict[str, str]:
             "s": "scope",
         }
     if command == "positions":
-        return {"a": "account"}
+        return {
+            "a": "account",
+            "s": "sort",
+            "m": "min",
+        }
     return {}
 
 
