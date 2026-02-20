@@ -111,7 +111,7 @@ Quick orders:
     - 2 TP ladder => detached70
     - 3 TP ladder => detached
 - `apps/cli/position_origin_tracker.py`
-  - Tracks position origin tag and latest TP/SL display state (including TP updates).
+  - Tracks position origin tag and latest TP/SL display state.
 - `apps/cli/event_printer.py`
   - Prints strategy/order events with breakout leg lifecycle labeling (`entry`, `tp1`, `sl1`, `tp2`, `sl2`, `tp3`, `sl3`).
 
@@ -121,14 +121,14 @@ Quick orders:
 - `apps/core/strategies/breakout/runner.py`
   - Executes streaming breakout strategy and submits market/limit/bracket/ladder entries.
 - `apps/core/strategies/breakout/events.py`
-  - Breakout lifecycle events and TP update event (`BreakoutTakeProfitsUpdated`).
+  - Breakout lifecycle events.
 
 ### Analytics (flow)
 - `apps/core/analytics/flow/take_profit/calculator.py`
   - TP computation model (runner-oriented levels from bars).
 - `apps/core/analytics/flow/take_profit/service.py`
   - Adaptive lookback + bar-size retry orchestration.
-  - Supports explicit `anchor_price` (used by optional fill-based TP recalculation paths).
+  - Supports explicit `anchor_price` (used for breakout auto-TP calculations).
 
 ### Market data (reusable)
 - `apps/core/market_data/models.py`
@@ -208,7 +208,7 @@ Mode routing and validation:
 - If `tp_exec` is omitted, CLI auto-selects:
   - 2 TP ladder => `detached70`
   - 3 TP ladder => `detached`
-- Detached modes (`detached70`, `detached`) disable fill-time TP reprice-on-fill.
+- TP ladder prices are fixed at submit time; detached modes only reprice stop legs per ladder milestones.
 
 ---
 
@@ -216,7 +216,6 @@ Mode routing and validation:
 
 Emitted events (relevant groups):
 - Breakout lifecycle: `BreakoutStarted`, `BreakoutBreakDetected`, `BreakoutFastTriggered`, `BreakoutConfirmed`, `BreakoutRejected`, `BreakoutStopped`.
-- TP update: `BreakoutTakeProfitsUpdated`.
 - Orders: `OrderIntent`, `OrderSent`, `OrderIdAssigned`, `OrderStatusChanged`, `OrderFilled`.
 - Bracket/ladder children: `BracketChildOrderStatusChanged`, `BracketChildOrderFilled`.
 - Ladder stop safety: `LadderStopLossReplaced`, `LadderStopLossReplaceFailed`, `LadderStopLossCancelled`, `LadderProtectionStateChanged`.
@@ -251,14 +250,11 @@ Core CLI fields:
 - Required: `symbol`, `level`, `qty`
 - Optional common: `tp`, `sl`, `tp_exec`, `rth`, `bar`, `fast`, `fast_bar`, `max_bars`, `tif`, `outside_rth`, `entry`, `quote_age`, `account`, `client_tag`
 
-Auto TP / reprice fields:
+Auto TP fields:
 - `tp=auto`
 - `tp_count=1|2|3`
 - shorthand token: `tp-1|tp-2|tp-3`
 - `tp_alloc=...` (primarily for 3-TP detached path; example: `60-30-10`)
-- `tp_bar` / `tp_bar_size` (historical bar size for TP calculation)
-- `tp_rth` / `tp_use_rth`
-- `tp_timeout` (seconds for child TP ID readiness; relevant to optional TP reprice coordinator paths)
 
 Defaults:
 - If `rth=false`, breakout orders default `outside_rth=true`.
@@ -289,16 +285,14 @@ Environment:
 
 - Watcher lifecycle is single-fire.
 - Breakout trigger logic is still fixed (close >= level).
-- Fill-time TP reprice-on-fill is disabled for detached ladder modes.
+- TP ladder prices are fixed at entry submit time.
 - Replace support remains limited to orders tracked in current session.
 
 ---
 
 ## 10. Future enhancements (optional)
 
-- Explicit structured events for optional TP reprice coordinator paths.
 - Broker-state reconciliation after partial replace scenarios.
-- Reprice support for broader TP modes and optional stop-update re-optimization.
 - Strategy schedules/re-arm and richer risk/session constraints.
 - Deeper analytics modules (macro/flow/micro) feeding strategy presets.
 
@@ -312,4 +306,4 @@ Environment:
   - child order events (`BracketChildOrderStatusChanged`, `BracketChildOrderFilled`)
   - protection/stop events (`LadderProtectionStateChanged`, `LadderStopLossReplaced`, `LadderStopLossReplaceFailed`)
   - gateway incident correlation in CLI output (rejections and cancel races tied to leg/stage)
-- `positions` TP display reflects latest tracked TP levels from breakout config and any emitted TP update events.
+- `positions` TP display reflects latest tracked TP levels from breakout config.

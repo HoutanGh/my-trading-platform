@@ -1208,7 +1208,7 @@ class REPL:
                     if tp_alloc_raw is not None:
                         ratios = _parse_take_profit_ratios(tp_alloc_raw, tp_count)
                         if ratios is None:
-                            print("tp_alloc must match tp_count, e.g. 80-20 or 60-30-10")
+                            print("tp_alloc must match tp_count, e.g. 70-30 or 60-30-10")
                             return
                     try:
                         take_profit_qtys = _split_qty_by_ratios(qty, ratios)
@@ -1236,7 +1236,7 @@ class REPL:
                     if tp_alloc_raw is not None:
                         ratios = _parse_take_profit_ratios(tp_alloc_raw, len(take_profits))
                         if ratios is None:
-                            print("tp_alloc must match ladder size, e.g. 80-20 or 60-30-10")
+                            print("tp_alloc must match ladder size, e.g. 70-30 or 60-30-10")
                             return
                         try:
                             take_profit_qtys = _split_qty_by_ratios(qty, ratios)
@@ -3218,7 +3218,7 @@ def _default_take_profit_ratios(count: int) -> list[float]:
     if count == 1:
         return [1.0]
     if count == 2:
-        return [0.8, 0.2]
+        return [0.7, 0.3]
     if count == 3:
         return [0.6, 0.3, 0.1]
     raise ValueError("count must be 1, 2, or 3")
