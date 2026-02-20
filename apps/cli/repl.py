@@ -426,11 +426,11 @@ class REPL:
                 handler=self._cmd_breakout,
                 help="Start or cancel a breakout watcher.",
                 usage=(
-                    "breakout SYMBOL level=... qty=... [tp=...|tp=1.1-1.3|tp=auto tp_count=2|3] [sl=...] [rth=true|false] [bar=1 min] "
+                    "breakout SYMBOL level=... qty=... [tp=...|tp=1.1-1.3|tp=auto tp_count=1|2|3] [sl=...] [rth=true|false] [bar=1 min] "
                     "[fast=true|false] [fast_bar=1 secs] [max_bars=...] [tif=DAY] [outside_rth=true|false] "
                     "[entry=limit|market] [quote_age=...] [tp_exec=attached|detached|detached70] [account=...] [client_tag=...] "
                     "| breakout SYMBOL LEVEL QTY [TP] [SL] "
-                    "| breakout SYMBOL LEVEL QTY tp-2 [SL] "
+                    "| breakout SYMBOL LEVEL QTY tp-2|tp-3 [SL] "
                     "| breakout status | breakout cancel [SYMBOL ...|ALL]"
                 ),
             )
@@ -1060,21 +1060,18 @@ class REPL:
 
         tp_raw = kwargs.get("tp") or positional_tp or _config_get(self._config, "tp")
         sl_raw = kwargs.get("sl") or positional_sl or _config_get(self._config, "sl")
-        tp_count_raw = kwargs.get("tp_count") or _config_get(self._config, "tp_count")
-        tp_alloc_raw = kwargs.get("tp_alloc") or _config_get(self._config, "tp_alloc")
+        tp_count_kw = kwargs.get("tp_count")
+        tp_alloc_kw = kwargs.get("tp_alloc")
+        tp_exec_kw = kwargs.get("tp_exec") or kwargs.get("ladder_exec")
+        tp_count_raw = tp_count_kw or _config_get(self._config, "tp_count")
+        tp_alloc_raw = tp_alloc_kw or _config_get(self._config, "tp_alloc")
         tp_timeout_raw = kwargs.get("tp_timeout") or _config_get(self._config, "tp_timeout")
         tp_exec_raw = (
-            kwargs.get("tp_exec")
-            or kwargs.get("ladder_exec")
+            tp_exec_kw
             or _config_get(self._config, "tp_exec")
             or _config_get(self._config, "ladder_exec")
         )
-        tp_exec_explicit = tp_exec_raw is not None and str(tp_exec_raw).strip() != ""
-        try:
-            ladder_execution_mode = _parse_ladder_execution_mode(tp_exec_raw)
-        except ValueError:
-            print("tp_exec must be 'attached', 'detached', or 'detached70'")
-            return
+        tp_exec_explicit = tp_exec_kw is not None and str(tp_exec_kw).strip() != ""
 
         auto_tp_count_from_value = (
             _parse_tp_mode_token(str(tp_raw))
@@ -1086,12 +1083,24 @@ class REPL:
 
         if auto_tp_count_from_token is not None:
             tp_raw = "auto"
-            if tp_count_raw is not None:
-                parsed = _coerce_int(tp_count_raw)
+            # Shorthand token must override persisted defaults; only fail on
+            # explicit same-command tp_count conflicts.
+            if tp_count_kw is not None:
+                parsed = _coerce_int(tp_count_kw)
                 if parsed is None or parsed != auto_tp_count_from_token:
                     print("tp_count must match tp-<n> when both are provided")
                     return
             tp_count_raw = str(auto_tp_count_from_token)
+            if tp_alloc_kw is None:
+                tp_alloc_raw = None
+            if not tp_exec_explicit:
+                tp_exec_raw = None
+
+        try:
+            ladder_execution_mode = _parse_ladder_execution_mode(tp_exec_raw)
+        except ValueError:
+            print("tp_exec must be 'attached', 'detached', or 'detached70'")
+            return
 
         take_profit = None
         take_profits = None
