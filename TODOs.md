@@ -1,8 +1,6 @@
 ## GENERAL TODOs
 - [ ] Investment Analysis
     - [ ] Research
-- [ ] Calculating breakouts
-    - [ ] Research
 - [ ] Options Pricing Prediction
     - [ ] Research
 - [ ] Improving normal BUY/SELL LMT/MKTs
@@ -44,6 +42,15 @@
 - [ ] ====== breakout took 1.7 seconds to fill ======= (fill bar)
 - [ ] get all the errors possible then cleanup
 
+### 21/02/26
+- [ ] Calculating breakouts
+    - [ ] Research
+- [ ] change breakout status to breakouts
+- [ ] ib_async migration
+- [ ] need to accommodate for haults
+- [ ] breakout status should be shown as a table
+- [ ] cli cleaning
+
 ### 20/02/26
 - [ ] historical farm disconnects - dont know if it reconnects
 - [ ] realised gains table
@@ -53,9 +60,8 @@
 - [ ] the stop loss shouldnt go to the first tp, should go to breakeven or a bit more
 - [ ] understand the trades command
 - [x] the self-calc take profits should be accounted for also
-- [ ] ib_async migration
 - [x] remove stale code
-- [ ] change breakout status to breakouts
+
 
 
 
@@ -67,8 +73,6 @@
 - [x] why is app logic in adapters
 - [x] should have a further two points on the times
 - [x] stop losses changing after first take profit hit
-
-- [ ] breakout status should be shown as a table
 - [ ] the stop LMT amount have to change depending on take profit quantities?
 - [ ] functionality for multiple breakouts of the same stock
 - [x] so need the functionality for tp3
