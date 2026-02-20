@@ -37,13 +37,6 @@ from apps.core.ops.events import (
     OrphanExitOrderDetected,
     OrphanExitReconciliationCompleted,
 )
-from apps.core.orders.events import (
-    BracketChildOrderFilled,
-    BracketChildOrderStatusChanged,
-    OrderFilled,
-    OrderIdAssigned,
-    OrderStatusChanged,
-)
 from apps.core.orders.models import (
     LadderExecutionMode,
     OrderCancelSpec,
@@ -57,22 +50,12 @@ from apps.core.orders.service import OrderService, OrderValidationError
 from apps.core.pnl.service import PnlService
 from apps.core.positions.models import PositionSnapshot
 from apps.core.positions.service import PositionsService
-from apps.core.strategies.breakout.events import BreakoutStopped, BreakoutTakeProfitsUpdated
 from apps.core.strategies.breakout.logic import BreakoutRuleConfig, FastEntryConfig
 from apps.core.strategies.breakout.runner import BreakoutRunConfig, run_breakout
 
 CommandHandler = Callable[[list[str], dict[str, str]], Awaitable[None]]
 _BREAKOUT_STATE_VERSION = 1
 _TP_MODE_TOKEN = re.compile(r"^tp-(1|2|3)$", re.IGNORECASE)
-_REPLACE_ACCEPTED_STATUSES = {
-    "submitted",
-    "presubmitted",
-    "pendingsubmit",
-    "apipending",
-    "filled",
-    "partiallyfilled",
-    "partially_filled",
-}
 _TRADE_BLOCKING_WARNING_TERMS = (
     "not eligible",
     "not allowed",
@@ -88,24 +71,6 @@ _TRADE_BLOCKING_WARNING_TERMS = (
     "outside regular trading hours",
     "closing-only status",
 )
-
-
-@dataclass
-class _BreakoutTpRepriceSession:
-    client_tag: str
-    symbol: str
-    qty: int
-    stop_loss: float
-    tp_count: int
-    bar_size: str
-    use_rth: bool
-    timeout_seconds: float
-    account: Optional[str] = None
-    take_profit_qtys: Optional[list[int]] = None
-    parent_order_id: Optional[int] = None
-    tp_child_order_ids: dict[int, int] = field(default_factory=dict)
-    tp_filled: bool = False
-    reprice_started: bool = False
 
 
 @dataclass
@@ -208,8 +173,6 @@ class REPL:
         self._aliases: dict[str, str] = {}
         self._should_exit = False
         self._breakout_tasks: dict[str, tuple[BreakoutRunConfig, asyncio.Task]] = {}
-        self._tp_reprice_sessions: dict[str, _BreakoutTpRepriceSession] = {}
-        self._tp_reprice_tasks: dict[str, asyncio.Task] = {}
         self._session_phase_prewarm_tasks: dict[str, asyncio.Task] = {}
         self._pnl_processes: dict[str, asyncio.subprocess.Process] = {}
         orphan_scope = os.getenv("APPS_ORPHAN_EXIT_SCOPE", "all_clients").strip().lower()
@@ -223,8 +186,6 @@ class REPL:
         self._orphan_exit_action = orphan_action
         self._orphan_exit_lock = asyncio.Lock()
         self._completion_matches: list[str] = []
-        if self._event_bus:
-            self._event_bus.subscribe(object, self._handle_tp_reprice_event)
         self._register_commands()
         self._setup_readline()
 
@@ -257,7 +218,6 @@ class REPL:
             await self._run_command_interruptibly(spec, args, kwargs, line)
         await self._stop_pnl_processes()
         await self._stop_breakouts(persist=True)
-        await self._stop_tp_reprice_tasks()
 
     async def _run_command_interruptibly(
         self,
@@ -650,7 +610,6 @@ class REPL:
                 "tp=",
                 "tp_count=",
                 "tp_alloc=",
-                "tp_timeout=",
                 "sl=",
                 "rth=",
                 "bar=",
@@ -1065,7 +1024,6 @@ class REPL:
         tp_exec_kw = kwargs.get("tp_exec") or kwargs.get("ladder_exec")
         tp_count_raw = tp_count_kw or _config_get(self._config, "tp_count")
         tp_alloc_raw = tp_alloc_kw or _config_get(self._config, "tp_alloc")
-        tp_timeout_raw = kwargs.get("tp_timeout") or _config_get(self._config, "tp_timeout")
         tp_exec_raw = (
             tp_exec_kw
             or _config_get(self._config, "tp_exec")
@@ -1106,10 +1064,6 @@ class REPL:
         take_profits = None
         take_profit_qtys = None
         stop_loss = None
-        tp_reprice_on_fill = False
-        tp_reprice_bar_size = "1 min"
-        tp_reprice_use_rth = False
-        tp_reprice_timeout_seconds = 5.0
         if tp_raw is not None or sl_raw is not None:
             if tp_raw is None or sl_raw is None:
                 print("tp and sl must be provided together")
@@ -1217,23 +1171,6 @@ class REPL:
             return
 
         if tp_raw is not None or sl_raw is not None:
-            tp_reprice_bar_size = kwargs.get("tp_bar") or kwargs.get("tp_bar_size") or bar_size
-            tp_reprice_use_rth_value = kwargs.get("tp_rth") or kwargs.get("tp_use_rth")
-            tp_reprice_use_rth = (
-                _parse_bool(tp_reprice_use_rth_value)
-                if tp_reprice_use_rth_value is not None
-                else use_rth
-            )
-            if tp_timeout_raw is not None:
-                try:
-                    tp_reprice_timeout_seconds = float(tp_timeout_raw)
-                except ValueError:
-                    print("tp_timeout must be a number (seconds)")
-                    return
-            if tp_reprice_timeout_seconds <= 0:
-                print("tp_timeout must be greater than zero")
-                return
-
             if str(tp_raw).strip().lower() == "auto":
                 tp_count = _coerce_int(tp_count_raw) if tp_count_raw is not None else 3
                 if tp_count is None or tp_count not in {1, 2, 3}:
@@ -1243,8 +1180,8 @@ class REPL:
                     result = await self._tp_service.compute_levels(
                         TakeProfitRequest(
                             symbol=symbol,
-                            bar_size=tp_reprice_bar_size,
-                            use_rth=tp_reprice_use_rth,
+                            bar_size=bar_size,
+                            use_rth=use_rth,
                             anchor_price=level,
                         )
                     )
@@ -1278,7 +1215,6 @@ class REPL:
                     except ValueError as exc:
                         print(f"tp_alloc invalid: {exc}")
                         return
-                    tp_reprice_on_fill = True
             else:
                 if take_profit is not None:
                     if take_profit <= 0:
@@ -1322,9 +1258,6 @@ class REPL:
             if not take_profits or len(take_profits) != 3:
                 print("tp_exec=detached requires a 3-level tp ladder with sl.")
                 return
-            if tp_reprice_on_fill:
-                tp_reprice_on_fill = False
-                print("tp_reprice disabled for tp_exec=detached")
 
         if ladder_execution_mode == LadderExecutionMode.DETACHED_70_30:
             if not take_profits or len(take_profits) != 2:
@@ -1343,9 +1276,6 @@ class REPL:
             except ValueError as exc:
                 print(f"tp_exec detached70 invalid: {exc}")
                 return
-            if tp_reprice_on_fill:
-                tp_reprice_on_fill = False
-                print("tp_reprice disabled for tp_exec=detached70")
 
         client_tag = kwargs.get("client_tag") or _config_get(self._config, "client_tag")
         if not client_tag:
@@ -1369,10 +1299,6 @@ class REPL:
             account=account,
             client_tag=client_tag,
             quote_max_age_seconds=quote_max_age_seconds,
-            tp_reprice_on_fill=tp_reprice_on_fill,
-            tp_reprice_bar_size=tp_reprice_bar_size,
-            tp_reprice_use_rth=tp_reprice_use_rth,
-            tp_reprice_timeout_seconds=tp_reprice_timeout_seconds,
             ladder_execution_mode=ladder_execution_mode,
         )
 
@@ -1447,7 +1373,6 @@ class REPL:
         )
         self._breakout_tasks[task_name] = (config, task)
         self._schedule_session_phase_prewarm(config)
-        self._register_tp_reprice_session(config)
         task.add_done_callback(lambda t: self._on_breakout_done(task_name, t))
         if source == "resume":
             print(f"Resumed breakout watcher: {task_name}")
@@ -1481,292 +1406,6 @@ class REPL:
         exc = task.exception()
         if exc:
             _print_exception(f"Session phase prewarm failed: {symbol}", exc)
-
-    def _register_tp_reprice_session(self, config: BreakoutRunConfig) -> None:
-        if not config.tp_reprice_on_fill:
-            return
-        if config.ladder_execution_mode != LadderExecutionMode.ATTACHED:
-            return
-        if not config.client_tag or not config.take_profits or config.stop_loss is None:
-            return
-        if len(config.take_profits) not in {2, 3}:
-            return
-        self._drop_tp_reprice_session(config.client_tag)
-        self._tp_reprice_sessions[config.client_tag] = _BreakoutTpRepriceSession(
-            client_tag=config.client_tag,
-            symbol=config.symbol,
-            qty=config.qty,
-            stop_loss=config.stop_loss,
-            tp_count=len(config.take_profits),
-            bar_size=config.tp_reprice_bar_size,
-            use_rth=config.tp_reprice_use_rth,
-            timeout_seconds=config.tp_reprice_timeout_seconds,
-            account=config.account,
-            take_profit_qtys=list(config.take_profit_qtys) if config.take_profit_qtys else None,
-        )
-
-    def _drop_tp_reprice_session(self, client_tag: str) -> None:
-        self._tp_reprice_sessions.pop(client_tag, None)
-        task = self._tp_reprice_tasks.pop(client_tag, None)
-        if task and not task.done():
-            task.cancel()
-
-    def _update_running_breakout_take_profits(self, client_tag: str, take_profits: list[float]) -> None:
-        if not take_profits:
-            return
-        for task_name, (config, task) in list(self._breakout_tasks.items()):
-            if config.client_tag != client_tag:
-                continue
-            updated = replace(
-                config,
-                take_profit=take_profits[0] if len(take_profits) == 1 else None,
-                take_profits=list(take_profits) if len(take_profits) > 1 else None,
-            )
-            self._breakout_tasks[task_name] = (updated, task)
-
-    async def _stop_tp_reprice_tasks(self) -> None:
-        tasks = list(self._tp_reprice_tasks.values())
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        self._tp_reprice_tasks.clear()
-        self._tp_reprice_sessions.clear()
-
-    def _handle_tp_reprice_event(self, event: object) -> None:
-        if not self._tp_reprice_sessions:
-            return
-        if isinstance(event, BreakoutStopped):
-            if event.client_tag and event.reason not in {"order_submitted", "order_submitted_fast"}:
-                self._drop_tp_reprice_session(event.client_tag)
-            return
-        if isinstance(event, OrderIdAssigned):
-            client_tag = event.spec.client_tag
-            if not client_tag:
-                return
-            session = self._tp_reprice_sessions.get(client_tag)
-            if not session:
-                return
-            if event.order_id is not None and session.parent_order_id is None:
-                session.parent_order_id = event.order_id
-            return
-        if isinstance(event, OrderStatusChanged):
-            client_tag = event.spec.client_tag
-            if not client_tag:
-                return
-            session = self._tp_reprice_sessions.get(client_tag)
-            if not session:
-                return
-            status = str(event.status or "").strip().lower()
-            if status in {"cancelled", "inactive", "api cancelled", "apicancelled"} and not session.reprice_started:
-                self._drop_tp_reprice_session(client_tag)
-            return
-        if isinstance(event, BracketChildOrderStatusChanged):
-            client_tag = event.client_tag
-            if not client_tag:
-                return
-            session = self._tp_reprice_sessions.get(client_tag)
-            if not session:
-                return
-            tp_index = _tp_index_from_kind(event.kind)
-            if tp_index is None:
-                return
-            if event.order_id is not None:
-                session.tp_child_order_ids[tp_index] = event.order_id
-            return
-        if isinstance(event, BracketChildOrderFilled):
-            client_tag = event.client_tag
-            if not client_tag:
-                return
-            session = self._tp_reprice_sessions.get(client_tag)
-            if not session:
-                return
-            if event.kind == "stop_loss":
-                self._drop_tp_reprice_session(client_tag)
-                return
-            tp_index = _tp_index_from_kind(event.kind)
-            if tp_index is None:
-                return
-            if event.order_id is not None:
-                session.tp_child_order_ids[tp_index] = event.order_id
-            session.tp_filled = True
-            if not session.reprice_started:
-                self._drop_tp_reprice_session(client_tag)
-            return
-        if isinstance(event, OrderFilled):
-            client_tag = event.spec.client_tag
-            if not client_tag:
-                return
-            session = self._tp_reprice_sessions.get(client_tag)
-            if not session:
-                return
-            if session.reprice_started:
-                return
-            if session.parent_order_id is not None and event.order_id != session.parent_order_id:
-                return
-            if not _is_order_fully_filled(
-                status=event.status,
-                filled_qty=event.filled_qty,
-                remaining_qty=event.remaining_qty,
-                expected_qty=session.qty,
-            ):
-                return
-            fill_price = _coalesce_number(event.avg_fill_price, event.spec.limit_price)
-            if fill_price is None or fill_price <= 0:
-                return
-            if session.parent_order_id is None and event.order_id is not None:
-                session.parent_order_id = event.order_id
-            session.reprice_started = True
-            task = asyncio.create_task(
-                self._run_tp_reprice_session(client_tag, fill_price),
-                name=f"tp-reprice:{client_tag}",
-            )
-            self._tp_reprice_tasks[client_tag] = task
-            task.add_done_callback(lambda task_obj, tag=client_tag: self._on_tp_reprice_done(tag, task_obj))
-            return
-
-    async def _run_tp_reprice_session(self, client_tag: str, fill_price: float) -> None:
-        if not self._tp_service or not self._order_service:
-            return
-        session = self._tp_reprice_sessions.get(client_tag)
-        if not session:
-            return
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + session.timeout_seconds
-        while True:
-            current = self._tp_reprice_sessions.get(client_tag)
-            if current is None:
-                return
-            if current.tp_filled:
-                print(f"TP reprice skipped: {current.symbol} (tp already filled)")
-                return
-            if len(current.tp_child_order_ids) >= current.tp_count:
-                session = current
-                break
-            if loop.time() >= deadline:
-                print(f"TP reprice skipped: {current.symbol} (tp child ids not ready)")
-                return
-            await asyncio.sleep(0.1)
-
-        try:
-            result = await self._tp_service.compute_levels(
-                TakeProfitRequest(
-                    symbol=session.symbol,
-                    bar_size=session.bar_size,
-                    use_rth=session.use_rth,
-                    anchor_price=fill_price,
-                )
-            )
-        except Exception as exc:
-            _print_exception("TP reprice failed", exc)
-            return
-        if len(result.levels) < session.tp_count:
-            print(
-                f"TP reprice skipped: {session.symbol} "
-                f"(got {len(result.levels)} levels, need {session.tp_count})"
-            )
-            return
-        new_levels = [level.price for level in result.levels[: session.tp_count]]
-        if not _validate_take_profit_levels(new_levels):
-            print(f"TP reprice skipped: {session.symbol} (invalid level ordering)")
-            return
-        if new_levels[0] <= session.stop_loss:
-            print(f"TP reprice skipped: {session.symbol} (levels below stop)")
-            return
-
-        current = self._tp_reprice_sessions.get(client_tag)
-        if current is None:
-            return
-        if current.tp_filled:
-            print(f"TP reprice skipped: {current.symbol} (tp already filled)")
-            return
-
-        applied_indexes: list[int] = []
-        for idx, level_price in enumerate(new_levels, start=1):
-            current = self._tp_reprice_sessions.get(client_tag)
-            if current is None:
-                return
-            if current.tp_filled:
-                print(f"TP reprice skipped: {current.symbol} (tp already filled)")
-                if applied_indexes:
-                    applied_text = ",".join(str(item) for item in applied_indexes)
-                    print(
-                        f"TP reprice partial: {current.symbol} "
-                        f"(applied=[{applied_text}] before fill; no tp state update event)"
-                    )
-                return
-            order_id = current.tp_child_order_ids.get(idx)
-            if order_id is None:
-                print(f"TP reprice skipped: {current.symbol} (missing tp order id {idx})")
-                if applied_indexes:
-                    applied_text = ",".join(str(item) for item in applied_indexes)
-                    print(
-                        f"TP reprice partial: {current.symbol} "
-                        f"(applied=[{applied_text}] before missing id; no tp state update event)"
-                    )
-                return
-            ack = await self._order_service.replace_order(
-                OrderReplaceSpec(order_id=order_id, limit_price=level_price)
-            )
-            if not _is_replace_ack_accepted(ack, expected_order_id=order_id):
-                status_text = str(getattr(ack, "status", None))
-                print(
-                    f"TP reprice skipped: {current.symbol} "
-                    f"(replace not accepted idx={idx} order_id={order_id} status={status_text})"
-                )
-                if applied_indexes:
-                    applied_text = ",".join(str(item) for item in applied_indexes)
-                    print(
-                        f"TP reprice partial: {current.symbol} "
-                        f"(applied=[{applied_text}] before rejection; no tp state update event)"
-                    )
-                return
-            applied_indexes.append(idx)
-            current = self._tp_reprice_sessions.get(client_tag)
-            if current is None:
-                return
-            if current.tp_filled:
-                print(f"TP reprice skipped: {current.symbol} (tp already filled)")
-                applied_text = ",".join(str(item) for item in applied_indexes)
-                print(
-                    f"TP reprice partial: {current.symbol} "
-                    f"(applied=[{applied_text}] before fill; no tp state update event)"
-                )
-                return
-
-        if len(applied_indexes) != session.tp_count:
-            print(
-                f"TP reprice skipped: {session.symbol} "
-                f"(applied {len(applied_indexes)}/{session.tp_count}; no tp state update event)"
-            )
-            return
-
-        self._update_running_breakout_take_profits(client_tag, new_levels)
-        if self._event_bus:
-            self._event_bus.publish(
-                BreakoutTakeProfitsUpdated.now(
-                    symbol=session.symbol,
-                    take_profits=new_levels,
-                    take_profit_qtys=session.take_profit_qtys,
-                    stop_loss=session.stop_loss,
-                    account=session.account,
-                    client_tag=session.client_tag,
-                    source="fill_reprice",
-                )
-            )
-
-        levels_text = ",".join(f"{level:g}" for level in new_levels)
-        print(f"TP reprice applied: {session.symbol} fill={fill_price:g} tp=[{levels_text}]")
-
-    def _on_tp_reprice_done(self, client_tag: str, task: asyncio.Task) -> None:
-        self._tp_reprice_tasks.pop(client_tag, None)
-        self._tp_reprice_sessions.pop(client_tag, None)
-        if task.cancelled():
-            return
-        exc = task.exception()
-        if exc:
-            _print_exception("TP reprice task failed", exc)
 
     async def _maybe_prompt_resume_breakouts(self, cfg: object) -> None:
         if self._breakout_tasks:
@@ -2919,8 +2558,6 @@ class REPL:
                 extras.append(f"tp={config.take_profit}")
             if config.stop_loss is not None:
                 extras.append(f"sl={config.stop_loss}")
-            if config.tp_reprice_on_fill:
-                extras.append("tp_reprice=on_fill")
             suffix = f" {' '.join(extras)}" if extras else ""
             print(
                 f"{name} level={config.rule.level} "
@@ -2986,8 +2623,6 @@ class REPL:
             self._save_breakout_state([config for _, config, _ in targets])
             self._suspend_breakout_state_updates = True
         for _name, _config, task in targets:
-            if _config.client_tag:
-                self._drop_tp_reprice_session(_config.client_tag)
             task.cancel()
         await asyncio.gather(*(task for _, _, task in targets), return_exceptions=True)
         for name, _config, _task in targets:
@@ -3000,10 +2635,6 @@ class REPL:
         config_task = self._breakout_tasks.pop(task_name, None)
         if not self._suspend_breakout_state_updates:
             self._persist_breakout_state()
-        if config_task is not None:
-            config, _ = config_task
-            if config.client_tag and (task.cancelled() or task.exception() is not None):
-                self._drop_tp_reprice_session(config.client_tag)
         if task.cancelled():
             print(f"Breakout watcher cancelled: {task_name}")
             return
@@ -3104,8 +2735,6 @@ class REPL:
             parts.append(f"sl={config.stop_loss:g}")
         if config.ladder_execution_mode != LadderExecutionMode.ATTACHED:
             parts.append(f"tp_exec={_ladder_execution_mode_label(config.ladder_execution_mode)}")
-        if config.tp_reprice_on_fill:
-            parts.append("tp_reprice=on_fill")
         if config.max_bars is not None:
             parts.append(f"max_bars={config.max_bars}")
         if config.tif:
@@ -3329,7 +2958,6 @@ class REPL:
             return
         await self._stop_pnl_processes()
         await self._stop_breakouts(persist=True)
-        await self._stop_tp_reprice_tasks()
         self._connection.disconnect()
 
         orig_argv = getattr(sys, "orig_argv", None)
@@ -3659,55 +3287,6 @@ def _validate_take_profit_levels(levels: list[float]) -> bool:
     return True
 
 
-def _tp_index_from_kind(kind: str) -> Optional[int]:
-    normalized = kind.strip().lower()
-    if normalized == "take_profit":
-        return 1
-    if normalized.startswith("take_profit_"):
-        suffix = normalized.split("_")[-1]
-        try:
-            parsed = int(suffix)
-        except ValueError:
-            return None
-        if parsed <= 0:
-            return None
-        return parsed
-    return None
-
-
-def _is_order_fully_filled(
-    *,
-    status: object,
-    filled_qty: object,
-    remaining_qty: object,
-    expected_qty: int,
-) -> bool:
-    remaining = _maybe_float(remaining_qty)
-    if remaining is not None and remaining <= 0:
-        return True
-    filled = _maybe_float(filled_qty)
-    if filled is not None and filled >= expected_qty:
-        return True
-    if status:
-        normalized = str(status).strip().lower()
-        if normalized == "filled":
-            return True
-    return False
-
-
-def _is_replace_ack_accepted(ack: object, *, expected_order_id: int) -> bool:
-    if ack is None:
-        return False
-    ack_order_id = getattr(ack, "order_id", None)
-    if ack_order_id != expected_order_id:
-        return False
-    status = getattr(ack, "status", None)
-    if status is None:
-        return False
-    normalized = str(status).strip().lower()
-    return normalized in _REPLACE_ACCEPTED_STATUSES
-
-
 def _serialize_breakout_config(config: BreakoutRunConfig) -> dict[str, object]:
     return {
         "symbol": config.symbol,
@@ -3728,10 +3307,6 @@ def _serialize_breakout_config(config: BreakoutRunConfig) -> dict[str, object]:
         "account": config.account,
         "client_tag": config.client_tag,
         "quote_max_age_seconds": config.quote_max_age_seconds,
-        "tp_reprice_on_fill": config.tp_reprice_on_fill,
-        "tp_reprice_bar_size": config.tp_reprice_bar_size,
-        "tp_reprice_use_rth": config.tp_reprice_use_rth,
-        "tp_reprice_timeout_seconds": config.tp_reprice_timeout_seconds,
         "ladder_execution_mode": config.ladder_execution_mode.value,
     }
 
@@ -3786,10 +3361,6 @@ def _deserialize_breakout_config(payload: dict[str, object]) -> Optional[Breakou
     account = _coerce_str(payload.get("account"))
     client_tag = _coerce_str(payload.get("client_tag"))
     quote_max_age_seconds = _coerce_float(payload.get("quote_max_age_seconds")) or 2.0
-    tp_reprice_on_fill = _coerce_bool(payload.get("tp_reprice_on_fill"), default=False)
-    tp_reprice_bar_size = _coerce_str(payload.get("tp_reprice_bar_size")) or bar_size
-    tp_reprice_use_rth = _coerce_bool(payload.get("tp_reprice_use_rth"), default=use_rth)
-    tp_reprice_timeout_seconds = _coerce_float(payload.get("tp_reprice_timeout_seconds")) or 5.0
     mode_value = payload.get("ladder_execution_mode")
     if mode_value is None and take_profits:
         if len(take_profits) == 2:
@@ -3810,10 +3381,6 @@ def _deserialize_breakout_config(payload: dict[str, object]) -> Optional[Breakou
             ladder_execution_mode = _parse_ladder_execution_mode(mode_value)
         except ValueError:
             return None
-    if tp_reprice_timeout_seconds <= 0:
-        return None
-    if tp_reprice_on_fill and not take_profits:
-        return None
     if (
         ladder_execution_mode == LadderExecutionMode.DETACHED
         and (not take_profits or len(take_profits) != 3)
@@ -3826,8 +3393,6 @@ def _deserialize_breakout_config(payload: dict[str, object]) -> Optional[Breakou
         return None
     if ladder_execution_mode == LadderExecutionMode.ATTACHED and take_profits:
         return None
-    if ladder_execution_mode == LadderExecutionMode.DETACHED and tp_reprice_on_fill:
-        tp_reprice_on_fill = False
     if ladder_execution_mode == LadderExecutionMode.DETACHED_70_30:
         try:
             expected_qtys = _split_qty_by_ratios(qty, [0.7, 0.3])
@@ -3835,8 +3400,6 @@ def _deserialize_breakout_config(payload: dict[str, object]) -> Optional[Breakou
             return None
         if take_profit_qtys != expected_qtys:
             return None
-        if tp_reprice_on_fill:
-            tp_reprice_on_fill = False
     return BreakoutRunConfig(
         symbol=symbol.strip().upper(),
         qty=qty,
@@ -3855,10 +3418,6 @@ def _deserialize_breakout_config(payload: dict[str, object]) -> Optional[Breakou
         account=account,
         client_tag=client_tag,
         quote_max_age_seconds=quote_max_age_seconds,
-        tp_reprice_on_fill=tp_reprice_on_fill,
-        tp_reprice_bar_size=tp_reprice_bar_size,
-        tp_reprice_use_rth=tp_reprice_use_rth,
-        tp_reprice_timeout_seconds=tp_reprice_timeout_seconds,
         ladder_execution_mode=ladder_execution_mode,
     )
 

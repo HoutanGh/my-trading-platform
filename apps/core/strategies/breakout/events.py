@@ -203,38 +203,3 @@ class BreakoutStopped:
         client_tag: Optional[str] = None,
     ) -> "BreakoutStopped":
         return cls(symbol=symbol, reason=reason, timestamp=_now(), client_tag=client_tag)
-
-
-@dataclass(frozen=True)
-class BreakoutTakeProfitsUpdated:
-    symbol: str
-    take_profits: list[float]
-    timestamp: datetime
-    take_profit_qtys: Optional[list[int]] = None
-    stop_loss: Optional[float] = None
-    account: Optional[str] = None
-    client_tag: Optional[str] = None
-    source: str = "reprice"
-
-    @classmethod
-    def now(
-        cls,
-        *,
-        symbol: str,
-        take_profits: list[float],
-        take_profit_qtys: Optional[list[int]] = None,
-        stop_loss: Optional[float] = None,
-        account: Optional[str] = None,
-        client_tag: Optional[str] = None,
-        source: str = "reprice",
-    ) -> "BreakoutTakeProfitsUpdated":
-        return cls(
-            symbol=symbol,
-            take_profits=list(take_profits),
-            take_profit_qtys=list(take_profit_qtys) if take_profit_qtys else None,
-            stop_loss=stop_loss,
-            account=account,
-            client_tag=client_tag,
-            source=source,
-            timestamp=_now(),
-        )

@@ -6,7 +6,7 @@ import os
 from typing import Optional
 
 from apps.core.orders.events import OrderFilled
-from apps.core.strategies.breakout.events import BreakoutConfirmed, BreakoutTakeProfitsUpdated
+from apps.core.strategies.breakout.events import BreakoutConfirmed
 
 
 class PositionOriginTracker:
@@ -28,15 +28,6 @@ class PositionOriginTracker:
                 self._record_exits(
                     event.symbol,
                     take_profit,
-                    event.stop_loss,
-                    account=event.account,
-                    take_profits=event.take_profits,
-                )
-            elif isinstance(event, BreakoutTakeProfitsUpdated):
-                first_take_profit = event.take_profits[0] if event.take_profits else None
-                self._record_exits(
-                    event.symbol,
-                    first_take_profit,
                     event.stop_loss,
                     account=event.account,
                     take_profits=event.take_profits,
@@ -144,18 +135,6 @@ class PositionOriginTracker:
                         event.get("stop_loss"),
                         account=event.get("account"),
                         take_profits=take_profits if isinstance(take_profits, list) else None,
-                    )
-                elif event_type == "BreakoutTakeProfitsUpdated":
-                    take_profits = event.get("take_profits")
-                    if not isinstance(take_profits, list) or not take_profits:
-                        continue
-                    first_take_profit = take_profits[0]
-                    self._record_exits(
-                        event.get("symbol", ""),
-                        first_take_profit,
-                        event.get("stop_loss"),
-                        account=event.get("account"),
-                        take_profits=take_profits,
                     )
         return added
 

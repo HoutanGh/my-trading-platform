@@ -7,7 +7,6 @@ from apps.core.strategies.breakout.events import (
     BreakoutRejected,
     BreakoutStarted,
     BreakoutStopped,
-    BreakoutTakeProfitsUpdated,
 )
 from apps.core.strategies.breakout.logic import (
     BreakoutAction,
@@ -33,7 +32,6 @@ __all__ = [
     "BreakoutRejected",
     "BreakoutStarted",
     "BreakoutStopped",
-    "BreakoutTakeProfitsUpdated",
     "evaluate_breakout",
     "evaluate_fast_entry",
     "run_breakout",

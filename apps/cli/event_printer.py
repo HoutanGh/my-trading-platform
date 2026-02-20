@@ -46,7 +46,6 @@ from apps.core.strategies.breakout.events import (
     BreakoutRejected,
     BreakoutStarted,
     BreakoutStopped,
-    BreakoutTakeProfitsUpdated,
 )
 
 
@@ -229,21 +228,6 @@ def print_event(event: object) -> bool:
         if event.client_tag and event.reason not in {"order_submitted", "order_submitted_fast"}:
             _CONFIRMED_BY_TAG.pop(event.client_tag, None)
         return False
-    if isinstance(event, BreakoutTakeProfitsUpdated):
-        parts = [f"tp={_format_tp_list(event.take_profits)}"]
-        if event.take_profit_qtys:
-            qty_text = ",".join(str(item) for item in event.take_profit_qtys)
-            parts.append(f"qtys=[{qty_text}]")
-        if event.stop_loss is not None:
-            parts.append(f"sl={event.stop_loss:g}")
-        if event.source:
-            parts.append(f"source={event.source}")
-        _print_line(
-            event.timestamp,
-            "BreakoutTpUpdated",
-            f"{event.symbol} {' '.join(parts)}",
-        )
-        return True
     if isinstance(event, OrderIdAssigned):
         breakout_handled = _handle_breakout_order_id_assigned(event)
         if breakout_handled is not None:

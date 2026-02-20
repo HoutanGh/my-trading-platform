@@ -58,10 +58,6 @@ class BreakoutRunConfig:
     quote_max_age_seconds: float = 2.0
     quote_warmup_seconds: float = 2.0
     quote_snapshot_fallback: bool = True
-    tp_reprice_on_fill: bool = False
-    tp_reprice_bar_size: str = "1 min"
-    tp_reprice_use_rth: bool = False
-    tp_reprice_timeout_seconds: float = 5.0
     ladder_execution_mode: LadderExecutionMode = LadderExecutionMode.ATTACHED
 
 
@@ -94,8 +90,6 @@ async def run_breakout(
             raise ValueError("take_profit_qtys must be greater than zero")
         if sum(config.take_profit_qtys) != config.qty:
             raise ValueError("take_profit_qtys must sum to qty")
-    if config.tp_reprice_timeout_seconds <= 0:
-        raise ValueError("tp_reprice_timeout_seconds must be greater than zero")
     if config.ladder_execution_mode == LadderExecutionMode.ATTACHED and config.take_profits:
         raise ValueError("ATTACHED ladder mode is not supported; use bracket for 1 TP + 1 SL")
     if config.ladder_execution_mode == LadderExecutionMode.DETACHED:
