@@ -27,6 +27,8 @@
     - first breakout then falls below VWAP then breaks VWAP and fills slightly above the first high
 - [ ] fix the double apps> at the start
 - [ ] automate the take profit flow more it is a more generic flow that has input of how many take profits rathern than separate streams for different take profit numbers 
+- [ ] automating buying dips
+    - could go hand in hand with the backtesting framework
 
 
 
@@ -42,23 +44,37 @@
 - [ ] ====== breakout took 1.7 seconds to fill ======= (fill bar)
 - [ ] get all the errors possible then cleanup
 
+### 20/02/26
+- [ ] historical farm disconnects - dont know if it reconnects
+- [ ] realised gains table
+- [x] test breakout
+- [x] progress on app logic being outside of core
+- [ ] definitely need the ability to edit 
+- [ ] the stop loss shouldnt go to the first tp, should go to breakeven or a bit more
+- [ ] understand the trades command
+- [x] the self-calc take profits should be accounted for also
+- [ ] ib_async migration
+- [x] remove stale code
+- [ ] change breakout status to breakouts
+
+
+
 ### 19/02/26
 - [x] fix the short sale issue
 - [ ] orphan auto cancel
 - [ ] sometimes the y/N is not asked
 - [x] fix the positions tag at the start
-- [ ] why is app logic in adapters
+- [x] why is app logic in adapters
 - [x] should have a further two points on the times
 - [x] stop losses changing after first take profit hit
-- [ ] ib_async migration
+
 - [ ] breakout status should be shown as a table
 - [ ] the stop LMT amount have to change depending on take profit quantities?
 - [ ] functionality for multiple breakouts of the same stock
 - [x] so need the functionality for tp3
-- [ ] the self-calc take profits should be accounted for also
-- [ ] something needs to show p&l
-- [ ] definitely need the ability to edit 
-- [ ] the stop loss shouldnt go to the first tp, should go to breakeven or a bit more
+
+
+
 
 ### 18/02/26
 - [x] test breakout
@@ -128,6 +144,9 @@ Traceback (most recent call last):
   File "/home/houtang/GitHub/my-trading-platform/apps/adapters/broker/ibkr_order_port.py", line 571, in <lambda>
     fill_event += lambda trade_obj, *_args: _submit_detached_exits_if_ready(trade_obj)
                                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/houtang/GitHub/my-trading-platform/apps/adapters/broker/ibkr_order_port.py", line 538, in _submit_detached_exits_if_ready
+    manager = _LadderStopManager(
+              ^^^^^^^^^^^^^^^^^^^
   File "/home/houtang/GitHub/my-trading-platform/apps/adapters/broker/ibkr_order_port.py", line 808, in __init__
     self._emit_protection_state_locked(state="protected", reason="initialized")
   File "/home/houtang/GitHub/my-trading-platform/apps/adapters/broker/ibkr_order_port.py", line 1177, in _emit_protection_state_locked

@@ -317,15 +317,15 @@ def print_event(event: object) -> bool:
         breakout_handled = _handle_breakout_gateway_log(event)
         if breakout_handled is not None:
             return breakout_handled
-        if _should_hide_gateway_log(event):
-            return False
-        if event.code is None and not event.message:
-            return False
         correlated = _format_correlated_gateway_log(event)
         if correlated is not None:
             label, message = correlated
             _print_line(event.timestamp, label, message)
             return True
+        if _should_hide_gateway_log(event):
+            return False
+        if event.code is None and not event.message:
+            return False
         label = _gateway_label(event)
         parts = []
         message = _gateway_message_for_display(event)
@@ -829,6 +829,14 @@ def _gateway_label(event: IbGatewayLog) -> str:
 def _should_hide_gateway_log(event: IbGatewayLog) -> bool:
     if _is_gateway_req_suppressed(event.req_id):
         return True
+    # Hide generic cancel confirmations unless we can correlate them to a tracked order.
+    if event.code == 202:
+        return True
+    if event.code == 2150:
+        # IBKR emits this non-actionable message for some position-derived PnL lookups.
+        message = str(event.message or "").lower()
+        if "invalid position trade derived value" in message:
+            return True
     if event.code != 162:
         return False
     message = str(event.message or "").lower()
