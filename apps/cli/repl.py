@@ -51,6 +51,17 @@ from apps.core.pnl.service import PnlService
 from apps.core.positions.models import PositionSnapshot
 from apps.core.positions.service import PositionsService
 from apps.core.strategies.breakout.logic import BreakoutRuleConfig, FastEntryConfig
+from apps.core.strategies.breakout.policy import (
+    default_take_profit_ratios as _core_default_take_profit_ratios,
+    expected_detached70_qtys as _core_expected_detached70_qtys,
+    infer_ladder_execution_mode as _core_infer_ladder_execution_mode,
+    ladder_execution_mode_label as _core_ladder_execution_mode_label,
+    parse_ladder_execution_mode as _core_parse_ladder_execution_mode,
+    parse_take_profit_ratios as _core_parse_take_profit_ratios,
+    split_qty_by_ratios as _core_split_qty_by_ratios,
+    validate_ladder_execution_mode as _core_validate_ladder_execution_mode,
+    validate_take_profit_levels as _core_validate_take_profit_levels,
+)
 from apps.core.strategies.breakout.runner import BreakoutRunConfig, run_breakout
 
 CommandHandler = Callable[[list[str], dict[str, str]], Awaitable[None]]
@@ -1245,24 +1256,43 @@ class REPL:
                             return
 
         if not tp_exec_explicit and take_profits:
+            inferred_qtys = take_profit_qtys
             if len(take_profits) == 2:
-                ladder_execution_mode = LadderExecutionMode.DETACHED_70_30
-            elif len(take_profits) == 3:
-                ladder_execution_mode = LadderExecutionMode.DETACHED
+                try:
+                    inferred_qtys = _core_expected_detached70_qtys(qty)
+                except ValueError as exc:
+                    print(f"tp_exec detached70 invalid: {exc}")
+                    return
+            ladder_execution_mode = _core_infer_ladder_execution_mode(
+                qty=qty,
+                take_profits=take_profits,
+                take_profit_qtys=inferred_qtys,
+            )
 
-        if ladder_execution_mode == LadderExecutionMode.ATTACHED and take_profits:
-            print("tp_exec=attached supports only single tp/sl (use tp=LEVEL, not a ladder).")
+        mode_validation_qtys = take_profit_qtys
+        if (
+            ladder_execution_mode == LadderExecutionMode.DETACHED_70_30
+            and take_profits
+            and len(take_profits) == 2
+        ):
+            try:
+                mode_validation_qtys = _core_expected_detached70_qtys(qty)
+            except ValueError as exc:
+                print(f"tp_exec detached70 invalid: {exc}")
+                return
+
+        try:
+            _core_validate_ladder_execution_mode(
+                mode=ladder_execution_mode,
+                qty=qty,
+                take_profits=take_profits,
+                take_profit_qtys=mode_validation_qtys,
+            )
+        except ValueError as exc:
+            print(_breakout_mode_validation_error_text(ladder_execution_mode, str(exc)))
             return
 
-        if ladder_execution_mode == LadderExecutionMode.DETACHED:
-            if not take_profits or len(take_profits) != 3:
-                print("tp_exec=detached requires a 3-level tp ladder with sl.")
-                return
-
-        if ladder_execution_mode == LadderExecutionMode.DETACHED_70_30:
-            if not take_profits or len(take_profits) != 2:
-                print("tp_exec=detached70 requires a 2-level tp ladder with sl (tp=LEVEL1-LEVEL2).")
-                return
+        if ladder_execution_mode == LadderExecutionMode.DETACHED_70_30 and take_profits:
             if tp_alloc_raw is not None:
                 ratios = _parse_take_profit_ratios(tp_alloc_raw, 2)
                 if ratios is None:
@@ -3109,27 +3139,11 @@ def _parse_entry_type(value: str) -> OrderType:
 
 
 def _parse_ladder_execution_mode(value: object) -> LadderExecutionMode:
-    if value is None:
-        return LadderExecutionMode.ATTACHED
-    if isinstance(value, LadderExecutionMode):
-        return value
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized in {"", "attached"}:
-            return LadderExecutionMode.ATTACHED
-        if normalized in {"detached", "det"}:
-            return LadderExecutionMode.DETACHED
-        if normalized in {"detached70", "det70", "detached_70_30"}:
-            return LadderExecutionMode.DETACHED_70_30
-    raise ValueError("invalid ladder execution mode")
+    return _core_parse_ladder_execution_mode(value)
 
 
 def _ladder_execution_mode_label(mode: LadderExecutionMode) -> str:
-    if mode == LadderExecutionMode.DETACHED:
-        return "detached"
-    if mode == LadderExecutionMode.DETACHED_70_30:
-        return "detached70"
-    return "attached"
+    return _core_ladder_execution_mode_label(mode)
 
 
 def _coerce_bool(value: object, *, default: bool = False) -> bool:
@@ -3214,77 +3228,38 @@ def _default_breakout_client_tag(symbol: str, level: float) -> str:
     return f"breakout:{symbol}:{level:g}"
 
 
+def _breakout_mode_validation_error_text(mode: LadderExecutionMode, message: str) -> str:
+    if mode == LadderExecutionMode.ATTACHED and message.startswith("ATTACHED ladder mode is not supported"):
+        return "tp_exec=attached supports only single tp/sl (use tp=LEVEL, not a ladder)."
+    if mode == LadderExecutionMode.DETACHED and message.startswith("DETACHED requires exactly 3 take_profits"):
+        return "tp_exec=detached requires a 3-level tp ladder with sl."
+    if (
+        mode == LadderExecutionMode.DETACHED_70_30
+        and message.startswith("DETACHED_70_30 requires exactly 2 take_profits")
+    ):
+        return "tp_exec=detached70 requires a 2-level tp ladder with sl (tp=LEVEL1-LEVEL2)."
+    if (
+        mode == LadderExecutionMode.DETACHED_70_30
+        and message.startswith("DETACHED_70_30 requires take_profit_qtys=")
+    ):
+        return "tp_alloc must be exactly 70-30 when tp_exec=detached70"
+    return message
+
+
 def _default_take_profit_ratios(count: int) -> list[float]:
-    if count == 1:
-        return [1.0]
-    if count == 2:
-        return [0.7, 0.3]
-    if count == 3:
-        return [0.6, 0.3, 0.1]
-    raise ValueError("count must be 1, 2, or 3")
+    return _core_default_take_profit_ratios(count)
 
 
 def _parse_take_profit_ratios(value: object, expected_count: int) -> Optional[list[float]]:
-    if value is None:
-        return None
-    text = _coerce_str(value)
-    if not text:
-        return None
-    parts = [part.strip() for part in text.split("-") if part.strip()]
-    if len(parts) != expected_count:
-        return None
-    ratios: list[float] = []
-    for part in parts:
-        try:
-            parsed = float(part)
-        except ValueError:
-            return None
-        ratios.append(parsed)
-    if any(ratio <= 0 for ratio in ratios):
-        return None
-    total = sum(ratios)
-    if total <= 0:
-        return None
-    if total > 1.5:
-        return [ratio / total for ratio in ratios]
-    if abs(total - 1.0) > 0.05:
-        return None
-    return ratios
+    return _core_parse_take_profit_ratios(value, expected_count)
 
 
 def _split_qty_by_ratios(total_qty: int, ratios: list[float]) -> list[int]:
-    if total_qty <= 0:
-        raise ValueError("qty must be greater than zero")
-    if not ratios:
-        raise ValueError("ratios are required")
-    if any(ratio <= 0 for ratio in ratios):
-        raise ValueError("ratios must be positive")
-    total = sum(ratios)
-    if total <= 0:
-        raise ValueError("ratios sum must be positive")
-    normalized = [ratio / total for ratio in ratios]
-    raw = [total_qty * ratio for ratio in normalized]
-    qtys = [int(value) for value in raw]
-    remainder = total_qty - sum(qtys)
-    if remainder > 0:
-        fractions = [(idx, raw[idx] - qtys[idx]) for idx in range(len(qtys))]
-        fractions.sort(key=lambda item: (-item[1], item[0]))
-        for idx, _fraction in fractions[:remainder]:
-            qtys[idx] += 1
-    if any(qty <= 0 for qty in qtys):
-        raise ValueError("qty too small for requested tp allocation")
-    return qtys
+    return _core_split_qty_by_ratios(total_qty, ratios)
 
 
 def _validate_take_profit_levels(levels: list[float]) -> bool:
-    if not levels:
-        return False
-    if any(level <= 0 for level in levels):
-        return False
-    for idx in range(1, len(levels)):
-        if levels[idx] <= levels[idx - 1]:
-            return False
-    return True
+    return _core_validate_take_profit_levels(levels)
 
 
 def _serialize_breakout_config(config: BreakoutRunConfig) -> dict[str, object]:
@@ -3362,44 +3337,24 @@ def _deserialize_breakout_config(payload: dict[str, object]) -> Optional[Breakou
     client_tag = _coerce_str(payload.get("client_tag"))
     quote_max_age_seconds = _coerce_float(payload.get("quote_max_age_seconds")) or 2.0
     mode_value = payload.get("ladder_execution_mode")
-    if mode_value is None and take_profits:
-        if len(take_profits) == 2:
-            try:
-                expected_two = _split_qty_by_ratios(qty, [0.7, 0.3])
-            except ValueError:
-                return None
-            if take_profit_qtys == expected_two:
-                ladder_execution_mode = LadderExecutionMode.DETACHED_70_30
-            else:
-                ladder_execution_mode = LadderExecutionMode.DETACHED
-        elif len(take_profits) == 3:
-            ladder_execution_mode = LadderExecutionMode.DETACHED
-        else:
-            ladder_execution_mode = LadderExecutionMode.ATTACHED
-    else:
-        try:
-            ladder_execution_mode = _parse_ladder_execution_mode(mode_value)
-        except ValueError:
-            return None
-    if (
-        ladder_execution_mode == LadderExecutionMode.DETACHED
-        and (not take_profits or len(take_profits) != 3)
-    ):
+    try:
+        ladder_execution_mode = _core_infer_ladder_execution_mode(
+            mode_value=mode_value,
+            qty=qty,
+            take_profits=take_profits,
+            take_profit_qtys=take_profit_qtys,
+        )
+    except ValueError:
         return None
-    if (
-        ladder_execution_mode == LadderExecutionMode.DETACHED_70_30
-        and (not take_profits or len(take_profits) != 2)
-    ):
+    try:
+        _core_validate_ladder_execution_mode(
+            mode=ladder_execution_mode,
+            qty=qty,
+            take_profits=take_profits,
+            take_profit_qtys=take_profit_qtys,
+        )
+    except ValueError:
         return None
-    if ladder_execution_mode == LadderExecutionMode.ATTACHED and take_profits:
-        return None
-    if ladder_execution_mode == LadderExecutionMode.DETACHED_70_30:
-        try:
-            expected_qtys = _split_qty_by_ratios(qty, [0.7, 0.3])
-        except ValueError:
-            return None
-        if take_profit_qtys != expected_qtys:
-            return None
     return BreakoutRunConfig(
         symbol=symbol.strip().upper(),
         qty=qty,

@@ -25,7 +25,7 @@ if importlib.util.find_spec("ib_insync") is None:
     ib_insync_util_stub.UNSET_DOUBLE = float("nan")
     sys.modules["ib_insync.util"] = ib_insync_util_stub
 
-from apps.cli.repl import _deserialize_breakout_config
+from apps.cli.repl import _breakout_mode_validation_error_text, _deserialize_breakout_config
 from apps.core.orders.models import LadderExecutionMode, OrderType
 
 
@@ -181,3 +181,26 @@ def test_deserialize_rejects_unknown_ladder_execution_mode() -> None:
     )
 
     assert config is None
+
+
+def test_breakout_mode_error_text_mapping_for_cli_messages() -> None:
+    assert _breakout_mode_validation_error_text(
+        LadderExecutionMode.ATTACHED,
+        "ATTACHED ladder mode is not supported; use bracket for 1 TP + 1 SL",
+    ) == "tp_exec=attached supports only single tp/sl (use tp=LEVEL, not a ladder)."
+    assert _breakout_mode_validation_error_text(
+        LadderExecutionMode.DETACHED,
+        "DETACHED requires exactly 3 take_profits",
+    ) == "tp_exec=detached requires a 3-level tp ladder with sl."
+    assert _breakout_mode_validation_error_text(
+        LadderExecutionMode.DETACHED_70_30,
+        "DETACHED_70_30 requires exactly 2 take_profits",
+    ) == "tp_exec=detached70 requires a 2-level tp ladder with sl (tp=LEVEL1-LEVEL2)."
+    assert _breakout_mode_validation_error_text(
+        LadderExecutionMode.DETACHED_70_30,
+        "DETACHED_70_30 requires take_profit_qtys=[7, 3]",
+    ) == "tp_alloc must be exactly 70-30 when tp_exec=detached70"
+    assert _breakout_mode_validation_error_text(
+        LadderExecutionMode.DETACHED_70_30,
+        "unexpected",
+    ) == "unexpected"
