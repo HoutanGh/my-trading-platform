@@ -2601,6 +2601,7 @@ class REPL:
             if not lines:
                 print("No stock positions with realized P&L found.")
                 return
+            print()
             for line in lines:
                 print(line)
             return
@@ -2611,6 +2612,7 @@ class REPL:
             tag_lookup = self._position_origin_tracker.tag_for
             exit_lookup = self._position_origin_tracker.exit_levels_for
             take_profits_lookup = self._position_origin_tracker.take_profits_for
+        print()
         for line in _format_positions_table(
             positions,
             tag_lookup=tag_lookup,
