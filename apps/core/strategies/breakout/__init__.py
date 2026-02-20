@@ -30,7 +30,6 @@ from apps.core.strategies.breakout.policy import (
     validate_ladder_execution_mode,
     validate_take_profit_levels,
 )
-from apps.core.strategies.breakout.runner import BreakoutRunConfig, run_breakout
 
 __all__ = [
     "BreakoutAction",
@@ -38,7 +37,6 @@ __all__ = [
     "BreakoutState",
     "FastEntryConfig",
     "FastEntryThresholds",
-    "BreakoutRunConfig",
     "BreakoutBreakDetected",
     "BreakoutConfirmed",
     "BreakoutFastTriggered",
@@ -58,5 +56,16 @@ __all__ = [
     "stop_updates_for_take_profits",
     "expected_detached70_qtys",
     "validate_ladder_execution_mode",
+    "BreakoutRunConfig",
     "run_breakout",
 ]
+
+
+def __getattr__(name: str):
+    if name in {"BreakoutRunConfig", "run_breakout"}:
+        from apps.core.strategies.breakout.runner import BreakoutRunConfig, run_breakout
+
+        if name == "BreakoutRunConfig":
+            return BreakoutRunConfig
+        return run_breakout
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

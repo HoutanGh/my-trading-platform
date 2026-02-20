@@ -16,6 +16,10 @@ from apps.core.orders.models import (
     OrderType,
 )
 from apps.core.orders.ports import EventBus, OrderPort
+from apps.core.strategies.breakout.policy import (
+    validate_ladder_execution_mode,
+    validate_take_profit_levels,
+)
 
 _EnumT = TypeVar("_EnumT", bound=object)
 
@@ -226,9 +230,8 @@ class OrderService:
             raise OrderValidationError("take_profit_qtys must be greater than zero")
         if any(price <= 0 for price in spec.take_profits):
             raise OrderValidationError("take_profits must be greater than zero")
-        for idx in range(1, len(spec.take_profits)):
-            if spec.take_profits[idx] <= spec.take_profits[idx - 1]:
-                raise OrderValidationError("take_profits must be strictly increasing")
+        if not validate_take_profit_levels(spec.take_profits):
+            raise OrderValidationError("take_profits must be strictly increasing")
         if spec.stop_loss <= 0:
             raise OrderValidationError("stop_loss must be greater than zero")
         if spec.take_profits[0] <= spec.stop_loss:
@@ -239,25 +242,15 @@ class OrderService:
             raise OrderValidationError("stop_updates must match take_profit count minus one")
         if any(level <= 0 for level in spec.stop_updates):
             raise OrderValidationError("stop_updates must be greater than zero")
-        if spec.execution_mode == LadderExecutionMode.ATTACHED:
-            raise OrderValidationError(
-                "execution_mode ATTACHED is not supported for ladders; use bracket for 1 TP + 1 SL"
+        try:
+            validate_ladder_execution_mode(
+                mode=spec.execution_mode,
+                qty=spec.qty,
+                take_profits=spec.take_profits,
+                take_profit_qtys=spec.take_profit_qtys,
             )
-        if spec.execution_mode == LadderExecutionMode.DETACHED:
-            if len(spec.take_profits) != 3:
-                raise OrderValidationError(
-                    "execution_mode DETACHED requires exactly 3 take_profits"
-                )
-        if spec.execution_mode == LadderExecutionMode.DETACHED_70_30:
-            if len(spec.take_profits) != 2:
-                raise OrderValidationError(
-                    "execution_mode DETACHED_70_30 requires exactly 2 take_profits"
-                )
-            expected_qtys = _split_qty_by_ratios(spec.qty, [0.7, 0.3])
-            if spec.take_profit_qtys != expected_qtys:
-                raise OrderValidationError(
-                    f"execution_mode DETACHED_70_30 requires take_profit_qtys={expected_qtys}"
-                )
+        except ValueError as exc:
+            raise OrderValidationError(_order_ladder_mode_message(spec.execution_mode, str(exc))) from exc
 
 
 def _coerce_enum(enum_cls: Type[_EnumT], value: object, name: str) -> _EnumT:
@@ -304,15 +297,14 @@ def _entry_spec_from_ladder(spec: LadderOrderSpec) -> OrderSpec:
     )
 
 
-def _split_qty_by_ratios(total_qty: int, ratios: list[float]) -> list[int]:
-    total = sum(ratios)
-    normalized = [ratio / total for ratio in ratios]
-    raw = [total_qty * ratio for ratio in normalized]
-    qtys = [int(value) for value in raw]
-    remainder = total_qty - sum(qtys)
-    if remainder > 0:
-        fractions = [(idx, raw[idx] - qtys[idx]) for idx in range(len(qtys))]
-        fractions.sort(key=lambda item: (-item[1], item[0]))
-        for idx, _fraction in fractions[:remainder]:
-            qtys[idx] += 1
-    return qtys
+def _order_ladder_mode_message(mode: LadderExecutionMode, message: str) -> str:
+    if mode == LadderExecutionMode.ATTACHED and message.startswith("ATTACHED ladder mode is not supported"):
+        return "execution_mode ATTACHED is not supported for ladders; use bracket for 1 TP + 1 SL"
+    if mode == LadderExecutionMode.DETACHED and message.startswith("DETACHED requires exactly 3 take_profits"):
+        return "execution_mode DETACHED requires exactly 3 take_profits"
+    if mode == LadderExecutionMode.DETACHED_70_30:
+        if message.startswith("DETACHED_70_30 requires exactly 2 take_profits"):
+            return "execution_mode DETACHED_70_30 requires exactly 2 take_profits"
+        if message.startswith("DETACHED_70_30 requires take_profit_qtys="):
+            return f"execution_mode {message}"
+    return message

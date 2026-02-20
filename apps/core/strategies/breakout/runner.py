@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import math
 import time
 from datetime import datetime, timezone
 from dataclasses import dataclass
@@ -34,6 +33,12 @@ from apps.core.strategies.breakout.logic import (
     BreakoutState,
     evaluate_breakout,
     evaluate_fast_entry,
+)
+from apps.core.strategies.breakout.policy import (
+    expected_detached70_qtys,
+    split_take_profit_qtys,
+    stop_updates_for_take_profits,
+    validate_ladder_execution_mode,
 )
 
 
@@ -90,14 +95,17 @@ async def run_breakout(
             raise ValueError("take_profit_qtys must be greater than zero")
         if sum(config.take_profit_qtys) != config.qty:
             raise ValueError("take_profit_qtys must sum to qty")
-    if config.ladder_execution_mode == LadderExecutionMode.ATTACHED and config.take_profits:
-        raise ValueError("ATTACHED ladder mode is not supported; use bracket for 1 TP + 1 SL")
-    if config.ladder_execution_mode == LadderExecutionMode.DETACHED:
-        if not config.take_profits or len(config.take_profits) != 3:
-            raise ValueError("DETACHED requires exactly 3 take_profits")
-    if config.ladder_execution_mode == LadderExecutionMode.DETACHED_70_30:
-        if not config.take_profits or len(config.take_profits) != 2:
-            raise ValueError("DETACHED_70_30 requires exactly 2 take_profits")
+    mode_take_profit_qtys = config.take_profit_qtys
+    # Keep runner behavior stable: runner historically validated ladder mode/shape,
+    # while detached70 split strictness was enforced by OrderService.
+    if config.ladder_execution_mode == LadderExecutionMode.DETACHED_70_30 and config.take_profits:
+        mode_take_profit_qtys = expected_detached70_qtys(config.qty)
+    validate_ladder_execution_mode(
+        mode=config.ladder_execution_mode,
+        qty=config.qty,
+        take_profits=config.take_profits,
+        take_profit_qtys=mode_take_profit_qtys,
+    )
     if config.entry_type == OrderType.LIMIT and quote_port is None and quote_stream is None:
         raise ValueError("quote_port is required for limit breakout entries")
 
@@ -244,8 +252,8 @@ async def run_breakout(
             entry_price = quote.ask
         if config.take_profits:
             tp_levels = config.take_profits
-            tp_qtys = config.take_profit_qtys or _split_take_profit_qtys(config.qty, len(tp_levels))
-            stop_updates = _stop_updates_for_take_profits(tp_levels, config.rule.level)
+            tp_qtys = config.take_profit_qtys or split_take_profit_qtys(config.qty, len(tp_levels))
+            stop_updates = stop_updates_for_take_profits(tp_levels, config.rule.level)
             spec = LadderOrderSpec(
                 symbol=symbol,
                 qty=config.qty,
@@ -420,32 +428,17 @@ async def run_breakout(
 
 
 def _split_take_profit_qtys(total_qty: int, count: int) -> list[int]:
-    if count == 2:
-        ratios = [0.7, 0.3]
-    elif count == 3:
-        ratios = [0.6, 0.3, 0.1]
-    else:
-        raise ValueError("only 2 or 3 take profits are supported")
-
-    raw = [total_qty * ratio for ratio in ratios]
-    qtys = [int(math.floor(value)) for value in raw]
-    remainder = total_qty - sum(qtys)
-    if remainder > 0:
-        fractions = [(idx, raw[idx] - qtys[idx]) for idx in range(len(qtys))]
-        fractions.sort(key=lambda item: (-item[1], item[0]))
-        for idx, _fraction in fractions[:remainder]:
-            qtys[idx] += 1
-    if any(qty <= 0 for qty in qtys):
-        raise ValueError("qty too small for take profit ladder")
-    return qtys
+    try:
+        return split_take_profit_qtys(total_qty, count)
+    except ValueError as exc:
+        message = str(exc)
+        if message == "qty too small for requested tp allocation":
+            raise ValueError("qty too small for take profit ladder") from exc
+        raise
 
 
 def _stop_updates_for_take_profits(take_profits: list[float], breakout_level: float) -> list[float]:
-    if len(take_profits) == 2:
-        return [breakout_level]
-    if len(take_profits) == 3:
-        return [breakout_level, take_profits[0]]
-    raise ValueError("only 2 or 3 take profits are supported")
+    return stop_updates_for_take_profits(take_profits, breakout_level)
 
 
 def _default_breakout_tag(symbol: str, level: float) -> str:
