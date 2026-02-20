@@ -43,6 +43,11 @@ from apps.core.orders.models import (
     OrderType,
 )
 from apps.core.orders.ports import EventBus, OrderPort
+from apps.core.orders.detached_ladder import (
+    DetachedRepriceMilestone,
+    collect_detached_reprice_decisions,
+    select_detached_incident_pair,
+)
 
 _INACTIVE_ORDER_STATUSES = {"inactive", "cancelled", "apicancelled", "filled"}
 
@@ -553,7 +558,14 @@ class IBKROrderPort(OrderPort):
         stop_filled: dict[int, bool] = {1: False, 2: False}
         protection_state: Optional[str] = None
         incident_pairs_active: set[int] = set()
-        stop2_reprice_started = False
+        reprice_milestones = (
+            DetachedRepriceMilestone(
+                required_pairs=frozenset({1}),
+                target_pairs=(2,),
+                stop_price=stop_update_price,
+            ),
+        )
+        milestone_applied = [False] * len(reprice_milestones)
         leg_by_order_id: dict[int, tuple[str, int]] = {}
         gateway_unsubscribe_ref: dict[str, Optional[Callable[[], None]]] = {"fn": None}
 
@@ -774,8 +786,7 @@ class IBKROrderPort(OrderPort):
                 )
                 _close_gateway_subscription_if_idle_locked()
 
-        async def _reprice_pair2_stop() -> None:
-            nonlocal stop2_reprice_started
+        async def _reprice_pair2_stop(*, stop_price: float) -> None:
             with state_lock:
                 if 2 in incident_pairs_active:
                     return
@@ -791,7 +802,7 @@ class IBKROrderPort(OrderPort):
                                 parent_order_id=order_id,
                                 old_order_id=None,
                                 attempted_qty=pair_tp_qty[2],
-                                attempted_price=stop_update_price,
+                                attempted_price=stop_price,
                                 status="missing_stop_order_id",
                                 broker_code=None,
                                 broker_message="Pair-2 stop has no orderId; cannot replace.",
@@ -805,11 +816,11 @@ class IBKROrderPort(OrderPort):
                 stop_order.orderId = old_order_id
                 stop_order.parentId = 0
                 stop_order.totalQuantity = pair_tp_qty[2]
-                stop_order.auxPrice = stop_update_price
+                stop_order.auxPrice = stop_price
                 if _is_stop_limit_order(stop_trade.order):
                     stop_order.lmtPrice = _outside_rth_stop_limit_price(
                         side=child_side,
-                        stop_price=stop_update_price,
+                        stop_price=stop_price,
                         buffer_pct=self._outside_rth_stop_limit_buffer_pct,
                     )
                 _apply_oca(
@@ -837,7 +848,7 @@ class IBKROrderPort(OrderPort):
                     expected_parent_id=0,
                     expected_oca_group=pair_oca_group[2],
                     expected_oca_type=exit_oca_type,
-                    expected_aux_price=stop_update_price,
+                    expected_aux_price=stop_price,
                     timeout=replace_timeout,
                 )
             finally:
@@ -846,7 +857,7 @@ class IBKROrderPort(OrderPort):
 
             with state_lock:
                 stop_trades[2] = replace_trade
-                pair_stop_price[2] = stop_update_price if applied else previous_price
+                pair_stop_price[2] = stop_price if applied else previous_price
                 _register_leg_locked(kind="stop", pair_index=2, trade_obj=replace_trade)
                 _refresh_leg_registry_locked()
 
@@ -861,7 +872,7 @@ class IBKROrderPort(OrderPort):
                             old_qty=pair_tp_qty[2],
                             new_qty=pair_tp_qty[2],
                             old_price=previous_price,
-                            new_price=stop_update_price,
+                            new_price=stop_price,
                             reason="price_update",
                             client_tag=spec.client_tag,
                             execution_mode="detached70",
@@ -876,7 +887,7 @@ class IBKROrderPort(OrderPort):
                         parent_order_id=order_id,
                         old_order_id=old_order_id,
                         attempted_qty=pair_tp_qty[2],
-                        attempted_price=stop_update_price,
+                        attempted_price=stop_price,
                         status=_normalize_status(getattr(replace_trade.orderStatus, "status", None)),
                         broker_code=broker_code,
                         broker_message=broker_message,
@@ -895,36 +906,39 @@ class IBKROrderPort(OrderPort):
                     ),
                 )
 
+        def _maybe_schedule_reprices_locked() -> None:
+            decisions = collect_detached_reprice_decisions(
+                tp_completed=tp_completed,
+                milestones=reprice_milestones,
+                milestone_applied=milestone_applied,
+            )
+            for decision in decisions:
+                if 2 not in decision.target_pairs:
+                    continue
+                _schedule_coroutine(
+                    loop,
+                    _reprice_pair2_stop(stop_price=decision.stop_price),
+                )
+
         def _gateway_incident_pair_locked(
             *,
             order_id_value: int,
             code: int,
         ) -> Optional[int]:
-            leg = leg_by_order_id.get(order_id_value)
-            if leg is None:
-                return None
-            leg_kind, pair_index = leg
-            if pair_index in incident_pairs_active:
-                return None
-            if code in {201, 404}:
-                return pair_index
-            if code != 202:
-                return None
-            if leg_kind == "stop":
-                paired_tp_trade = tp_trades.get(pair_index)
-                paired_tp_has_fill = bool(
-                    paired_tp_trade is not None and _has_any_fill(paired_tp_trade)
-                )
-                if tp_completed[pair_index] or paired_tp_has_fill:
-                    return None
-            if leg_kind == "tp":
-                paired_stop_trade = stop_trades.get(pair_index)
-                paired_stop_has_fill = bool(
-                    paired_stop_trade is not None and _has_any_fill(paired_stop_trade)
-                )
-                if stop_filled[pair_index] or paired_stop_has_fill:
-                    return None
-            return pair_index
+            return select_detached_incident_pair(
+                order_id_value=order_id_value,
+                code=code,
+                leg_by_order_id=leg_by_order_id,
+                incident_pairs_active=incident_pairs_active,
+                tp_completed=tp_completed,
+                stop_filled=stop_filled,
+                tp_has_fill=lambda idx: bool(
+                    (trade_obj := tp_trades.get(idx)) is not None and _has_any_fill(trade_obj)
+                ),
+                stop_has_fill=lambda idx: bool(
+                    (trade_obj := stop_trades.get(idx)) is not None and _has_any_fill(trade_obj)
+                ),
+            )
 
         def _on_gateway_message(
             req_id: Optional[int],
@@ -981,7 +995,6 @@ class IBKROrderPort(OrderPort):
                 _close_gateway_subscription_if_idle_locked()
 
         def _on_tp_fill(pair_index: int, _trade_obj: Trade, fill_obj: object | None) -> None:
-            nonlocal stop2_reprice_started
             with state_lock:
                 fill_qty = _extract_execution_shares(fill_obj)
                 if fill_qty is None or fill_qty <= 0:
@@ -1001,10 +1014,9 @@ class IBKROrderPort(OrderPort):
                 if capped_qty < float(pair_tp_qty[pair_index]) or tp_completed[pair_index]:
                     return
                 tp_completed[pair_index] = True
-                if pair_index != 1 or stop2_reprice_started:
-                    return
-                stop2_reprice_started = True
-            _schedule_coroutine(loop, _reprice_pair2_stop())
+                _maybe_schedule_reprices_locked()
+                _refresh_leg_registry_locked()
+                _close_gateway_subscription_if_idle_locked()
 
         def _on_stop_status(pair_index: int, trade_obj: Trade) -> None:
             status_value = _normalize_status(getattr(trade_obj.orderStatus, "status", None))
@@ -1148,16 +1160,16 @@ class IBKROrderPort(OrderPort):
         pair_stop_price = {idx: float(spec.stop_loss) for idx in pair_indices}
         pair_tp_price = {idx: float(spec.take_profits[idx - 1]) for idx in pair_indices}
         pair_tp_qty = {idx: int(spec.take_profit_qtys[idx - 1]) for idx in pair_indices}
-        reprice_milestones: tuple[tuple[frozenset[int], tuple[int, ...], float], ...] = (
-            (
-                frozenset({1}),
-                (2, 3),
-                _snap_price(float(spec.stop_updates[0]), contract=qualified),
+        reprice_milestones = (
+            DetachedRepriceMilestone(
+                required_pairs=frozenset({1}),
+                target_pairs=(2, 3),
+                stop_price=_snap_price(float(spec.stop_updates[0]), contract=qualified),
             ),
-            (
-                frozenset({1, 2}),
-                (3,),
-                _snap_price(float(spec.stop_updates[1]), contract=qualified),
+            DetachedRepriceMilestone(
+                required_pairs=frozenset({1, 2}),
+                target_pairs=(3,),
+                stop_price=_snap_price(float(spec.stop_updates[1]), contract=qualified),
             ),
         )
 
@@ -1641,17 +1653,15 @@ class IBKROrderPort(OrderPort):
                 await _reprice_single_pair_stop(pair_index=pair_index, stop_price=stop_price)
 
         def _maybe_schedule_reprices_locked() -> None:
-            completed_pairs = {idx for idx in pair_indices if tp_completed[idx]}
-            for milestone_idx, milestone in enumerate(reprice_milestones):
-                required_pairs, target_pairs, stop_price = milestone
-                if milestone_applied[milestone_idx]:
-                    continue
-                if not required_pairs.issubset(completed_pairs):
-                    continue
-                milestone_applied[milestone_idx] = True
+            decisions = collect_detached_reprice_decisions(
+                tp_completed=tp_completed,
+                milestones=reprice_milestones,
+                milestone_applied=milestone_applied,
+            )
+            for decision in decisions:
                 _schedule_coroutine(
                     loop,
-                    _reprice_pairs(target_pairs=target_pairs, stop_price=stop_price),
+                    _reprice_pairs(target_pairs=decision.target_pairs, stop_price=decision.stop_price),
                 )
 
         def _gateway_incident_pair_locked(
@@ -1659,31 +1669,20 @@ class IBKROrderPort(OrderPort):
             order_id_value: int,
             code: int,
         ) -> Optional[int]:
-            leg = leg_by_order_id.get(order_id_value)
-            if leg is None:
-                return None
-            leg_kind, pair_index = leg
-            if pair_index in incident_pairs_active:
-                return None
-            if code in {201, 404}:
-                return pair_index
-            if code != 202:
-                return None
-            if leg_kind == "stop":
-                paired_tp_trade = tp_trades.get(pair_index)
-                paired_tp_has_fill = bool(
-                    paired_tp_trade is not None and _has_any_fill(paired_tp_trade)
-                )
-                if tp_completed[pair_index] or paired_tp_has_fill:
-                    return None
-            if leg_kind == "tp":
-                paired_stop_trade = stop_trades.get(pair_index)
-                paired_stop_has_fill = bool(
-                    paired_stop_trade is not None and _has_any_fill(paired_stop_trade)
-                )
-                if stop_filled[pair_index] or paired_stop_has_fill:
-                    return None
-            return pair_index
+            return select_detached_incident_pair(
+                order_id_value=order_id_value,
+                code=code,
+                leg_by_order_id=leg_by_order_id,
+                incident_pairs_active=incident_pairs_active,
+                tp_completed=tp_completed,
+                stop_filled=stop_filled,
+                tp_has_fill=lambda idx: bool(
+                    (trade_obj := tp_trades.get(idx)) is not None and _has_any_fill(trade_obj)
+                ),
+                stop_has_fill=lambda idx: bool(
+                    (trade_obj := stop_trades.get(idx)) is not None and _has_any_fill(trade_obj)
+                ),
+            )
 
         def _on_gateway_message(
             req_id: Optional[int],
