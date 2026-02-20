@@ -128,9 +128,6 @@ Traceback (most recent call last):
   File "/home/houtang/GitHub/my-trading-platform/apps/adapters/broker/ibkr_order_port.py", line 571, in <lambda>
     fill_event += lambda trade_obj, *_args: _submit_detached_exits_if_ready(trade_obj)
                                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/houtang/GitHub/my-trading-platform/apps/adapters/broker/ibkr_order_port.py", line 538, in _submit_detached_exits_if_ready
-    manager = _LadderStopManager(
-              ^^^^^^^^^^^^^^^^^^^
   File "/home/houtang/GitHub/my-trading-platform/apps/adapters/broker/ibkr_order_port.py", line 808, in __init__
     self._emit_protection_state_locked(state="protected", reason="initialized")
   File "/home/houtang/GitHub/my-trading-platform/apps/adapters/broker/ibkr_order_port.py", line 1177, in _emit_protection_state_locked
