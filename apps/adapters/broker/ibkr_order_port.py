@@ -321,27 +321,28 @@ class IBKROrderPort(OrderPort):
             "Unsupported detached ladder config. Use detached70 for 2 TP or detached for 3 TP."
         )
 
-    async def _submit_ladder_order_detached_70_30(
-        self,
-        *,
-        spec: LadderOrderSpec,
-        qualified: Stock,
-        loop: asyncio.AbstractEventLoop,
-    ) -> OrderAck:
+    def _build_detached_parent_order(self, spec: LadderOrderSpec) -> object:
         if spec.entry_type == OrderType.MARKET:
             parent = MarketOrder(spec.side.value, spec.qty, tif=spec.tif)
         elif spec.entry_type == OrderType.LIMIT:
             parent = LimitOrder(spec.side.value, spec.qty, spec.entry_price, tif=spec.tif)
         else:
             raise RuntimeError(f"Unsupported entry type: {spec.entry_type}")
-
         parent.transmit = True
         parent.outsideRth = spec.outside_rth
         if spec.account:
             parent.account = spec.account
         if spec.client_tag:
             parent.orderRef = spec.client_tag
+        return parent
 
+    async def _submit_detached_parent_entry(
+        self,
+        *,
+        spec: LadderOrderSpec,
+        qualified: Stock,
+    ) -> tuple[Trade, Optional[int], Optional[str]]:
+        parent = self._build_detached_parent_order(spec)
         parent_spec = _entry_spec_from_ladder(spec)
         trade = _place_order_sanitized(self._ib, qualified, parent)
         if self._event_bus:
@@ -357,7 +358,16 @@ class IBKROrderPort(OrderPort):
             self._event_bus.publish(
                 OrderStatusChanged.now(parent_spec, order_id=order_id, status=status)
             )
+        return trade, order_id, status
 
+    async def _ensure_detached_inventory_confirmed(
+        self,
+        *,
+        spec: LadderOrderSpec,
+        trade: Trade,
+        qualified: Stock,
+        mode_label: str,
+    ) -> None:
         confirmed, filled_qty, position_qty = await _wait_for_inventory_confirmation(
             ib=self._ib,
             trade=trade,
@@ -366,22 +376,41 @@ class IBKROrderPort(OrderPort):
             expected_qty=spec.qty,
             timeout=max(self._connection.config.timeout * 4.0, 4.0),
         )
-        if not confirmed:
-            if self._connection.config.paper_only and filled_qty > 0:
-                await _flatten_position_market(
-                    ib=self._ib,
-                    contract=qualified,
-                    side=OrderSide.SELL,
-                    qty=int(round(filled_qty)),
-                    tif=spec.tif,
-                    outside_rth=spec.outside_rth,
-                    account=spec.account,
-                    client_tag=spec.client_tag,
-                )
-            raise RuntimeError(
-                "Detached 70/30 exits were not armed because inventory confirmation failed "
-                f"(filled={filled_qty}, position={position_qty})."
+        if confirmed:
+            return
+        if self._connection.config.paper_only and filled_qty > 0:
+            await _flatten_position_market(
+                ib=self._ib,
+                contract=qualified,
+                side=OrderSide.SELL,
+                qty=int(round(filled_qty)),
+                tif=spec.tif,
+                outside_rth=spec.outside_rth,
+                account=spec.account,
+                client_tag=spec.client_tag,
             )
+        raise RuntimeError(
+            f"{mode_label} exits were not armed because inventory confirmation failed "
+            f"(filled={filled_qty}, position={position_qty})."
+        )
+
+    async def _submit_ladder_order_detached_70_30(
+        self,
+        *,
+        spec: LadderOrderSpec,
+        qualified: Stock,
+        loop: asyncio.AbstractEventLoop,
+    ) -> OrderAck:
+        trade, order_id, status = await self._submit_detached_parent_entry(
+            spec=spec,
+            qualified=qualified,
+        )
+        await self._ensure_detached_inventory_confirmed(
+            spec=spec,
+            trade=trade,
+            qualified=qualified,
+            mode_label="Detached 70/30",
+        )
 
         child_side = OrderSide.SELL if spec.side == OrderSide.BUY else OrderSide.BUY
         use_stop_limit = _uses_stop_limit(spec.outside_rth)
@@ -1095,60 +1124,16 @@ class IBKROrderPort(OrderPort):
         if len(spec.stop_updates) < 2:
             raise RuntimeError("Detached 3-pair mode requires 2 stop update levels.")
 
-        if spec.entry_type == OrderType.MARKET:
-            parent = MarketOrder(spec.side.value, spec.qty, tif=spec.tif)
-        elif spec.entry_type == OrderType.LIMIT:
-            parent = LimitOrder(spec.side.value, spec.qty, spec.entry_price, tif=spec.tif)
-        else:
-            raise RuntimeError(f"Unsupported entry type: {spec.entry_type}")
-
-        parent.transmit = True
-        parent.outsideRth = spec.outside_rth
-        if spec.account:
-            parent.account = spec.account
-        if spec.client_tag:
-            parent.orderRef = spec.client_tag
-
-        parent_spec = _entry_spec_from_ladder(spec)
-        trade = _place_order_sanitized(self._ib, qualified, parent)
-        if self._event_bus:
-            _attach_trade_handlers(trade, parent_spec, self._event_bus)
-            self._event_bus.publish(OrderSent.now(parent_spec))
-
-        order_id = await _wait_for_order_id(trade)
-        if self._event_bus:
-            self._event_bus.publish(OrderIdAssigned.now(parent_spec, order_id))
-
-        status = await _wait_for_order_status(trade)
-        if self._event_bus:
-            self._event_bus.publish(
-                OrderStatusChanged.now(parent_spec, order_id=order_id, status=status)
-            )
-
-        confirmed, filled_qty, position_qty = await _wait_for_inventory_confirmation(
-            ib=self._ib,
-            trade=trade,
-            contract=qualified,
-            account=spec.account,
-            expected_qty=spec.qty,
-            timeout=max(self._connection.config.timeout * 4.0, 4.0),
+        trade, order_id, status = await self._submit_detached_parent_entry(
+            spec=spec,
+            qualified=qualified,
         )
-        if not confirmed:
-            if self._connection.config.paper_only and filled_qty > 0:
-                await _flatten_position_market(
-                    ib=self._ib,
-                    contract=qualified,
-                    side=OrderSide.SELL,
-                    qty=int(round(filled_qty)),
-                    tif=spec.tif,
-                    outside_rth=spec.outside_rth,
-                    account=spec.account,
-                    client_tag=spec.client_tag,
-                )
-            raise RuntimeError(
-                "Detached 3-pair exits were not armed because inventory confirmation failed "
-                f"(filled={filled_qty}, position={position_qty})."
-            )
+        await self._ensure_detached_inventory_confirmed(
+            spec=spec,
+            trade=trade,
+            qualified=qualified,
+            mode_label="Detached 3-pair",
+        )
 
         child_side = OrderSide.SELL if spec.side == OrderSide.BUY else OrderSide.BUY
         use_stop_limit = _uses_stop_limit(spec.outside_rth)
