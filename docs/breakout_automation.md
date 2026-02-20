@@ -25,6 +25,7 @@ This document describes the production breakout automation architecture in `apps
     │   │   └── ports.py
     │   ├── orders/
     │   │   ├── events.py
+    │   │   ├── detached_ladder.py
     │   │   ├── models.py
     │   │   ├── ports.py
     │   │   └── service.py
@@ -33,6 +34,7 @@ This document describes the production breakout automation architecture in `apps
     │           ├── __init__.py
     │           ├── events.py
     │           ├── logic.py
+    │           ├── policy.py
     │           └── runner.py
     └── adapters/
         ├── broker/
@@ -105,11 +107,9 @@ Quick orders:
 - `apps/cli/__main__.py`
   - Wires event bus, IBKR adapters, services, and REPL.
 - `apps/cli/repl.py`
-  - Parses breakout commands, resolves TP mode, computes initial auto TP levels, starts/stops watcher tasks.
-  - Enforces mode matrix:
-    - single TP => bracket
-    - 2 TP ladder => detached70
-    - 3 TP ladder => detached
+  - Parses breakout commands and computes auto TP levels.
+  - Delegates breakout mode/ratio/validation policy decisions to core policy helpers.
+  - Starts/stops watcher tasks and handles persisted watcher resume.
 - `apps/cli/position_origin_tracker.py`
   - Tracks position origin tag and latest TP/SL display state.
 - `apps/cli/event_printer.py`
@@ -118,8 +118,11 @@ Quick orders:
 ### Strategy (unique logic)
 - `apps/core/strategies/breakout/logic.py`
   - Pure breakout and fast-entry threshold logic.
+- `apps/core/strategies/breakout/policy.py`
+  - Shared breakout policy helpers (mode parsing/inference, TP ratio parsing/splitting, ladder validation, stop-update rules).
 - `apps/core/strategies/breakout/runner.py`
   - Executes streaming breakout strategy and submits market/limit/bracket/ladder entries.
+  - Reuses core policy helpers for ladder qty defaults and stop-update derivation.
 - `apps/core/strategies/breakout/events.py`
   - Breakout lifecycle events.
 
@@ -147,10 +150,16 @@ Quick orders:
 ### Orders (reusable)
 - `apps/core/orders/service.py`
   - Validation + submit/replace/cancel interface.
+  - Reuses core breakout policy validation for ladder execution-mode matrix.
 - `apps/core/orders/models.py`
   - `OrderSpec`, `BracketOrderSpec`, `LadderOrderSpec`.
+- `apps/core/orders/detached_ladder.py`
+  - Detached ladder state-machine helpers for:
+    - milestone-based stop-reprice decisions
+    - incident pair selection for gateway error handling
 - `apps/adapters/broker/ibkr_order_port.py`
   - IBKR translation and child order event wiring.
+  - Uses shared core detached ladder decision helpers and shared detached parent submit flow helpers.
 
 ### Events and logging
 - `apps/adapters/eventbus/in_process.py`
@@ -163,7 +172,7 @@ Quick orders:
 ## 4. Runtime sequence
 
 1. Operator starts breakout via CLI.
-2. REPL parses input and resolves TP mode.
+2. REPL parses input and delegates TP mode/validation policy decisions to core breakout policy.
 3. If auto TP mode is requested:
    - REPL computes fallback TP ladder using `TakeProfitService` anchored at breakout level.
    - REPL sets TP qty split:
@@ -176,7 +185,8 @@ Quick orders:
    - detached for 3 TP + 3 SL (three OCA pairs).
 6. Detached execution paths arm exits only after inventory confirmation (fill + execution qty + position check).
    - If confirmation fails, detached exits are not armed and the attempt fails safe.
-7. Runner stops (single-fire) after one trade attempt.
+7. Detached repricing/incident selection decisions are derived via core detached-ladder helpers and executed by adapter broker operations.
+8. Runner stops (single-fire) after one trade attempt.
 
 ---
 
@@ -307,3 +317,20 @@ Environment:
   - protection/stop events (`LadderProtectionStateChanged`, `LadderStopLossReplaced`, `LadderStopLossReplaceFailed`)
   - gateway incident correlation in CLI output (rejections and cancel races tied to leg/stage)
 - `positions` TP display reflects latest tracked TP levels from breakout config.
+
+---
+
+## 12. Refactor status (2026-02-20)
+
+Completed in this phase:
+- Added characterization coverage for breakout config parsing/resume and core ladder behavior.
+- Added shared core breakout policy module (`apps/core/strategies/breakout/policy.py`).
+- Wired core runner and order service to reuse shared breakout policy logic.
+- Delegated CLI breakout mode/ratio/validation policy decisions to core helpers.
+- Refactored adapter detached parent-entry/inventory-confirmation flow into shared methods.
+- Moved detached milestone/incident decision logic into core (`apps/core/orders/detached_ladder.py`) and wired adapter to use it.
+
+What is left:
+- Adapter detached execution still contains substantial broker-side orchestration and incident handling code (order placement/replacement/cancel choreography).
+- There are still no adapter-level integration tests for detached execution race paths (fast partial fills/reject/cancel timing).
+- If you want full “core decides, adapter executes” separation, next step is to continue extracting remaining detached transition logic from adapter closures into core domain/state modules and test those transitions directly.
