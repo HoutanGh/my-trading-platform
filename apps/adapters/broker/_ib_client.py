@@ -6,6 +6,17 @@ from types import SimpleNamespace
 from typing import Any
 
 _BACKEND_CANDIDATES = ("ib_async", "ib_insync")
+_REQUIRED_SYMBOLS = (
+    "IB",
+    "BarData",
+    "LimitOrder",
+    "MarketOrder",
+    "Stock",
+    "StopLimitOrder",
+    "StopOrder",
+    "Ticker",
+    "Trade",
+)
 _LAST_IMPORT_ERROR: Exception | None = None
 _backend: Any | None = None
 _backend_name = ""
@@ -24,6 +35,14 @@ if _backend is None:
         + ", ".join(_BACKEND_CANDIDATES)
     ) from _LAST_IMPORT_ERROR
 
+
+_missing_symbols = [name for name in _REQUIRED_SYMBOLS if not hasattr(_backend, name)]
+if _missing_symbols:
+    raise ImportError(
+        f"Backend '{_backend_name}' is missing required symbols: {', '.join(_missing_symbols)}"
+    )
+
+
 try:
     _util_module = import_module(f"{_backend_name}.util")
 except Exception:
@@ -32,28 +51,16 @@ _backend_parse_datetime = getattr(_util_module, "parseIBDatetime", None)
 if _backend_parse_datetime is None:
     _backend_parse_datetime = getattr(_util_module, "parse_ib_datetime", None)
 
-
-def _missing_backend_type(name: str) -> type:
-    return type(name, (), {"__init__": lambda self, *args, **kwargs: None})
-
-
-def _backend_attr(name: str) -> Any:
-    attr = getattr(_backend, name, None)
-    if attr is None:
-        return _missing_backend_type(name)
-    return attr
-
-
-IB = _backend_attr("IB")
-BarData = _backend_attr("BarData")
+IB = _backend.IB
+BarData = _backend.BarData
 IB_CLIENT_BACKEND = _backend_name
-LimitOrder = _backend_attr("LimitOrder")
-MarketOrder = _backend_attr("MarketOrder")
-Stock = _backend_attr("Stock")
-StopLimitOrder = _backend_attr("StopLimitOrder")
-StopOrder = _backend_attr("StopOrder")
-Ticker = _backend_attr("Ticker")
-Trade = _backend_attr("Trade")
+LimitOrder = _backend.LimitOrder
+MarketOrder = _backend.MarketOrder
+Stock = _backend.Stock
+StopLimitOrder = _backend.StopLimitOrder
+StopOrder = _backend.StopOrder
+Ticker = _backend.Ticker
+Trade = _backend.Trade
 UNSET_DOUBLE = getattr(_util_module, "UNSET_DOUBLE", 1.7976931348623157e308)
 
 
