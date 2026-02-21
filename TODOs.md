@@ -10,7 +10,8 @@
     - [ ]  Research
 - [ ] Kill Switch
     - [ ] Research
-- [ ] how to calulate volume rotation and tie this into stock pairs trading
+- [ ] Volume Rotation
+    - [ ] Research
 - [ ] backtesting start
     - [ ] get a plan going
 - [ ] warm market detection
@@ -27,6 +28,8 @@
 - [ ] automate the take profit flow more it is a more generic flow that has input of how many take profits rathern than separate streams for different take profit numbers 
 - [ ] automating buying dips
     - could go hand in hand with the backtesting framework
+- [ ] automating sessions that i enter in on small pullbacks with short stop losses
+- [ ] george hotz enters a test session
 
 
 
@@ -43,18 +46,19 @@
 - [ ] get all the errors possible then cleanup
 
 ### 21/02/26
+- [x] tracking hardening
+- [x] ib_async migration
 - [ ] Calculating breakouts
     - [ ] Research
-- [ ] change breakout status to breakouts
-- [ ] ib_async migration
-- [ ] enforce IB import boundary (only `apps/adapters/broker/_ib_client.py` imports ib_async/ib_insync) + add CI guard
-- [ ] need to accommodate for haults
+- [x] change breakout status to breakouts
+- [x] need to accommodate for haults
 - [ ] breakout status should be shown as a table
 - [ ] cli cleaning
+- [x] if breakout rejected, just restart the watcher - nevermind, can just manually do it
 
 ### 20/02/26
 - [ ] historical farm disconnects - dont know if it reconnects
-- [ ] realised gains table
+- [x] realised gains table
 - [x] test breakout
 - [x] progress on app logic being outside of core
 - [ ] definitely need the ability to edit 
