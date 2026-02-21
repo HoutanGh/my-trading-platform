@@ -99,7 +99,7 @@ Confirmed facts:
 - Parent entry intended and filled `qty=100` (`OrderIntent` / `OrderFilled`).
 - App child events report intended split quantities (`take_profit_1 qty=70`, `take_profit_2 qty=30`).
 - Despite that, broker-side active order view showed both TP children as `100`.
-- Local ib_insync behavior is pass-through for order size:
+- Local IB client behavior is pass-through for order size:
   - `LimitOrder(action, totalQuantity, lmtPrice, ...)` writes `order.totalQuantity`.
   - `Client.placeOrder` serializes and sends `order.totalQuantity` directly.
 

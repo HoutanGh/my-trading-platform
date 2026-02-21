@@ -52,7 +52,7 @@ Hidden-from-console filter:
 
 Source: `apps/adapters/broker/ibkr_connection.py`
 
-`IBKRConnection` wraps `ib_insync` wrapper `error(...)` callbacks and emits `IbGatewayLog` with:
+`IBKRConnection` wraps the IB client wrapper `error(...)` callbacks and emits `IbGatewayLog` with:
 
 - `req_id`
 - `code`
@@ -62,7 +62,7 @@ Source: `apps/adapters/broker/ibkr_connection.py`
 
 Additional suppression rule at adapter layer:
 
-- If `code == 162` and message is empty, or contains `"query cancelled"`, the original `ib_insync` error handler is suppressed.
+- If `code == 162` and message is empty, or contains `"query cancelled"`, the original wrapper error handler is suppressed.
 - The gateway payload is still captured/emitted to subscribers before suppression.
 
 ## 3) IB codes with explicit platform behavior
