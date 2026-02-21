@@ -35,6 +35,8 @@ from apps.core.ops.events import (
     BarStreamStalled,
     DetachedProtectionCoverageGapDetected,
     DetachedProtectionReconciliationCompleted,
+    DetachedSessionRestoreCompleted,
+    DetachedSessionRestored,
     IbGatewayLog,
     OrphanExitOrderCancelFailed,
     OrphanExitOrderCancelled,
@@ -719,6 +721,45 @@ def print_event(event: object) -> bool:
                 f"inspected={event.inspected_position_count} "
                 f"covered={event.covered_position_count} "
                 f"gaps={event.gap_count}"
+            ),
+        )
+        return True
+    if isinstance(event, DetachedSessionRestored):
+        tp_count = len(event.active_take_profit_order_ids)
+        if _SHOW_ORDER_IDS:
+            stop_details = f"stop_ids={event.active_stop_order_ids}"
+            tp_details = f"tp_ids={event.active_take_profit_order_ids}"
+        else:
+            stop_details = f"stop_count={len(event.active_stop_order_ids)}"
+            tp_details = f"tp_count={tp_count}"
+        _print_line(
+            event.timestamp,
+            "DetachedSessionRestored",
+            (
+                f"{event.symbol} account={event.account or '-'} "
+                f"tag={event.client_tag or '-'} mode={event.execution_mode} "
+                f"state={event.state} reason={event.reason} "
+                f"position={_fmt_qty(event.position_qty)} "
+                f"protected={_fmt_qty(event.protected_qty)} "
+                f"uncovered={_fmt_qty(event.uncovered_qty)} "
+                f"{tp_details} {stop_details}"
+            ),
+        )
+        return True
+    if isinstance(event, DetachedSessionRestoreCompleted):
+        if event.restored_count <= 0:
+            return False
+        _print_line(
+            event.timestamp,
+            "DetachedSessionRestore",
+            (
+                f"{event.trigger} {event.scope} "
+                f"active={event.active_order_count} "
+                f"positions={event.position_count} "
+                f"inspected={event.inspected_position_count} "
+                f"restored={event.restored_count} "
+                f"protected={event.protected_count} "
+                f"unprotected={event.unprotected_count}"
             ),
         )
         return True

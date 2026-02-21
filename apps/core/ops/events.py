@@ -418,6 +418,100 @@ class DetachedProtectionReconciliationCompleted:
 
 
 @dataclass(frozen=True)
+class DetachedSessionRestored:
+    trigger: str
+    scope: str
+    account: Optional[str]
+    symbol: str
+    client_tag: Optional[str]
+    execution_mode: str
+    state: str
+    reason: str
+    position_qty: float
+    protected_qty: float
+    uncovered_qty: float
+    active_take_profit_order_ids: list[int]
+    active_stop_order_ids: list[int]
+    primary_stop_order_id: Optional[int]
+    timestamp: datetime
+
+    @classmethod
+    def now(
+        cls,
+        *,
+        trigger: str,
+        scope: str,
+        account: Optional[str],
+        symbol: str,
+        client_tag: Optional[str],
+        execution_mode: str,
+        state: str,
+        reason: str,
+        position_qty: float,
+        protected_qty: float,
+        uncovered_qty: float,
+        active_take_profit_order_ids: list[int],
+        active_stop_order_ids: list[int],
+        primary_stop_order_id: Optional[int],
+    ) -> "DetachedSessionRestored":
+        return cls(
+            trigger=trigger,
+            scope=scope,
+            account=account,
+            symbol=symbol,
+            client_tag=client_tag,
+            execution_mode=execution_mode,
+            state=state,
+            reason=reason,
+            position_qty=position_qty,
+            protected_qty=protected_qty,
+            uncovered_qty=uncovered_qty,
+            active_take_profit_order_ids=list(active_take_profit_order_ids),
+            active_stop_order_ids=list(active_stop_order_ids),
+            primary_stop_order_id=primary_stop_order_id,
+            timestamp=_now(),
+        )
+
+
+@dataclass(frozen=True)
+class DetachedSessionRestoreCompleted:
+    trigger: str
+    scope: str
+    active_order_count: int
+    position_count: int
+    inspected_position_count: int
+    restored_count: int
+    protected_count: int
+    unprotected_count: int
+    timestamp: datetime
+
+    @classmethod
+    def now(
+        cls,
+        *,
+        trigger: str,
+        scope: str,
+        active_order_count: int,
+        position_count: int,
+        inspected_position_count: int,
+        restored_count: int,
+        protected_count: int,
+        unprotected_count: int,
+    ) -> "DetachedSessionRestoreCompleted":
+        return cls(
+            trigger=trigger,
+            scope=scope,
+            active_order_count=active_order_count,
+            position_count=position_count,
+            inspected_position_count=inspected_position_count,
+            restored_count=restored_count,
+            protected_count=protected_count,
+            unprotected_count=unprotected_count,
+            timestamp=_now(),
+        )
+
+
+@dataclass(frozen=True)
 class BarStreamStarted:
     symbol: str
     bar_size: str

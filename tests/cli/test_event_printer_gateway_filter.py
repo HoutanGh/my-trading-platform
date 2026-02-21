@@ -4,7 +4,11 @@ from datetime import datetime, timezone
 
 import apps.cli.event_printer as event_printer
 from apps.cli.event_printer import _should_hide_gateway_log, print_event
-from apps.core.ops.events import IbGatewayLog
+from apps.core.ops.events import (
+    DetachedSessionRestoreCompleted,
+    DetachedSessionRestored,
+    IbGatewayLog,
+)
 
 
 def _gateway_event(*, code: int, message: str, req_id: int = 1) -> IbGatewayLog:
@@ -78,3 +82,48 @@ def test_print_event_keeps_correlated_202_for_tracked_order() -> None:
 
     assert printed
     assert printed[0][0] == "OrderInfo"
+
+
+def test_print_event_reports_detached_session_restored() -> None:
+    event = DetachedSessionRestored.now(
+        trigger="connection_established",
+        scope="all_clients",
+        account="DU1",
+        symbol="AAPL",
+        client_tag="breakout:AAPL:10",
+        execution_mode="detached70",
+        state="protected",
+        reason="reconnect_restored",
+        position_qty=100.0,
+        protected_qty=100.0,
+        uncovered_qty=0.0,
+        active_take_profit_order_ids=[10, 11],
+        active_stop_order_ids=[12],
+        primary_stop_order_id=12,
+    )
+    printed: list[tuple[str, str]] = []
+
+    original_print_line = event_printer._print_line
+    try:
+        event_printer._print_line = lambda _ts, label, message: printed.append((label, message))
+        assert print_event(event) is True
+    finally:
+        event_printer._print_line = original_print_line
+
+    assert printed
+    assert printed[0][0] == "DetachedSessionRestored"
+
+
+def test_print_event_hides_empty_detached_session_restore_summary() -> None:
+    event = DetachedSessionRestoreCompleted.now(
+        trigger="connection_established",
+        scope="all_clients",
+        active_order_count=0,
+        position_count=0,
+        inspected_position_count=0,
+        restored_count=0,
+        protected_count=0,
+        unprotected_count=0,
+    )
+
+    assert print_event(event) is False

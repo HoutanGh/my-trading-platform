@@ -231,6 +231,7 @@ Emitted events (relevant groups):
 - Ladder stop safety: `LadderStopLossReplaced`, `LadderStopLossReplaceFailed`, `LadderStopLossCancelled`, `LadderProtectionStateChanged`.
 - Reconnect orphan-exit reconciliation: `OrphanExitOrderDetected`, `OrphanExitOrderCancelled`, `OrphanExitOrderCancelFailed`, `OrphanExitReconciliationCompleted`.
 - Reconnect detached protection coverage reconciliation: `DetachedProtectionCoverageGapDetected`, `DetachedProtectionReconciliationCompleted`.
+- Reconnect detached session restoration: `DetachedSessionRestored`, `DetachedSessionRestoreCompleted`.
 - Bar stream health/recovery: `BarStreamStalled`, `BarStreamRecovered`, `BarStreamRecoveryStarted`, `BarStreamRecoveryFailed`, `BarStreamCompetingSessionBlocked`, `BarStreamCompetingSessionCleared`, `BarStreamRecoveryScanScheduled`.
 
 Display behavior:

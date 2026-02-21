@@ -9,7 +9,7 @@ def _repl_source() -> str:
     return path.read_text(encoding="utf-8")
 
 
-def test_connect_runs_detached_protection_reconcile_after_orphan_reconcile() -> None:
+def test_connect_runs_detached_reconciliation_and_restore_in_order() -> None:
     tree = ast.parse(_repl_source())
     cmd_connect: ast.AsyncFunctionDef | None = None
     for node in tree.body:
@@ -33,4 +33,8 @@ def test_connect_runs_detached_protection_reconcile_after_orphan_reconcile() -> 
 
     orphan_idx = call_names.index("_reconcile_orphan_exit_orders")
     detached_idx = call_names.index("_reconcile_detached_protection_coverage")
+    restore_idx = call_names.index("_restore_detached_sessions")
+    resume_idx = call_names.index("_maybe_prompt_resume_breakouts")
     assert detached_idx > orphan_idx
+    assert restore_idx > detached_idx
+    assert resume_idx > restore_idx

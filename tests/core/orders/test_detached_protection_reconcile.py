@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from apps.core.active_orders.models import ActiveOrderSnapshot
-from apps.core.orders.detached_protection_reconcile import reconcile_detached_protection_coverage
+from apps.core.orders.detached_protection_reconcile import (
+    reconcile_detached_protection_coverage,
+    reconstruct_detached_sessions,
+)
 from apps.core.positions.models import PositionSnapshot
 
 
@@ -135,3 +138,52 @@ def test_reconcile_skips_positions_without_matching_required_tag_prefix() -> Non
     assert report.inspected_position_count == 1
     assert report.covered_position_count == 1
     assert report.gap_count == 0
+
+
+def test_reconstruct_detached_sessions_restores_protected_and_mode_from_tp_count() -> None:
+    def _tp_count(_account: str | None, _symbol: str) -> int:
+        return 2
+
+    report = reconstruct_detached_sessions(
+        positions=[_position(account="DU1", symbol="AAPL", qty=100)],
+        active_orders=[
+            _order(order_id=11, account="DU1", symbol="AAPL", order_type="LMT", remaining_qty=70),
+            _order(order_id=12, account="DU1", symbol="AAPL", order_type="LMT", remaining_qty=30),
+            _order(order_id=13, account="DU1", symbol="AAPL", order_type="STP", remaining_qty=100),
+        ],
+        tag_for_position=_tag_lookup,
+        take_profit_count_for_position=_tp_count,
+        required_tag_prefix="breakout:",
+    )
+
+    assert report.restored_count == 1
+    assert report.protected_count == 1
+    assert report.unprotected_count == 0
+    session = report.sessions[0]
+    assert session.execution_mode == "detached70"
+    assert session.state == "protected"
+    assert session.reason == "reconnect_restored"
+    assert session.active_take_profit_order_ids == [11, 12]
+    assert session.active_stop_order_ids == [13]
+    assert session.primary_stop_order_id == 13
+
+
+def test_reconstruct_detached_sessions_marks_unprotected_when_stop_missing() -> None:
+    report = reconstruct_detached_sessions(
+        positions=[_position(account="DU1", symbol="AAPL", qty=100)],
+        active_orders=[
+            _order(order_id=21, account="DU1", symbol="AAPL", order_type="LMT", remaining_qty=70),
+            _order(order_id=22, account="DU1", symbol="AAPL", order_type="LMT", remaining_qty=30),
+        ],
+        tag_for_position=_tag_lookup,
+        required_tag_prefix="breakout:",
+    )
+
+    assert report.restored_count == 1
+    assert report.protected_count == 0
+    assert report.unprotected_count == 1
+    session = report.sessions[0]
+    assert session.state == "unprotected"
+    assert session.reason == "reconnect_missing_stop_orders"
+    assert session.execution_mode == "detached70"
+    assert session.active_stop_order_ids == []

@@ -33,6 +33,8 @@ from apps.core.active_orders.models import ActiveOrderSnapshot
 from apps.core.ops.events import (
     DetachedProtectionCoverageGapDetected,
     DetachedProtectionReconciliationCompleted,
+    DetachedSessionRestoreCompleted,
+    DetachedSessionRestored,
 )
 from apps.core.positions.models import PositionSnapshot
 
@@ -116,12 +118,42 @@ def _stop_order(*, order_id: int, account: str, symbol: str, remaining_qty: floa
     )
 
 
+def _tp_order(*, order_id: int, account: str, symbol: str, remaining_qty: float) -> ActiveOrderSnapshot:
+    return ActiveOrderSnapshot(
+        order_id=order_id,
+        perm_id=None,
+        parent_order_id=None,
+        client_id=None,
+        account=account,
+        symbol=symbol,
+        sec_type="STK",
+        exchange="SMART",
+        currency="USD",
+        side="SELL",
+        order_type="LMT",
+        qty=remaining_qty,
+        filled_qty=0.0,
+        remaining_qty=remaining_qty,
+        limit_price=11.0,
+        stop_price=None,
+        status="Submitted",
+        tif="DAY",
+        outside_rth=None,
+        client_tag="breakout:AAPL:10",
+    )
+
+
 class _FakePositionOriginTracker:
     def __init__(self, *, tag: str | None = None) -> None:
         self._tag = tag
 
     def tag_for(self, account: str | None, symbol: str) -> str | None:
         return self._tag
+
+    def take_profits_for(self, account: str | None, symbol: str) -> list[float] | None:
+        if self._tag is None:
+            return None
+        return [11.0, 12.0]
 
 
 def test_reconcile_detached_protection_publishes_gap_and_summary_events() -> None:
@@ -166,3 +198,30 @@ def test_reconcile_detached_protection_skips_when_disconnected() -> None:
     asyncio.run(repl._reconcile_detached_protection_coverage(trigger="connection_established"))
 
     assert bus.events == []
+
+
+def test_restore_detached_sessions_publishes_restored_and_summary_events() -> None:
+    bus = _FakeEventBus()
+    repl = REPL(
+        _FakeConnection(connected=True),  # type: ignore[arg-type]
+        positions_service=_FakePositionsService([_position(account="DU1", symbol="AAPL", qty=100)]),  # type: ignore[arg-type]
+        active_orders_service=_FakeActiveOrdersService(
+            [
+                _stop_order(order_id=101, account="DU1", symbol="AAPL", remaining_qty=100),
+                _tp_order(order_id=102, account="DU1", symbol="AAPL", remaining_qty=70),
+            ]
+        ),  # type: ignore[arg-type]
+        position_origin_tracker=_FakePositionOriginTracker(tag="breakout:AAPL:10"),  # type: ignore[arg-type]
+        event_bus=bus,  # type: ignore[arg-type]
+    )
+
+    asyncio.run(repl._restore_detached_sessions(trigger="connection_established"))
+
+    restored_events = [event for event in bus.events if isinstance(event, DetachedSessionRestored)]
+    summary_events = [event for event in bus.events if isinstance(event, DetachedSessionRestoreCompleted)]
+    assert len(restored_events) == 1
+    assert restored_events[0].execution_mode == "detached70"
+    assert restored_events[0].state == "protected"
+    assert len(summary_events) == 1
+    assert summary_events[0].restored_count == 1
+    assert summary_events[0].protected_count == 1

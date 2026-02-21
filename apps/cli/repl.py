@@ -35,12 +35,15 @@ from apps.core.ops.events import (
     CliErrorLogged,
     DetachedProtectionCoverageGapDetected,
     DetachedProtectionReconciliationCompleted,
+    DetachedSessionRestoreCompleted,
+    DetachedSessionRestored,
     OrphanExitOrderCancelFailed,
     OrphanExitOrderCancelled,
     OrphanExitOrderDetected,
     OrphanExitReconciliationCompleted,
 )
 from apps.core.orders.detached_protection_reconcile import (
+    reconstruct_detached_sessions,
     reconcile_detached_protection_coverage,
 )
 from apps.core.orders.models import (
@@ -204,6 +207,8 @@ class REPL:
         self._orphan_exit_lock = asyncio.Lock()
         self._detached_protection_scope = self._orphan_exit_scope
         self._detached_protection_lock = asyncio.Lock()
+        self._detached_session_restore_scope = self._orphan_exit_scope
+        self._detached_session_restore_lock = asyncio.Lock()
         self._completion_matches: list[str] = []
         self._register_commands()
         self._setup_readline()
@@ -768,6 +773,7 @@ class REPL:
         await self._seed_position_origins()
         await self._reconcile_orphan_exit_orders(trigger="connection_established")
         await self._reconcile_detached_protection_coverage(trigger="connection_established")
+        await self._restore_detached_sessions(trigger="connection_established")
         await self._maybe_prompt_resume_breakouts(cfg)
 
     def _apply_account_default(self, mode: Optional[str], cfg: object) -> None:
@@ -2568,17 +2574,13 @@ class REPL:
 
         async with self._detached_protection_lock:
             scope = self._detached_protection_scope
-            try:
-                active_orders = await self._active_orders_service.list_active_orders(scope=scope)
-            except Exception as exc:
-                _print_exception("Detached protection reconciliation failed (active orders)", exc)
+            snapshots = await self._fetch_reconciliation_snapshot(
+                scope=scope,
+                label="Detached protection reconciliation",
+            )
+            if snapshots is None:
                 return
-
-            try:
-                positions = await self._positions_service.list_positions()
-            except Exception as exc:
-                _print_exception("Detached protection reconciliation failed (positions)", exc)
-                positions = []
+            active_orders, positions = snapshots
 
             report = reconcile_detached_protection_coverage(
                 positions=positions,
@@ -2617,6 +2619,94 @@ class REPL:
                     gap_count=report.gap_count,
                 )
             )
+
+    async def _restore_detached_sessions(self, *, trigger: str) -> None:
+        if not self._active_orders_service or not self._positions_service:
+            return
+        if not self._position_origin_tracker:
+            return
+        if not self._connection.status().get("connected"):
+            return
+
+        async with self._detached_session_restore_lock:
+            scope = self._detached_session_restore_scope
+            snapshots = await self._fetch_reconciliation_snapshot(
+                scope=scope,
+                label="Detached session restore",
+            )
+            if snapshots is None:
+                return
+            active_orders, positions = snapshots
+
+            def _expected_tp_count(account: Optional[str], symbol: str) -> Optional[int]:
+                if not self._position_origin_tracker:
+                    return None
+                levels = self._position_origin_tracker.take_profits_for(account, symbol)
+                if not levels:
+                    return None
+                return len(levels)
+
+            report = reconstruct_detached_sessions(
+                positions=positions,
+                active_orders=active_orders,
+                tag_for_position=self._position_origin_tracker.tag_for,
+                take_profit_count_for_position=_expected_tp_count,
+                required_tag_prefix="breakout:",
+            )
+            if not self._event_bus:
+                return
+
+            for session in report.sessions:
+                self._event_bus.publish(
+                    DetachedSessionRestored.now(
+                        trigger=trigger,
+                        scope=scope,
+                        account=session.account,
+                        symbol=session.symbol,
+                        client_tag=session.client_tag,
+                        execution_mode=session.execution_mode,
+                        state=session.state,
+                        reason=session.reason,
+                        position_qty=session.position_qty,
+                        protected_qty=session.protected_qty,
+                        uncovered_qty=session.uncovered_qty,
+                        active_take_profit_order_ids=session.active_take_profit_order_ids,
+                        active_stop_order_ids=session.active_stop_order_ids,
+                        primary_stop_order_id=session.primary_stop_order_id,
+                    )
+                )
+            self._event_bus.publish(
+                DetachedSessionRestoreCompleted.now(
+                    trigger=trigger,
+                    scope=scope,
+                    active_order_count=report.active_order_count,
+                    position_count=report.position_count,
+                    inspected_position_count=report.inspected_position_count,
+                    restored_count=report.restored_count,
+                    protected_count=report.protected_count,
+                    unprotected_count=report.unprotected_count,
+                )
+            )
+
+    async def _fetch_reconciliation_snapshot(
+        self,
+        *,
+        scope: str,
+        label: str,
+    ) -> Optional[tuple[list[ActiveOrderSnapshot], list[PositionSnapshot]]]:
+        if not self._active_orders_service or not self._positions_service:
+            return None
+        try:
+            active_orders = await self._active_orders_service.list_active_orders(scope=scope)
+        except Exception as exc:
+            _print_exception(f"{label} failed (active orders)", exc)
+            return None
+        try:
+            positions = await self._positions_service.list_positions()
+        except Exception as exc:
+            _print_exception(f"{label} failed (positions)", exc)
+            positions = []
+        return active_orders, positions
 
     async def _cmd_positions(self, _args: list[str], _kwargs: dict[str, str]) -> None:
         if not self._positions_service:
