@@ -8,6 +8,10 @@ from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Callable, Optional
 
 from apps.adapters.broker._ib_client import IB, BarData, Stock
+from apps.adapters.broker._ib_compat import (
+    attach_bar_update_event,
+    detach_bar_update_event,
+)
 
 from apps.adapters.broker.ibkr_connection import IBKRConnection
 from apps.adapters.market_data._ibkr_bar_utils import (
@@ -168,7 +172,7 @@ class IBKRBarStream(BarStreamPort):
             stream.last_count = len(_bars)
 
         stream.on_bar = _on_bar
-        bars.updateEvent += _on_bar
+        attach_bar_update_event(bars, _on_bar)
 
         await self._register_stream(stream)
         last_bar_ts: Optional[datetime] = None
@@ -218,10 +222,7 @@ class IBKRBarStream(BarStreamPort):
             raise
         finally:
             stream.closed = True
-            try:
-                stream.bars.updateEvent -= stream.on_bar
-            except Exception:
-                pass
+            detach_bar_update_event(stream.bars, stream.on_bar)
             try:
                 self._ib.cancelHistoricalData(stream.bars)
             except Exception:
@@ -613,10 +614,7 @@ class IBKRBarStream(BarStreamPort):
         if not self._ib.isConnected():
             raise RuntimeError("IBKR disconnected")
         old_bars = stream.bars
-        try:
-            old_bars.updateEvent -= stream.on_bar
-        except Exception:
-            pass
+        detach_bar_update_event(old_bars, stream.on_bar)
         try:
             self._ib.cancelHistoricalData(old_bars)
         except Exception:
@@ -636,7 +634,7 @@ class IBKRBarStream(BarStreamPort):
             return
         stream.bars = new_bars
         stream.last_count = len(new_bars)
-        new_bars.updateEvent += stream.on_bar
+        attach_bar_update_event(new_bars, stream.on_bar)
 
     async def _request_live_bars(
         self,

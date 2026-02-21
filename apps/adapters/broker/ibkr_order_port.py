@@ -24,6 +24,7 @@ from apps.adapters.broker._ib_client import (
     Trade,
     UNSET_DOUBLE,
 )
+from apps.adapters.broker._ib_compat import attach_trade_events
 
 from apps.adapters.broker.ibkr_connection import IBKRConnection
 from apps.adapters.broker.ibkr_session_phase import IBKRSessionPhaseResolver, SessionPhase
@@ -1146,58 +1147,40 @@ class IBKROrderPort(OrderPort):
             tp_trade = tp_trades[pair_index]
             stop_trade = stop_trades[pair_index]
 
-            status_event = getattr(tp_trade, "statusEvent", None)
-            if status_event is not None:
-                status_event += (
-                    lambda trade_obj, *_args, pair_idx=pair_index: _on_tp_status(pair_idx, trade_obj)
-                )
-            filled_event = getattr(tp_trade, "filledEvent", None)
-            if filled_event is not None:
-                filled_event += (
-                    lambda trade_obj, *args, pair_idx=pair_index: _on_tp_fill(
-                        pair_idx,
-                        trade_obj,
-                        args[0] if args else None,
-                    )
-                )
-            fill_event = getattr(tp_trade, "fillEvent", None)
-            if fill_event is not None:
-                fill_event += (
-                    lambda trade_obj, *args, pair_idx=pair_index: _on_tp_fill(
-                        pair_idx,
-                        trade_obj,
-                        args[0] if args else None,
-                    )
-                )
+            attach_trade_events(
+                tp_trade,
+                on_status=lambda trade_obj, *_args, pair_idx=pair_index: _on_tp_status(pair_idx, trade_obj),
+                on_filled=lambda trade_obj, *args, pair_idx=pair_index: _on_tp_fill(
+                    pair_idx,
+                    trade_obj,
+                    args[0] if args else None,
+                ),
+                on_fill=lambda trade_obj, *args, pair_idx=pair_index: _on_tp_fill(
+                    pair_idx,
+                    trade_obj,
+                    args[0] if args else None,
+                ),
+            )
             fills = getattr(tp_trade, "fills", None)
             if fills:
                 for fill_obj in list(fills):
                     _on_tp_fill(pair_index, tp_trade, fill_obj)
 
-            stop_status_event = getattr(stop_trade, "statusEvent", None)
-            if stop_status_event is not None:
-                stop_status_event += (
-                    lambda trade_obj, *_args, pair_idx=pair_index: _on_stop_status(
-                        pair_idx,
-                        trade_obj,
-                    )
-                )
-            stop_filled_event = getattr(stop_trade, "filledEvent", None)
-            if stop_filled_event is not None:
-                stop_filled_event += (
-                    lambda trade_obj, *_args, pair_idx=pair_index: _on_stop_fill(
-                        pair_idx,
-                        trade_obj,
-                    )
-                )
-            stop_fill_event = getattr(stop_trade, "fillEvent", None)
-            if stop_fill_event is not None:
-                stop_fill_event += (
-                    lambda trade_obj, *_args, pair_idx=pair_index: _on_stop_fill(
-                        pair_idx,
-                        trade_obj,
-                    )
-                )
+            attach_trade_events(
+                stop_trade,
+                on_status=lambda trade_obj, *_args, pair_idx=pair_index: _on_stop_status(
+                    pair_idx,
+                    trade_obj,
+                ),
+                on_filled=lambda trade_obj, *_args, pair_idx=pair_index: _on_stop_fill(
+                    pair_idx,
+                    trade_obj,
+                ),
+                on_fill=lambda trade_obj, *_args, pair_idx=pair_index: _on_stop_fill(
+                    pair_idx,
+                    trade_obj,
+                ),
+            )
 
         with state_lock:
             _refresh_leg_registry_locked()
@@ -1927,58 +1910,40 @@ class IBKROrderPort(OrderPort):
             tp_trade = tp_trades[pair_index]
             stop_trade = stop_trades[pair_index]
 
-            status_event = getattr(tp_trade, "statusEvent", None)
-            if status_event is not None:
-                status_event += (
-                    lambda trade_obj, *_args, pair_idx=pair_index: _on_tp_status(pair_idx, trade_obj)
-                )
-            filled_event = getattr(tp_trade, "filledEvent", None)
-            if filled_event is not None:
-                filled_event += (
-                    lambda trade_obj, *args, pair_idx=pair_index: _on_tp_fill(
-                        pair_idx,
-                        trade_obj,
-                        args[0] if args else None,
-                    )
-                )
-            fill_event = getattr(tp_trade, "fillEvent", None)
-            if fill_event is not None:
-                fill_event += (
-                    lambda trade_obj, *args, pair_idx=pair_index: _on_tp_fill(
-                        pair_idx,
-                        trade_obj,
-                        args[0] if args else None,
-                    )
-                )
+            attach_trade_events(
+                tp_trade,
+                on_status=lambda trade_obj, *_args, pair_idx=pair_index: _on_tp_status(pair_idx, trade_obj),
+                on_filled=lambda trade_obj, *args, pair_idx=pair_index: _on_tp_fill(
+                    pair_idx,
+                    trade_obj,
+                    args[0] if args else None,
+                ),
+                on_fill=lambda trade_obj, *args, pair_idx=pair_index: _on_tp_fill(
+                    pair_idx,
+                    trade_obj,
+                    args[0] if args else None,
+                ),
+            )
             fills = getattr(tp_trade, "fills", None)
             if fills:
                 for fill_obj in list(fills):
                     _on_tp_fill(pair_index, tp_trade, fill_obj)
 
-            stop_status_event = getattr(stop_trade, "statusEvent", None)
-            if stop_status_event is not None:
-                stop_status_event += (
-                    lambda trade_obj, *_args, pair_idx=pair_index: _on_stop_status(
-                        pair_idx,
-                        trade_obj,
-                    )
-                )
-            stop_filled_event = getattr(stop_trade, "filledEvent", None)
-            if stop_filled_event is not None:
-                stop_filled_event += (
-                    lambda trade_obj, *_args, pair_idx=pair_index: _on_stop_fill(
-                        pair_idx,
-                        trade_obj,
-                    )
-                )
-            stop_fill_event = getattr(stop_trade, "fillEvent", None)
-            if stop_fill_event is not None:
-                stop_fill_event += (
-                    lambda trade_obj, *_args, pair_idx=pair_index: _on_stop_fill(
-                        pair_idx,
-                        trade_obj,
-                    )
-                )
+            attach_trade_events(
+                stop_trade,
+                on_status=lambda trade_obj, *_args, pair_idx=pair_index: _on_stop_status(
+                    pair_idx,
+                    trade_obj,
+                ),
+                on_filled=lambda trade_obj, *_args, pair_idx=pair_index: _on_stop_fill(
+                    pair_idx,
+                    trade_obj,
+                ),
+                on_fill=lambda trade_obj, *_args, pair_idx=pair_index: _on_stop_fill(
+                    pair_idx,
+                    trade_obj,
+                ),
+            )
 
         with state_lock:
             _refresh_leg_registry_locked()
@@ -2792,17 +2757,12 @@ def _attach_trade_handlers(trade: Trade, spec: OrderSpec, event_bus: EventBus) -
             )
         )
 
-    status_event = getattr(trade, "statusEvent", None)
-    if status_event is not None:
-        status_event += lambda trade_obj, *_args: _publish_status(trade_obj)
-
-    filled_event = getattr(trade, "filledEvent", None)
-    if filled_event is not None:
-        filled_event += lambda trade_obj, *_args: _publish_fill(trade_obj)
-
-    fill_event = getattr(trade, "fillEvent", None)
-    if fill_event is not None:
-        fill_event += lambda trade_obj, *_args: _publish_fill(trade_obj)
+    attach_trade_events(
+        trade,
+        on_status=lambda trade_obj, *_args: _publish_status(trade_obj),
+        on_filled=lambda trade_obj, *_args: _publish_fill(trade_obj),
+        on_fill=lambda trade_obj, *_args: _publish_fill(trade_obj),
+    )
 
 
 def _attach_bracket_child_handlers(
@@ -2955,17 +2915,12 @@ def _attach_bracket_child_handlers(
         status=getattr(order_status, "status", None),
     )
 
-    status_event = getattr(trade, "statusEvent", None)
-    if status_event is not None:
-        status_event += lambda trade_obj, *_args: _publish_status(trade_obj)
-
-    filled_event = getattr(trade, "filledEvent", None)
-    if filled_event is not None:
-        filled_event += lambda trade_obj, *_args: _publish_fill(trade_obj)
-
-    fill_event = getattr(trade, "fillEvent", None)
-    if fill_event is not None:
-        fill_event += lambda trade_obj, *_args: _publish_fill(trade_obj)
+    attach_trade_events(
+        trade,
+        on_status=lambda trade_obj, *_args: _publish_status(trade_obj),
+        on_filled=lambda trade_obj, *_args: _publish_fill(trade_obj),
+        on_fill=lambda trade_obj, *_args: _publish_fill(trade_obj),
+    )
 
 
 def _attach_stop_trigger_reprice(
@@ -3064,17 +3019,12 @@ def _attach_stop_trigger_reprice(
         nonlocal reprice_applied
         reprice_applied = True
 
-    status_event = getattr(trade, "statusEvent", None)
-    if status_event is not None:
-        status_event += lambda trade_obj, *_args: _publish_status(trade_obj)
-
-    filled_event = getattr(trade, "filledEvent", None)
-    if filled_event is not None:
-        filled_event += lambda trade_obj, *_args: _publish_fill(trade_obj)
-
-    fill_event = getattr(trade, "fillEvent", None)
-    if fill_event is not None:
-        fill_event += lambda trade_obj, *_args: _publish_fill(trade_obj)
+    attach_trade_events(
+        trade,
+        on_status=lambda trade_obj, *_args: _publish_status(trade_obj),
+        on_filled=lambda trade_obj, *_args: _publish_fill(trade_obj),
+        on_fill=lambda trade_obj, *_args: _publish_fill(trade_obj),
+    )
 
 
 def _maybe_float(value: object) -> Optional[float]:
