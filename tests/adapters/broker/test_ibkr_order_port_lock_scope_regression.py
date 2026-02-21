@@ -3,9 +3,6 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-import pytest
-
-
 def _order_port_source_path() -> Path:
     return Path(__file__).resolve().parents[3] / "apps" / "adapters" / "broker" / "ibkr_order_port.py"
 
@@ -60,13 +57,6 @@ def _find_lock_scoped_cancel_calls(source: str) -> list[tuple[int, str]]:
     return visitor.offenders
 
 
-@pytest.mark.xfail(
-    reason=(
-        "Known deadlock risk: detached ladder callbacks call cancel while holding state_lock. "
-        "PR2 should move broker-side cancel calls outside lock scope."
-    ),
-    strict=True,
-)
 def test_detached_callbacks_do_not_call_cancel_while_holding_state_lock() -> None:
     source = _order_port_source_path().read_text(encoding="utf-8")
     offenders = _find_lock_scoped_cancel_calls(source)

@@ -147,6 +147,8 @@ async def _async_main() -> None:
     try:
         await repl.run()
     finally:
+        order_port.close()
+        connection.disconnect()
         if tail_task:
             tail_task.cancel()
             await asyncio.gather(tail_task, return_exceptions=True)

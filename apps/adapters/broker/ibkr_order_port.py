@@ -7,6 +7,8 @@ import os
 import threading
 import time
 import uuid
+from concurrent.futures import CancelledError as ThreadFutureCancelledError
+from concurrent.futures import Future as ThreadFuture
 from dataclasses import replace
 from collections.abc import Coroutine
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
@@ -50,6 +52,7 @@ from apps.core.orders.detached_ladder import (
 )
 
 _INACTIVE_ORDER_STATUSES = {"inactive", "cancelled", "apicancelled", "filled"}
+_ScheduledHandle = asyncio.Task[None] | ThreadFuture[None]
 
 
 class IBKROrderPort(OrderPort):
@@ -62,6 +65,9 @@ class IBKROrderPort(OrderPort):
             self._ib,
             event_bus=event_bus,
         )
+        self._scheduled_handles: set[_ScheduledHandle] = set()
+        self._scheduled_handles_lock = threading.Lock()
+        self._scheduler_closed = False
 
     async def prewarm_session_phase(
         self,
@@ -78,6 +84,40 @@ class IBKROrderPort(OrderPort):
 
     def clear_session_phase_cache(self) -> None:
         self._session_phase_resolver.clear_cache()
+
+    def close(self) -> None:
+        handles: list[_ScheduledHandle]
+        with self._scheduled_handles_lock:
+            self._scheduler_closed = True
+            handles = list(self._scheduled_handles)
+            self._scheduled_handles.clear()
+        for handle in handles:
+            handle.cancel()
+
+    def _schedule_managed_coroutine(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        coro: Coroutine[object, object, None],
+    ) -> Optional[_ScheduledHandle]:
+        with self._scheduled_handles_lock:
+            if self._scheduler_closed:
+                coro.close()
+                return None
+        handle = _schedule_coroutine(loop, coro)
+        if handle is None:
+            return None
+
+        def _release(done_handle: _ScheduledHandle) -> None:
+            with self._scheduled_handles_lock:
+                self._scheduled_handles.discard(done_handle)
+
+        with self._scheduled_handles_lock:
+            if self._scheduler_closed:
+                handle.cancel()
+                return None
+            self._scheduled_handles.add(handle)
+        handle.add_done_callback(_release)
+        return handle
 
     async def submit_order(self, spec: OrderSpec) -> OrderAck:
         if not self._ib.isConnected():
@@ -268,6 +308,7 @@ class IBKROrderPort(OrderPort):
                 client_tag=spec.client_tag,
                 event_bus=self._event_bus,
                 loop=loop,
+                scheduler=self._schedule_managed_coroutine,
             )
         if self._event_bus:
             self._event_bus.publish(OrderIdAssigned.now(parent_spec, order_id))
@@ -896,7 +937,7 @@ class IBKROrderPort(OrderPort):
                     )
                 )
             if broker_code in {201, 202, 404}:
-                _schedule_coroutine(
+                self._schedule_managed_coroutine(
                     loop,
                     _handle_child_incident(
                         pair_index=2,
@@ -915,7 +956,7 @@ class IBKROrderPort(OrderPort):
             for decision in decisions:
                 if 2 not in decision.target_pairs:
                     continue
-                _schedule_coroutine(
+                self._schedule_managed_coroutine(
                     loop,
                     _reprice_pair2_stop(stop_price=decision.stop_price),
                 )
@@ -957,7 +998,7 @@ class IBKROrderPort(OrderPort):
                 )
             if pair_index is None:
                 return
-            _schedule_coroutine(
+            self._schedule_managed_coroutine(
                 loop,
                 _handle_child_incident(
                     pair_index=pair_index,
@@ -982,7 +1023,7 @@ class IBKROrderPort(OrderPort):
                     and not paired_stop_filled
                     and pair_index not in incident_pairs_active
                 ):
-                    _schedule_coroutine(
+                    self._schedule_managed_coroutine(
                         loop,
                         _handle_child_incident(
                             pair_index=pair_index,
@@ -1032,7 +1073,7 @@ class IBKROrderPort(OrderPort):
                     and not paired_tp_filled
                     and pair_index not in incident_pairs_active
                 ):
-                    _schedule_coroutine(
+                    self._schedule_managed_coroutine(
                         loop,
                         _handle_child_incident(
                             pair_index=pair_index,
@@ -1045,6 +1086,7 @@ class IBKROrderPort(OrderPort):
                 _close_gateway_subscription_if_idle_locked()
 
         def _on_stop_fill(pair_index: int, trade_obj: Trade) -> None:
+            tp_order_to_cancel: object | None = None
             with state_lock:
                 if pair_index in incident_pairs_active:
                     return
@@ -1053,9 +1095,11 @@ class IBKROrderPort(OrderPort):
                 stop_filled[pair_index] = True
                 tp_trade = tp_trades.get(pair_index)
                 if tp_trade is not None:
-                    _safe_cancel_order(self._ib, getattr(tp_trade, "order", None))
+                    tp_order_to_cancel = getattr(tp_trade, "order", None)
                 _refresh_leg_registry_locked()
                 _close_gateway_subscription_if_idle_locked()
+            if tp_order_to_cancel is not None:
+                _safe_cancel_order(self._ib, tp_order_to_cancel)
 
         for pair_index in (1, 2):
             tp_trade = tp_trades[pair_index]
@@ -1638,7 +1682,7 @@ class IBKROrderPort(OrderPort):
                     )
                 )
             if broker_code in {201, 202, 404}:
-                _schedule_coroutine(
+                self._schedule_managed_coroutine(
                     loop,
                     _handle_child_incident(
                         pair_index=pair_index,
@@ -1659,7 +1703,7 @@ class IBKROrderPort(OrderPort):
                 milestone_applied=milestone_applied,
             )
             for decision in decisions:
-                _schedule_coroutine(
+                self._schedule_managed_coroutine(
                     loop,
                     _reprice_pairs(target_pairs=decision.target_pairs, stop_price=decision.stop_price),
                 )
@@ -1701,7 +1745,7 @@ class IBKROrderPort(OrderPort):
                 )
             if pair_index is None:
                 return
-            _schedule_coroutine(
+            self._schedule_managed_coroutine(
                 loop,
                 _handle_child_incident(
                     pair_index=pair_index,
@@ -1726,7 +1770,7 @@ class IBKROrderPort(OrderPort):
                     and not paired_stop_filled
                     and pair_index not in incident_pairs_active
                 ):
-                    _schedule_coroutine(
+                    self._schedule_managed_coroutine(
                         loop,
                         _handle_child_incident(
                             pair_index=pair_index,
@@ -1777,7 +1821,7 @@ class IBKROrderPort(OrderPort):
                     and not paired_tp_filled
                     and pair_index not in incident_pairs_active
                 ):
-                    _schedule_coroutine(
+                    self._schedule_managed_coroutine(
                         loop,
                         _handle_child_incident(
                             pair_index=pair_index,
@@ -1790,6 +1834,7 @@ class IBKROrderPort(OrderPort):
                 _close_gateway_subscription_if_idle_locked()
 
         def _on_stop_fill(pair_index: int, trade_obj: Trade) -> None:
+            tp_order_to_cancel: object | None = None
             with state_lock:
                 if pair_index in incident_pairs_active:
                     return
@@ -1798,9 +1843,11 @@ class IBKROrderPort(OrderPort):
                 stop_filled[pair_index] = True
                 tp_trade = tp_trades.get(pair_index)
                 if tp_trade is not None:
-                    _safe_cancel_order(self._ib, getattr(tp_trade, "order", None))
+                    tp_order_to_cancel = getattr(tp_trade, "order", None)
                 _refresh_leg_registry_locked()
                 _close_gateway_subscription_if_idle_locked()
+            if tp_order_to_cancel is not None:
+                _safe_cancel_order(self._ib, tp_order_to_cancel)
 
         for pair_index in pair_indices:
             tp_trade = tp_trades[pair_index]
@@ -2860,6 +2907,12 @@ def _attach_stop_trigger_reprice(
     client_tag: Optional[str],
     event_bus: EventBus | None,
     loop: asyncio.AbstractEventLoop,
+    scheduler: Optional[
+        Callable[
+            [asyncio.AbstractEventLoop, Coroutine[object, object, None]],
+            Optional[_ScheduledHandle],
+        ]
+    ] = None,
     on_replaced: Optional[Callable[[Trade], None]] = None,
 ) -> None:
     last_status: Optional[str] = None
@@ -2928,7 +2981,10 @@ def _attach_stop_trigger_reprice(
         if previous != "presubmitted" or status != "submitted":
             return
         reprice_pending = True
-        _schedule_coroutine(loop, _reprice(trade_obj))
+        if scheduler is None:
+            _schedule_coroutine(loop, _reprice(trade_obj))
+            return
+        scheduler(loop, _reprice(trade_obj))
 
     def _publish_fill(_trade_obj: Trade) -> None:
         nonlocal reprice_applied
@@ -3007,15 +3063,50 @@ def _outside_rth_for_session_phase(phase: SessionPhase) -> bool:
     return phase != SessionPhase.RTH
 
 
-def _schedule_coroutine(loop: asyncio.AbstractEventLoop, coro: Coroutine[object, object, None]) -> None:
+def _consume_scheduled_coroutine_result(handle: _ScheduledHandle) -> None:
+    try:
+        handle.result()
+    except (asyncio.CancelledError, ThreadFutureCancelledError):
+        return
+    except Exception as exc:
+        if isinstance(handle, asyncio.Task):
+            loop = handle.get_loop()
+            if not loop.is_closed():
+                loop.call_exception_handler(
+                    {
+                        "message": "Detached broker callback coroutine failed",
+                        "exception": exc,
+                        "task": handle,
+                    }
+                )
+        return
+
+
+def _schedule_coroutine(
+    loop: asyncio.AbstractEventLoop,
+    coro: Coroutine[object, object, None],
+) -> Optional[_ScheduledHandle]:
+    if loop.is_closed():
+        coro.close()
+        return None
     try:
         running_loop = asyncio.get_running_loop()
     except RuntimeError:
         running_loop = None
     if running_loop is loop:
-        asyncio.create_task(coro)
-        return
-    asyncio.run_coroutine_threadsafe(coro, loop)
+        try:
+            handle: _ScheduledHandle = asyncio.create_task(coro)
+        except RuntimeError:
+            coro.close()
+            return None
+    else:
+        try:
+            handle = asyncio.run_coroutine_threadsafe(coro, loop)
+        except RuntimeError:
+            coro.close()
+            return None
+    handle.add_done_callback(_consume_scheduled_coroutine_result)
+    return handle
 
 
 async def _touch_price_for_stop_limit(ib: IB, contract: Stock, side: OrderSide) -> Optional[float]:
