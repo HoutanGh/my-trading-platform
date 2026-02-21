@@ -599,6 +599,7 @@ class IBKROrderPort(OrderPort):
         stop_filled: dict[int, bool] = {1: False, 2: False}
         protection_state: Optional[str] = None
         incident_pairs_active: set[int] = set()
+        incident_pairs_inflight: set[int] = set()
         reprice_milestones = (
             DetachedRepriceMilestone(
                 required_pairs=frozenset({1}),
@@ -827,9 +828,41 @@ class IBKROrderPort(OrderPort):
                 )
                 _close_gateway_subscription_if_idle_locked()
 
+        def _release_incident_inflight(pair_index: int) -> None:
+            with state_lock:
+                incident_pairs_inflight.discard(pair_index)
+
+        def _schedule_child_incident(
+            *,
+            pair_index: int,
+            source_order_id: Optional[int],
+            code: Optional[int],
+            message: Optional[str],
+        ) -> bool:
+            with state_lock:
+                if pair_index in incident_pairs_inflight:
+                    return False
+                incident_pairs_inflight.add(pair_index)
+            handle = self._schedule_managed_coroutine(
+                loop,
+                _handle_child_incident(
+                    pair_index=pair_index,
+                    source_order_id=source_order_id,
+                    code=code,
+                    message=message,
+                ),
+            )
+            if handle is None:
+                _release_incident_inflight(pair_index)
+                return False
+            handle.add_done_callback(
+                lambda _done, pair_idx=pair_index: _release_incident_inflight(pair_idx)
+            )
+            return True
+
         async def _reprice_pair2_stop(*, stop_price: float) -> None:
             with state_lock:
-                if 2 in incident_pairs_active:
+                if 2 in incident_pairs_active or 2 in incident_pairs_inflight:
                     return
                 stop_trade = stop_trades.get(2)
                 if stop_trade is None:
@@ -937,14 +970,11 @@ class IBKROrderPort(OrderPort):
                     )
                 )
             if broker_code in {201, 202, 404}:
-                self._schedule_managed_coroutine(
-                    loop,
-                    _handle_child_incident(
-                        pair_index=2,
-                        source_order_id=old_order_id,
-                        code=broker_code,
-                        message=broker_message,
-                    ),
+                _schedule_child_incident(
+                    pair_index=2,
+                    source_order_id=old_order_id,
+                    code=broker_code,
+                    message=broker_message,
                 )
 
         def _maybe_schedule_reprices_locked() -> None:
@@ -970,7 +1000,7 @@ class IBKROrderPort(OrderPort):
                 order_id_value=order_id_value,
                 code=code,
                 leg_by_order_id=leg_by_order_id,
-                incident_pairs_active=incident_pairs_active,
+                incident_pairs_active=incident_pairs_active | incident_pairs_inflight,
                 tp_completed=tp_completed,
                 stop_filled=stop_filled,
                 tp_has_fill=lambda idx: bool(
@@ -998,18 +1028,17 @@ class IBKROrderPort(OrderPort):
                 )
             if pair_index is None:
                 return
-            self._schedule_managed_coroutine(
-                loop,
-                _handle_child_incident(
-                    pair_index=pair_index,
-                    source_order_id=int(req_id),
-                    code=normalized_code,
-                    message=message or advanced,
-                ),
+            _schedule_child_incident(
+                pair_index=pair_index,
+                source_order_id=int(req_id),
+                code=normalized_code,
+                message=message or advanced,
             )
 
         def _on_tp_status(pair_index: int, trade_obj: Trade) -> None:
             status_value = _normalize_status(getattr(trade_obj.orderStatus, "status", None))
+            schedule_incident = False
+            incident_source_order_id: Optional[int] = None
             with state_lock:
                 paired_stop_trade = stop_trades.get(pair_index)
                 paired_stop_filled = bool(
@@ -1022,18 +1051,19 @@ class IBKROrderPort(OrderPort):
                     and not stop_filled[pair_index]
                     and not paired_stop_filled
                     and pair_index not in incident_pairs_active
+                    and pair_index not in incident_pairs_inflight
                 ):
-                    self._schedule_managed_coroutine(
-                        loop,
-                        _handle_child_incident(
-                            pair_index=pair_index,
-                            source_order_id=_trade_order_id(trade_obj),
-                            code=202,
-                            message="Take-profit became inactive before paired stop resolution.",
-                        ),
-                    )
+                    schedule_incident = True
+                    incident_source_order_id = _trade_order_id(trade_obj)
                 _refresh_leg_registry_locked()
                 _close_gateway_subscription_if_idle_locked()
+            if schedule_incident:
+                _schedule_child_incident(
+                    pair_index=pair_index,
+                    source_order_id=incident_source_order_id,
+                    code=202,
+                    message="Take-profit became inactive before paired stop resolution.",
+                )
 
         def _on_tp_fill(pair_index: int, _trade_obj: Trade, fill_obj: object | None) -> None:
             with state_lock:
@@ -1061,6 +1091,8 @@ class IBKROrderPort(OrderPort):
 
         def _on_stop_status(pair_index: int, trade_obj: Trade) -> None:
             status_value = _normalize_status(getattr(trade_obj.orderStatus, "status", None))
+            schedule_incident = False
+            incident_source_order_id: Optional[int] = None
             with state_lock:
                 paired_tp_trade = tp_trades.get(pair_index)
                 paired_tp_filled = bool(
@@ -1072,23 +1104,24 @@ class IBKROrderPort(OrderPort):
                     and not tp_completed[pair_index]
                     and not paired_tp_filled
                     and pair_index not in incident_pairs_active
+                    and pair_index not in incident_pairs_inflight
                 ):
-                    self._schedule_managed_coroutine(
-                        loop,
-                        _handle_child_incident(
-                            pair_index=pair_index,
-                            source_order_id=_trade_order_id(trade_obj),
-                            code=202,
-                            message="Protective stop became inactive before paired TP completion.",
-                        ),
-                    )
+                    schedule_incident = True
+                    incident_source_order_id = _trade_order_id(trade_obj)
                 _refresh_leg_registry_locked()
                 _close_gateway_subscription_if_idle_locked()
+            if schedule_incident:
+                _schedule_child_incident(
+                    pair_index=pair_index,
+                    source_order_id=incident_source_order_id,
+                    code=202,
+                    message="Protective stop became inactive before paired TP completion.",
+                )
 
         def _on_stop_fill(pair_index: int, trade_obj: Trade) -> None:
             tp_order_to_cancel: object | None = None
             with state_lock:
-                if pair_index in incident_pairs_active:
+                if pair_index in incident_pairs_active or pair_index in incident_pairs_inflight:
                     return
                 if not _has_any_fill(trade_obj):
                     return
@@ -1332,6 +1365,7 @@ class IBKROrderPort(OrderPort):
         stop_filled: dict[int, bool] = {idx: False for idx in pair_indices}
         protection_state: Optional[str] = None
         incident_pairs_active: set[int] = set()
+        incident_pairs_inflight: set[int] = set()
         leg_by_order_id: dict[int, tuple[str, int]] = {}
         gateway_unsubscribe_ref: dict[str, Optional[Callable[[], None]]] = {"fn": None}
         milestone_applied = [False] * len(reprice_milestones)
@@ -1563,13 +1597,45 @@ class IBKROrderPort(OrderPort):
                 )
                 _close_gateway_subscription_if_idle_locked()
 
+        def _release_incident_inflight(pair_index: int) -> None:
+            with state_lock:
+                incident_pairs_inflight.discard(pair_index)
+
+        def _schedule_child_incident(
+            *,
+            pair_index: int,
+            source_order_id: Optional[int],
+            code: Optional[int],
+            message: Optional[str],
+        ) -> bool:
+            with state_lock:
+                if pair_index in incident_pairs_inflight:
+                    return False
+                incident_pairs_inflight.add(pair_index)
+            handle = self._schedule_managed_coroutine(
+                loop,
+                _handle_child_incident(
+                    pair_index=pair_index,
+                    source_order_id=source_order_id,
+                    code=code,
+                    message=message,
+                ),
+            )
+            if handle is None:
+                _release_incident_inflight(pair_index)
+                return False
+            handle.add_done_callback(
+                lambda _done, pair_idx=pair_index: _release_incident_inflight(pair_idx)
+            )
+            return True
+
         async def _reprice_single_pair_stop(
             *,
             pair_index: int,
             stop_price: float,
         ) -> None:
             with state_lock:
-                if pair_index in incident_pairs_active:
+                if pair_index in incident_pairs_active or pair_index in incident_pairs_inflight:
                     return
                 stop_trade = stop_trades.get(pair_index)
                 if stop_trade is None:
@@ -1682,14 +1748,11 @@ class IBKROrderPort(OrderPort):
                     )
                 )
             if broker_code in {201, 202, 404}:
-                self._schedule_managed_coroutine(
-                    loop,
-                    _handle_child_incident(
-                        pair_index=pair_index,
-                        source_order_id=old_order_id,
-                        code=broker_code,
-                        message=broker_message,
-                    ),
+                _schedule_child_incident(
+                    pair_index=pair_index,
+                    source_order_id=old_order_id,
+                    code=broker_code,
+                    message=broker_message,
                 )
 
         async def _reprice_pairs(*, target_pairs: tuple[int, ...], stop_price: float) -> None:
@@ -1717,7 +1780,7 @@ class IBKROrderPort(OrderPort):
                 order_id_value=order_id_value,
                 code=code,
                 leg_by_order_id=leg_by_order_id,
-                incident_pairs_active=incident_pairs_active,
+                incident_pairs_active=incident_pairs_active | incident_pairs_inflight,
                 tp_completed=tp_completed,
                 stop_filled=stop_filled,
                 tp_has_fill=lambda idx: bool(
@@ -1745,18 +1808,17 @@ class IBKROrderPort(OrderPort):
                 )
             if pair_index is None:
                 return
-            self._schedule_managed_coroutine(
-                loop,
-                _handle_child_incident(
-                    pair_index=pair_index,
-                    source_order_id=int(req_id),
-                    code=normalized_code,
-                    message=message or advanced,
-                ),
+            _schedule_child_incident(
+                pair_index=pair_index,
+                source_order_id=int(req_id),
+                code=normalized_code,
+                message=message or advanced,
             )
 
         def _on_tp_status(pair_index: int, trade_obj: Trade) -> None:
             status_value = _normalize_status(getattr(trade_obj.orderStatus, "status", None))
+            schedule_incident = False
+            incident_source_order_id: Optional[int] = None
             with state_lock:
                 paired_stop_trade = stop_trades.get(pair_index)
                 paired_stop_filled = bool(
@@ -1769,19 +1831,20 @@ class IBKROrderPort(OrderPort):
                     and not stop_filled[pair_index]
                     and not paired_stop_filled
                     and pair_index not in incident_pairs_active
+                    and pair_index not in incident_pairs_inflight
                 ):
-                    self._schedule_managed_coroutine(
-                        loop,
-                        _handle_child_incident(
-                            pair_index=pair_index,
-                            source_order_id=_trade_order_id(trade_obj),
-                            code=202,
-                            message="Take-profit became inactive before paired stop resolution.",
-                        ),
-                    )
+                    schedule_incident = True
+                    incident_source_order_id = _trade_order_id(trade_obj)
                 _maybe_schedule_reprices_locked()
                 _refresh_leg_registry_locked()
                 _close_gateway_subscription_if_idle_locked()
+            if schedule_incident:
+                _schedule_child_incident(
+                    pair_index=pair_index,
+                    source_order_id=incident_source_order_id,
+                    code=202,
+                    message="Take-profit became inactive before paired stop resolution.",
+                )
 
         def _on_tp_fill(pair_index: int, _trade_obj: Trade, fill_obj: object | None) -> None:
             with state_lock:
@@ -1809,6 +1872,8 @@ class IBKROrderPort(OrderPort):
 
         def _on_stop_status(pair_index: int, trade_obj: Trade) -> None:
             status_value = _normalize_status(getattr(trade_obj.orderStatus, "status", None))
+            schedule_incident = False
+            incident_source_order_id: Optional[int] = None
             with state_lock:
                 paired_tp_trade = tp_trades.get(pair_index)
                 paired_tp_filled = bool(
@@ -1820,23 +1885,24 @@ class IBKROrderPort(OrderPort):
                     and not tp_completed[pair_index]
                     and not paired_tp_filled
                     and pair_index not in incident_pairs_active
+                    and pair_index not in incident_pairs_inflight
                 ):
-                    self._schedule_managed_coroutine(
-                        loop,
-                        _handle_child_incident(
-                            pair_index=pair_index,
-                            source_order_id=_trade_order_id(trade_obj),
-                            code=202,
-                            message="Protective stop became inactive before paired TP completion.",
-                        ),
-                    )
+                    schedule_incident = True
+                    incident_source_order_id = _trade_order_id(trade_obj)
                 _refresh_leg_registry_locked()
                 _close_gateway_subscription_if_idle_locked()
+            if schedule_incident:
+                _schedule_child_incident(
+                    pair_index=pair_index,
+                    source_order_id=incident_source_order_id,
+                    code=202,
+                    message="Protective stop became inactive before paired TP completion.",
+                )
 
         def _on_stop_fill(pair_index: int, trade_obj: Trade) -> None:
             tp_order_to_cancel: object | None = None
             with state_lock:
-                if pair_index in incident_pairs_active:
+                if pair_index in incident_pairs_active or pair_index in incident_pairs_inflight:
                     return
                 if not _has_any_fill(trade_obj):
                     return
