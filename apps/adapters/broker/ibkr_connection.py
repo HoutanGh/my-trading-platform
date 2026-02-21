@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import os
-import logging
 from dataclasses import dataclass
 from typing import Callable, Optional, Tuple
 
 from apps.adapters.broker._ib_client import IB
+from apps.adapters.broker._ib_compat import silence_ib_client_loggers
 
 from apps.core.ops.events import (
     IbGatewayLog,
@@ -198,7 +198,7 @@ class IBKRConnection:
         return _unsubscribe
 
     def _install_error_filter(self) -> None:
-        _silence_ib_insync_logger()
+        silence_ib_client_loggers()
         wrappers = []
         wrapper = getattr(self._ib, "wrapper", None)
         if wrapper is not None:
@@ -275,15 +275,6 @@ def _should_suppress_error(args: tuple[object, ...], kwargs: dict[str, object]) 
     if not error_string:
         return True
     return "query cancelled" in str(error_string).lower()
-
-
-def _silence_ib_insync_logger() -> None:
-    logger = logging.getLogger("ib_insync")
-    logger.setLevel(logging.CRITICAL)
-    logger.propagate = False
-    if not logger.handlers:
-        logger.addHandler(logging.NullHandler())
-
 
 def _parse_gateway_error(
     args: tuple[object, ...],
