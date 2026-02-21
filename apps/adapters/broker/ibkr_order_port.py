@@ -14,8 +14,16 @@ from collections.abc import Coroutine
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any, Callable, Optional, cast
 
-from ib_insync import IB, LimitOrder, MarketOrder, StopOrder, Stock, StopLimitOrder, Trade
-from ib_insync.util import UNSET_DOUBLE
+from apps.adapters.broker._ib_client import (
+    IB,
+    LimitOrder,
+    MarketOrder,
+    Stock,
+    StopLimitOrder,
+    StopOrder,
+    Trade,
+    UNSET_DOUBLE,
+)
 
 from apps.adapters.broker.ibkr_connection import IBKRConnection
 from apps.adapters.broker.ibkr_session_phase import IBKRSessionPhaseResolver, SessionPhase

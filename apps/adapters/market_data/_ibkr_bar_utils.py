@@ -3,8 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Optional
 
-from ib_insync import BarData
-from ib_insync.util import parseIBDatetime
+from apps.adapters.broker._ib_client import BarData, parse_ib_datetime
 
 from apps.core.market_data.models import Bar
 
@@ -12,7 +11,7 @@ from apps.core.market_data.models import Bar
 def to_bar(ib_bar: BarData) -> Bar:
     timestamp = ib_bar.date
     if not isinstance(timestamp, datetime):
-        timestamp = parseIBDatetime(timestamp)
+        timestamp = parse_ib_datetime(timestamp)
     return Bar(
         timestamp=timestamp,
         open=float(ib_bar.open),

@@ -20,7 +20,7 @@ try:
 except ImportError:
     readline = None
 
-from ib_insync import MarketOrder, Stock
+from apps.adapters.broker._ib_client import MarketOrder, Stock
 
 from apps.adapters.broker.ibkr_connection import IBKRConnection
 from apps.cli.event_printer import suppress_gateway_req_id

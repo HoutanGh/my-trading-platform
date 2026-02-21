@@ -5,7 +5,7 @@ import logging
 from dataclasses import dataclass
 from typing import Callable, Optional, Tuple
 
-from ib_insync import IB
+from apps.adapters.broker._ib_client import IB
 
 from apps.core.ops.events import (
     IbGatewayLog,

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Callable, Optional
 
-from ib_insync import IB, Stock
+from apps.adapters.broker._ib_client import IB, Stock
 
 from apps.adapters.broker.ibkr_connection import IBKRConnection
 from apps.adapters.market_data._ibkr_bar_utils import (

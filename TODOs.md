@@ -47,6 +47,7 @@
     - [ ] Research
 - [ ] change breakout status to breakouts
 - [ ] ib_async migration
+- [ ] enforce IB import boundary (only `apps/adapters/broker/_ib_client.py` imports ib_async/ib_insync) + add CI guard
 - [ ] need to accommodate for haults
 - [ ] breakout status should be shown as a table
 - [ ] cli cleaning

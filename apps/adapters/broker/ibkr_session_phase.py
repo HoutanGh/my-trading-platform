@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Optional
 
-from ib_insync import IB, Stock
+from apps.adapters.broker._ib_client import IB, Stock
 
 from apps.core.orders.events import (
     OrderSessionPhasePrewarmFailed,

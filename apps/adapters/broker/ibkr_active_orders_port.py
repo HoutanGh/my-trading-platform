@@ -4,7 +4,7 @@ import asyncio
 from datetime import datetime
 from typing import Optional
 
-from ib_insync import IB, Trade
+from apps.adapters.broker._ib_client import IB, Trade
 
 from apps.adapters.broker.ibkr_connection import IBKRConnection
 from apps.core.active_orders.models import ActiveOrderSnapshot

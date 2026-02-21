@@ -5,7 +5,7 @@ import time
 from datetime import datetime, timezone
 from typing import Optional
 
-from ib_insync import IB, Stock, Ticker
+from apps.adapters.broker._ib_client import IB, Stock, Ticker
 
 from apps.adapters.broker.ibkr_connection import IBKRConnection
 from apps.core.market_data.models import Quote
