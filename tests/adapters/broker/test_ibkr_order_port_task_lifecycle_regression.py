@@ -1,31 +1,37 @@
 from __future__ import annotations
 
 import asyncio
-import importlib.util
-from importlib.machinery import ModuleSpec
+import importlib
+from datetime import datetime, timezone
 import sys
 import types
 
-if importlib.util.find_spec("ib_insync") is None:
-    ib_insync_stub = types.ModuleType("ib_insync")
-    ib_insync_stub.__path__ = []  # type: ignore[attr-defined]
-    ib_insync_stub.__spec__ = ModuleSpec("ib_insync", loader=None)
+_IB_CLIENT_MODULE = "apps.adapters.broker._ib_client"
+
+try:
+    importlib.import_module(_IB_CLIENT_MODULE)
+except Exception:
+    ib_client_stub = types.ModuleType(_IB_CLIENT_MODULE)
 
     def _stub_type(name: str):
         return type(name, (), {"__init__": lambda self, *args, **kwargs: None})
 
-    ib_insync_stub.IB = _stub_type("IB")
-    ib_insync_stub.Stock = _stub_type("Stock")
-    ib_insync_stub.Trade = _stub_type("Trade")
-    ib_insync_stub.MarketOrder = _stub_type("MarketOrder")
-    ib_insync_stub.LimitOrder = _stub_type("LimitOrder")
-    ib_insync_stub.StopOrder = _stub_type("StopOrder")
-    ib_insync_stub.StopLimitOrder = _stub_type("StopLimitOrder")
-    sys.modules["ib_insync"] = ib_insync_stub
-    ib_insync_util_stub = types.ModuleType("ib_insync.util")
-    ib_insync_util_stub.__spec__ = ModuleSpec("ib_insync.util", loader=None)
-    ib_insync_util_stub.UNSET_DOUBLE = float("nan")
-    sys.modules["ib_insync.util"] = ib_insync_util_stub
+    def _parse_ib_datetime(_value: object) -> datetime:
+        return datetime.now(timezone.utc)
+
+    ib_client_stub.IB = _stub_type("IB")
+    ib_client_stub.Stock = _stub_type("Stock")
+    ib_client_stub.Ticker = _stub_type("Ticker")
+    ib_client_stub.BarData = _stub_type("BarData")
+    ib_client_stub.Trade = _stub_type("Trade")
+    ib_client_stub.MarketOrder = _stub_type("MarketOrder")
+    ib_client_stub.LimitOrder = _stub_type("LimitOrder")
+    ib_client_stub.StopOrder = _stub_type("StopOrder")
+    ib_client_stub.StopLimitOrder = _stub_type("StopLimitOrder")
+    ib_client_stub.IB_CLIENT_BACKEND = "test-stub"
+    ib_client_stub.UNSET_DOUBLE = float("nan")
+    ib_client_stub.parse_ib_datetime = _parse_ib_datetime
+    sys.modules[_IB_CLIENT_MODULE] = ib_client_stub
 
 from apps.adapters.broker.ibkr_order_port import IBKROrderPort, _schedule_coroutine
 
