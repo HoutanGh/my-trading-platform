@@ -33,10 +33,15 @@ from apps.core.active_orders.service import ActiveOrdersService
 from apps.core.market_data.ports import BarStreamPort, QuotePort, QuoteStreamPort
 from apps.core.ops.events import (
     CliErrorLogged,
+    DetachedProtectionCoverageGapDetected,
+    DetachedProtectionReconciliationCompleted,
     OrphanExitOrderCancelFailed,
     OrphanExitOrderCancelled,
     OrphanExitOrderDetected,
     OrphanExitReconciliationCompleted,
+)
+from apps.core.orders.detached_protection_reconcile import (
+    reconcile_detached_protection_coverage,
 )
 from apps.core.orders.models import (
     LadderExecutionMode,
@@ -197,6 +202,8 @@ class REPL:
             orphan_action = "warn"
         self._orphan_exit_action = orphan_action
         self._orphan_exit_lock = asyncio.Lock()
+        self._detached_protection_scope = self._orphan_exit_scope
+        self._detached_protection_lock = asyncio.Lock()
         self._completion_matches: list[str] = []
         self._register_commands()
         self._setup_readline()
@@ -760,6 +767,7 @@ class REPL:
         )
         await self._seed_position_origins()
         await self._reconcile_orphan_exit_orders(trigger="connection_established")
+        await self._reconcile_detached_protection_coverage(trigger="connection_established")
         await self._maybe_prompt_resume_breakouts(cfg)
 
     def _apply_account_default(self, mode: Optional[str], cfg: object) -> None:
@@ -2500,7 +2508,9 @@ class REPL:
                     if order.order_id is None:
                         continue
                     try:
-                        ack = await self._order_service.cancel_order(OrderCancelSpec(order_id=order.order_id))
+                        ack = await self._order_service.cancel_order(
+                            OrderCancelSpec(order_id=order.order_id)
+                        )
                     except Exception as exc:
                         cancel_failed_count += 1
                         if self._event_bus:
@@ -2547,6 +2557,66 @@ class REPL:
                         cancel_failed_count=cancel_failed_count,
                     )
                 )
+
+    async def _reconcile_detached_protection_coverage(self, *, trigger: str) -> None:
+        if not self._active_orders_service or not self._positions_service:
+            return
+        if not self._position_origin_tracker:
+            return
+        if not self._connection.status().get("connected"):
+            return
+
+        async with self._detached_protection_lock:
+            scope = self._detached_protection_scope
+            try:
+                active_orders = await self._active_orders_service.list_active_orders(scope=scope)
+            except Exception as exc:
+                _print_exception("Detached protection reconciliation failed (active orders)", exc)
+                return
+
+            try:
+                positions = await self._positions_service.list_positions()
+            except Exception as exc:
+                _print_exception("Detached protection reconciliation failed (positions)", exc)
+                positions = []
+
+            report = reconcile_detached_protection_coverage(
+                positions=positions,
+                active_orders=active_orders,
+                tag_for_position=self._position_origin_tracker.tag_for,
+                # Reconcile only breakout-tagged positions to avoid flagging unrelated manual inventory.
+                # TODO: expand this scope when detached automation supports additional client_tag families.
+                required_tag_prefix="breakout:",
+            )
+            if not self._event_bus:
+                return
+
+            for gap in report.gaps:
+                self._event_bus.publish(
+                    DetachedProtectionCoverageGapDetected.now(
+                        trigger=trigger,
+                        scope=scope,
+                        account=gap.account,
+                        symbol=gap.symbol,
+                        client_tag=gap.client_tag,
+                        position_qty=gap.position_qty,
+                        protected_qty=gap.protected_qty,
+                        uncovered_qty=gap.uncovered_qty,
+                        stop_order_ids=gap.stop_order_ids,
+                        stop_order_count=gap.stop_order_count,
+                    )
+                )
+            self._event_bus.publish(
+                DetachedProtectionReconciliationCompleted.now(
+                    trigger=trigger,
+                    scope=scope,
+                    active_order_count=report.active_order_count,
+                    position_count=report.position_count,
+                    inspected_position_count=report.inspected_position_count,
+                    covered_position_count=report.covered_position_count,
+                    gap_count=report.gap_count,
+                )
+            )
 
     async def _cmd_positions(self, _args: list[str], _kwargs: dict[str, str]) -> None:
         if not self._positions_service:

@@ -33,6 +33,8 @@ from apps.core.ops.events import (
     BarStreamRecoveryScanScheduled,
     BarStreamRecoveryStarted,
     BarStreamStalled,
+    DetachedProtectionCoverageGapDetected,
+    DetachedProtectionReconciliationCompleted,
     IbGatewayLog,
     OrphanExitOrderCancelFailed,
     OrphanExitOrderCancelled,
@@ -683,6 +685,40 @@ def print_event(event: object) -> bool:
             (
                 f"{event.symbol} reason={event.reason} "
                 f"{order_prefix}qty={event.qty} price={event.price:g}"
+            ),
+        )
+        return True
+    if isinstance(event, DetachedProtectionCoverageGapDetected):
+        if _SHOW_ORDER_IDS:
+            stop_details = f"stop_ids={event.stop_order_ids}"
+        else:
+            stop_details = f"stop_count={event.stop_order_count}"
+        _print_line(
+            event.timestamp,
+            "DetachedProtectionGap",
+            (
+                f"{event.symbol} account={event.account or '-'} "
+                f"tag={event.client_tag or '-'} "
+                f"position={_fmt_qty(event.position_qty)} "
+                f"protected={_fmt_qty(event.protected_qty)} "
+                f"uncovered={_fmt_qty(event.uncovered_qty)} "
+                f"{stop_details} trigger={event.trigger} scope={event.scope}"
+            ),
+        )
+        return True
+    if isinstance(event, DetachedProtectionReconciliationCompleted):
+        if event.gap_count <= 0:
+            return False
+        _print_line(
+            event.timestamp,
+            "DetachedProtectionRecon",
+            (
+                f"{event.trigger} {event.scope} "
+                f"active={event.active_order_count} "
+                f"positions={event.position_count} "
+                f"inspected={event.inspected_position_count} "
+                f"covered={event.covered_position_count} "
+                f"gaps={event.gap_count}"
             ),
         )
         return True

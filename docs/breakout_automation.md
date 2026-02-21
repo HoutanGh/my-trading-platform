@@ -230,6 +230,7 @@ Emitted events (relevant groups):
 - Bracket/ladder children: `BracketChildOrderStatusChanged`, `BracketChildOrderFilled`.
 - Ladder stop safety: `LadderStopLossReplaced`, `LadderStopLossReplaceFailed`, `LadderStopLossCancelled`, `LadderProtectionStateChanged`.
 - Reconnect orphan-exit reconciliation: `OrphanExitOrderDetected`, `OrphanExitOrderCancelled`, `OrphanExitOrderCancelFailed`, `OrphanExitReconciliationCompleted`.
+- Reconnect detached protection coverage reconciliation: `DetachedProtectionCoverageGapDetected`, `DetachedProtectionReconciliationCompleted`.
 - Bar stream health/recovery: `BarStreamStalled`, `BarStreamRecovered`, `BarStreamRecoveryStarted`, `BarStreamRecoveryFailed`, `BarStreamCompetingSessionBlocked`, `BarStreamCompetingSessionCleared`, `BarStreamRecoveryScanScheduled`.
 
 Display behavior:
