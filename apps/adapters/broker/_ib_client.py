@@ -5,7 +5,7 @@ from importlib import import_module
 from types import SimpleNamespace
 from typing import Any
 
-_BACKEND_CANDIDATES = ("ib_async", "in_async", "ib_insync")
+_BACKEND_CANDIDATES = ("ib_async", "ib_insync")
 _LAST_IMPORT_ERROR: Exception | None = None
 _backend: Any | None = None
 _backend_name = ""
