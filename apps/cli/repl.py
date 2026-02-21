@@ -415,8 +415,16 @@ class REPL:
                     "[entry=limit|market] [quote_age=...] [tp_exec=attached|detached|detached70] [account=...] [client_tag=...] "
                     "| breakout SYMBOL LEVEL QTY [TP] [SL] "
                     "| breakout SYMBOL LEVEL QTY tp-2|tp-3 [SL] "
-                    "| breakout status | breakout cancel [SYMBOL ...|ALL]"
+                    "| breakout cancel [SYMBOL ...|ALL]"
                 ),
+            )
+        )
+        self._register(
+            CommandSpec(
+                name="breakouts",
+                handler=self._cmd_breakouts,
+                help="Show running breakout watchers.",
+                usage="breakouts",
             )
         )
         self._register(
@@ -627,8 +635,6 @@ class REPL:
             ]
         if name == "breakout":
             return [
-                "status",
-                "list",
                 "cancel",
                 "ALL",
                 "symbol=",
@@ -957,9 +963,6 @@ class REPL:
             return
         if args:
             action = args[0].lower()
-            if action in {"status", "list"}:
-                self._print_breakout_status()
-                return
             if action in {"cancel", "stop"}:
                 cancel_tokens = list(args[1:])
                 symbol_kw = kwargs.get("symbol")
@@ -1342,6 +1345,12 @@ class REPL:
         )
 
         self._launch_breakout(run_config, source="user")
+
+    async def _cmd_breakouts(self, args: list[str], kwargs: dict[str, str]) -> None:
+        if args or kwargs:
+            print(self._commands["breakouts"].usage)
+            return
+        self._print_breakout_status()
 
     async def _cmd_tp(self, args: list[str], kwargs: dict[str, str]) -> None:
         if not self._tp_service:

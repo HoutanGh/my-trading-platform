@@ -88,7 +88,7 @@ Examples:
   - `breakout XRTX 0.42 1000 tp-2 sl=0.37`
 
 Stop or check status:
-- `breakout status`
+- `breakouts`
 - `breakout cancel XRTX`
 - `breakout cancel XRTX CISS`
 - `breakout cancel ALL`

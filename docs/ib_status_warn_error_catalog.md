@@ -98,7 +98,7 @@ Runtime health states:
 
 These appear via:
 
-- `breakout status` health summaries in `apps/cli/repl.py`
+- `breakouts` health summaries in `apps/cli/repl.py`
 - health/recovery events in the event stream (`BarStreamStalled`, `BarStreamRecovered`, `BarStreamHeal`, `BarStreamHealFail`, `BarStreamBlocked`, `BarStreamUnblocked`, `BarStreamScan`)
 
 ## 5) IB connection lifecycle status/error events
