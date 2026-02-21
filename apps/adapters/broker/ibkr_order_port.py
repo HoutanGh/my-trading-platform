@@ -24,7 +24,7 @@ from apps.adapters.broker._ib_client import (
     Trade,
     UNSET_DOUBLE,
 )
-from apps.adapters.broker._ib_compat import attach_trade_events
+from apps.adapters.broker._ib_compat import attach_trade_events, req_tickers_snapshot
 
 from apps.adapters.broker.ibkr_connection import IBKRConnection
 from apps.adapters.broker.ibkr_session_phase import IBKRSessionPhaseResolver, SessionPhase
@@ -3139,12 +3139,10 @@ async def _touch_price_for_stop_limit(ib: IB, contract: Stock, side: OrderSide) 
     if touch_price is not None:
         return touch_price
     try:
-        snapshots = await ib.reqTickersAsync(contract)
+        snapshot = await req_tickers_snapshot(ib, contract)
     except Exception:
         return None
-    if not snapshots:
-        return None
-    return _touch_price_from_ticker(snapshots[0], side)
+    return _touch_price_from_ticker(snapshot, side)
 
 
 def _touch_price_from_ticker(ticker: object, side: OrderSide) -> Optional[float]:

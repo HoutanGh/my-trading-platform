@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import copy
 import json
 import os
 import re
@@ -21,6 +20,7 @@ except ImportError:
     readline = None
 
 from apps.adapters.broker._ib_client import MarketOrder, Stock
+from apps.adapters.broker._ib_compat import what_if_order
 
 from apps.adapters.broker.ibkr_connection import IBKRConnection
 from apps.cli.event_printer import suppress_gateway_req_id
@@ -911,22 +911,13 @@ class REPL:
             unsubscribe_gateway = subscribe_gateway(_capture_gateway_message)
 
         try:
-            state_awaitable: Awaitable[object]
-            client = getattr(ib, "client", None)
-            wrapper = getattr(ib, "wrapper", None)
-            get_req_id = getattr(client, "getReqId", None) if client is not None else None
-            start_req = getattr(wrapper, "startReq", None) if wrapper is not None else None
-            place_order = getattr(client, "placeOrder", None) if client is not None else None
-            if callable(get_req_id) and callable(start_req) and callable(place_order):
-                expected_req_id = int(get_req_id())
-                suppress_gateway_req_id(expected_req_id)
-                what_if_order = copy.copy(order)
-                what_if_order.whatIf = True
-                state_awaitable = start_req(expected_req_id, contracts[0])
-                place_order(expected_req_id, contracts[0], what_if_order)
-            else:
-                state_awaitable = ib.whatIfOrderAsync(contracts[0], order)
-            state = await asyncio.wait_for(state_awaitable, timeout=timeout)
+            state, expected_req_id = await what_if_order(
+                ib,
+                contracts[0],
+                order,
+                timeout=timeout,
+                suppress_req_id=suppress_gateway_req_id,
+            )
         except asyncio.TimeoutError:
             return False, f"what-if timed out after {timeout:.1f}s"
         except Exception as exc:

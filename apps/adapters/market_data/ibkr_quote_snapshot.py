@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import asyncio
-import time
 from datetime import datetime, timezone
 from typing import Optional
 
-from apps.adapters.broker._ib_client import IB, Stock, Ticker
+from apps.adapters.broker._ib_client import IB, Stock
+from apps.adapters.broker._ib_compat import req_tickers_snapshot
 
 from apps.adapters.broker.ibkr_connection import IBKRConnection
 from apps.core.market_data.models import Quote
@@ -29,47 +28,12 @@ class IBKRQuoteSnapshot(QuotePort):
         qualified = contracts[0]
 
         timeout_value = self._timeout if timeout is None else timeout
-
-        if hasattr(self._ib, "reqTickersAsync"):
-            ticker = await _snapshot_with_req_tickers(self._ib, qualified, timeout_value)
-        else:
-            ticker = await _snapshot_with_req_mkt_data(self._ib, qualified, timeout_value)
+        ticker = await req_tickers_snapshot(self._ib, qualified, timeout=timeout_value)
 
         bid = _maybe_price(getattr(ticker, "bid", None))
         ask = _maybe_price(getattr(ticker, "ask", None))
         timestamp = _normalize_timestamp(getattr(ticker, "time", None))
         return Quote(timestamp=timestamp, bid=bid, ask=ask)
-
-
-async def _snapshot_with_req_tickers(
-    ib: IB,
-    contract: Stock,
-    timeout_value: float | None,
-) -> Ticker:
-    if timeout_value and timeout_value > 0:
-        tickers = await asyncio.wait_for(ib.reqTickersAsync(contract), timeout=timeout_value)
-    else:
-        tickers = await ib.reqTickersAsync(contract)
-    if not tickers:
-        raise RuntimeError("IBKR did not return a ticker snapshot")
-    return tickers[0]
-
-
-async def _snapshot_with_req_mkt_data(
-    ib: IB,
-    contract: Stock,
-    timeout_value: float | None,
-) -> Ticker:
-    ticker = ib.reqMktData(contract, "", snapshot=True, regulatorySnapshot=False)
-    deadline = time.time() + (timeout_value if timeout_value and timeout_value > 0 else 2.0)
-    while time.time() < deadline:
-        if _maybe_price(getattr(ticker, "ask", None)) is not None or _maybe_price(
-            getattr(ticker, "bid", None)
-        ) is not None:
-            break
-        await asyncio.sleep(0.05)
-    ib.cancelMktData(contract)
-    return ticker
 
 
 def _maybe_price(value: object) -> Optional[float]:
